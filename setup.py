@@ -10,7 +10,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'pyfm = pytoolbox.pyfm:pfm',
+            'pyfm = pytoolbox.pyfm:file_management',
         ],
     },
 )
