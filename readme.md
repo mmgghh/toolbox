@@ -20,4 +20,6 @@ $ python3 -m venv venv && source venv/bin/activate
 $ pip install --editable .
 $ pyfm --help
 $ pyfm partition --help
+$ # split /some/dir into 5 partitions (dirs)
+$ pyfm partition --partitions 5 --source /some/dir --split-based-on size
 ```
