@@ -37,53 +37,83 @@ def mkdirs(start_from: int, n_partition: int, destination: Path, name_prefix: st
     return dirs
 
 
+def split_based_on_count(dirs: dict[int, Path], files_or_dirs: list[Path], verbose: int):
+    start_from = min(dirs.keys())
+    n_partition = len(dirs)
+    # Move files into directories
+    files_moved = 0
+    # Calculate number of files and files per directory
+    files_per_dir = len(files_or_dirs) // n_partition
+    residual = len(files_or_dirs) % n_partition
+
+    for i in range(start_from, start_from + n_partition):
+        # Move files into directory
+        files_per_current_dir = files_per_dir + (1 if i <= residual else 0)
+        files_to_move = files_or_dirs[:files_per_current_dir]
+        for file in files_to_move:
+            shutil.move(file, dirs[i])
+
+        # Update files_moved variable
+        files_moved += len(files_to_move)
+
+        # Remove moved files from list of files
+        files_or_dirs = files_or_dirs[files_per_current_dir:]
+
+    if verbose > 0:
+        click.echo(f"Total number of files/dirs moved: {files_moved}")
+
+
+def split_based_on_size(dirs: dict[int, Path], files_or_dirs: list[Path], verbose: int):
+    start_from = min(dirs.keys())
+    n_partition = len(dirs)
+    # Move files into directories
+    files_moved = 0
+    sored_files = sorted(
+        [(f, get_size(f)) for f in files_or_dirs],
+        key=lambda x: x[1],
+        reverse=True
+    )
+    dirs_size = {k: 0 for k in dirs.keys()}
+    partitions = {k: [] for k in dirs.keys()}
+    for (file_or_dir, size) in sored_files:
+        target = list(dirs_size.keys())[0]
+        partitions[target].append(file_or_dir)
+        dirs_size[target] += size
+        dirs_size = {k: v for k, v in sorted(dirs_size.items(), key=lambda item: item[1])}
+
+    for i, files in partitions.items():
+        current_dir = dirs[i]
+        for f in files:
+            shutil.move(f, current_dir)
+
+        # Update files_moved variable
+        files_moved += len(files)
+
+    if verbose > 0:
+        click.echo(f"Total number of files/dirs moved: {files_moved}")
+
+
 def split_to_n_dir(
         pattern: str, dir_prefix: str, split_based_on: Literal['count', 'size'],
         n_partition: int, source: Path, destination: Path, verbose: int
 ):
-    def split_based_on_count():
-        start_from = 1
-        # Create n new directories with prefix
-        try:
-            dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
-        except FileExistsError as e:
-            click.echo(
-                f'Directory {e.filename} already exists! '
-                f'Use a unique prefix.', err=True
-            )
-            return
-
-        # Get all files in source directory that match the regex pattern
-        file_or_dir = [f for f in source.iterdir() if re.search(pattern, f.name)]
-        # Move files into directories
-        files_moved = 0
-        # Calculate number of files and files per directory
-        files_per_dir = len(file_or_dir) // n_partition
-        residual = len(file_or_dir) % n_partition
-
-        for i in range(start_from, start_from + n_partition):
-            # Move files into directory
-            files_per_current_dir = files_per_dir + (1 if i <= residual else 0)
-            files_to_move = file_or_dir[:files_per_current_dir]
-            for file in files_to_move:
-                shutil.move(file, dirs[i])
-
-            # Update files_moved variable
-            files_moved += len(files_to_move)
-
-            # Remove moved files from list of files
-            file_or_dir = file_or_dir[files_per_current_dir:]
-
-        if verbose > 0:
-            click.echo(f"Total number of files/dirs moved: {files_moved}")
-
-    def split_based_on_size():
-        click.echo('Not implemented error.', err=True)
+    start_from = 1
+    # Create n new directories with prefix
+    try:
+        dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
+    except FileExistsError as e:
+        click.echo(
+            f'Directory {e.filename} already exists! '
+            f'Use a unique prefix.', err=True
+        )
+        return
+    # Get all files in source directory that match the regex pattern
+    files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
 
     if split_based_on == 'count':
-        split_based_on_count()
+        split_based_on_count(dirs, files_or_dirs, verbose)
     else:
-        split_based_on_size()
+        split_based_on_size(dirs, files_or_dirs, verbose)
 
 
 @click.command()
@@ -154,4 +184,4 @@ file_management.add_command(partition)
 
 
 if __name__ == '__main__':
-    file_management()
+    partition()
