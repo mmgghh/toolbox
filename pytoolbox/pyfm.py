@@ -30,10 +30,19 @@ def mkdirs(start_from: int, n_partition: int, destination: Path, name_prefix: st
     dir_number_length = len(str(start_from + n_partition - 1))
     dirs = {}
     # Create n new directories with prefix
-    for i in range(start_from, start_from + n_partition):
-        current_dir = destination / f'{name_prefix}-{str(i).rjust(dir_number_length, "0")}'
-        current_dir.mkdir()
-        dirs[i] = current_dir
+    try:
+        for i in range(start_from, start_from + n_partition):
+            current_dir = destination / f'{name_prefix}-{str(i).rjust(dir_number_length, "0")}'
+            current_dir.mkdir()
+            dirs[i] = current_dir
+    except FileExistsError as e:
+        for d in dirs.values():
+            d.rmdir()
+        click.echo(
+            f'Directory {e.filename} already exists! '
+            f'Use a unique prefix.', err=True
+        )
+        exit(-1)
 
     return dirs
 
@@ -96,15 +105,7 @@ def split_to_n_dir(
         n_partition: int, source: Path, destination: Path, verbose: int
 ):
     start_from = 1
-    # Create n new directories with prefix
-    try:
-        dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
-    except FileExistsError as e:
-        click.echo(
-            f'Directory {e.filename} already exists! '
-            f'Use a unique prefix.', err=True
-        )
-        return
+    dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
     # Get all files in source directory that match the regex pattern
     files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
 
@@ -121,16 +122,8 @@ def split_based_on_file_count(
     start_from = 1
     # Get all files in source directory that match the regex pattern.
     files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
-    # Create n new directories with prefix
     n_partition = math.ceil(len(files_or_dirs) / file_count)
-    try:
-        dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
-    except FileExistsError as e:
-        click.echo(
-            f'Directory {e.filename} already exists! '
-            f'Use a unique prefix.', err=True
-        )
-        return
+    dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
 
     files_moved = 0
     files_per_dir = file_count
@@ -146,6 +139,60 @@ def split_based_on_file_count(
 
         # Remove moved files from list of files
         files_or_dirs = files_or_dirs[files_per_dir:]
+
+    if verbose > 0:
+        click.echo(f"Total number of files/dirs moved: {files_moved}")
+
+
+def split_based_on_dir_size(
+        pattern: str, dir_prefix: str, directory_size: int,
+        source: Path, destination: Path, verbose: int, threshold=0.05
+):
+
+    start_from = 1
+    # Get all files in source directory that match the regex pattern.
+    files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
+
+    sored_files = sorted(
+        [(f, get_size(f)) for f in files_or_dirs],
+        key=lambda x: x[1],
+        reverse=True
+    )
+
+    dirs = mkdirs(start_from, 1, destination, dir_prefix)
+    dirs_size = {k: 0 for k in dirs.keys()}
+    per_dir_size = directory_size * 1000 ** 2  # convert to bytes
+
+    partitions = {k: [] for k in dirs.keys()}
+
+    def new_target():
+        idx, new_dir = list(mkdirs(start_from + len(dirs), 1, destination, dir_prefix).items())[0]
+        dirs[idx] = new_dir
+        dirs_size[idx] = 0
+        partitions[idx] = []
+        return idx
+
+    for (file_or_dir, size) in sored_files:
+        target = list(dirs_size.keys())[0]
+        space = per_dir_size - dirs_size[target]
+        if size <= per_dir_size:
+            if size > space + (threshold * per_dir_size):
+                target = new_target()
+        elif dirs_size[target] > 0:
+            target = new_target()
+
+        partitions[target].append(file_or_dir)
+        dirs_size[target] += size
+        dirs_size = {k: v for k, v in sorted(dirs_size.items(), key=lambda item: item[1])}
+
+    files_moved = 0
+    for i, files in partitions.items():
+        current_dir = dirs[i]
+        for f in files:
+            shutil.move(f, current_dir)
+
+        # Update files_moved variable
+        files_moved += len(files)
 
     if verbose > 0:
         click.echo(f"Total number of files/dirs moved: {files_moved}")
@@ -171,7 +218,7 @@ def split_based_on_file_count(
 @click.option('-s', '--source', required=True, prompt=True,
               type=click.Path(exists=True, file_okay=False, readable=True, path_type=Path))
 @click.option('-d', '--destination',
-              type=click.Path(exists=True, file_okay=False, readable=True, path_type=Path))
+              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path))
 @click.option('-v', '--verbose', count=True)
 def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 'size'],
               split_percentage: float, split_count: int, split_size: int, partitions: int,
@@ -208,6 +255,12 @@ def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 's
         return split_based_on_file_count(
             pattern, dir_prefix, split_count, source, destination, verbose
         )
+    if split_size:
+        return split_based_on_dir_size(
+            pattern, dir_prefix, split_size,
+            source, destination, verbose
+        )
+
     click.echo('Not implemented error.', err=True)
 
 
