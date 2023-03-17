@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import shutil
@@ -64,9 +65,6 @@ def split_based_on_count(dirs: dict[int, Path], files_or_dirs: list[Path], verbo
 
 
 def split_based_on_size(dirs: dict[int, Path], files_or_dirs: list[Path], verbose: int):
-    start_from = min(dirs.keys())
-    n_partition = len(dirs)
-    # Move files into directories
     files_moved = 0
     sored_files = sorted(
         [(f, get_size(f)) for f in files_or_dirs],
@@ -116,6 +114,43 @@ def split_to_n_dir(
         split_based_on_size(dirs, files_or_dirs, verbose)
 
 
+def split_based_on_file_count(
+        pattern: str, dir_prefix: str, file_count: int,
+        source: Path, destination: Path, verbose: int
+):
+    start_from = 1
+    # Get all files in source directory that match the regex pattern.
+    files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
+    # Create n new directories with prefix
+    n_partition = math.ceil(len(files_or_dirs) / file_count)
+    try:
+        dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
+    except FileExistsError as e:
+        click.echo(
+            f'Directory {e.filename} already exists! '
+            f'Use a unique prefix.', err=True
+        )
+        return
+
+    files_moved = 0
+    files_per_dir = file_count
+
+    for i, current_dir in dirs.items():
+        # Move files into directory
+        files_to_move = files_or_dirs[:files_per_dir]
+        for file in files_to_move:
+            shutil.move(file, current_dir)
+
+        # Update files_moved variable
+        files_moved += len(files_to_move)
+
+        # Remove moved files from list of files
+        files_or_dirs = files_or_dirs[files_per_dir:]
+
+    if verbose > 0:
+        click.echo(f"Total number of files/dirs moved: {files_moved}")
+
+
 @click.command()
 @click.option('--pattern', default='.*',
               help='regular expression to filter only matching files.')
@@ -145,12 +180,12 @@ def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 's
             bool(param) for param in (split_percentage, split_size, split_count, partitions)
     ) != 1:  # only one option is allowed and required
         click.echo(
-            'at least (and only) one of '
+            'At least (and only) one of '
             '`split-percentage`, '
             '`split-count`, '
             '`split-size`, '
             '`partitions`'
-            ' is required.'
+            ' is required.', err=True
         )
         return
     if split_percentage or partitions:
@@ -163,14 +198,15 @@ def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 's
     if not destination:
         destination = source
 
-    # Get all files in source directory that match the regex pattern
-    file_or_dir = [f for f in source.iterdir() if re.search(pattern, f.name)]
-
     # (split_percentage, split_size, split_count, partitions)
     if partitions:
         return split_to_n_dir(
             pattern, dir_prefix, split_based_on,
             partitions, source, destination, verbose
+        )
+    if split_count:
+        return split_based_on_file_count(
+            pattern, dir_prefix, split_count, source, destination, verbose
         )
     click.echo('Not implemented error.', err=True)
 
