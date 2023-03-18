@@ -20,6 +20,13 @@ $ python3 -m venv venv && source venv/bin/activate
 $ pip install --editable .
 $ pyfm --help
 $ pyfm partition --help
+$
 $ # split /some/dir into 5 partitions (dirs)
 $ pyfm partition --partitions 5 --source /some/dir --split-based-on size
+$
+$ # split /source directory to multiple directories with an approximate size of 15 megabyte
+$ pyfm partition --split-size 15 -s /source --dir-prefix dir -v
+$
+$ # merge all files in /source and its sub-directories into /destination
+$ pyfm merge -s /source -d /destination --overwrite keep-both
 ```

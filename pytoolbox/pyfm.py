@@ -1,8 +1,10 @@
 import math
 import os
+import random
 import re
 import shutil
 from pathlib import Path
+from string import ascii_letters
 from typing import Literal
 
 import click
@@ -23,7 +25,10 @@ def get_size(path: Path) -> int:
         return total_size
 
 
-def mkdirs(start_from: int, n_partition: int, destination: Path, name_prefix: str) -> dict[int, Path]:
+def mkdirs(
+        start_from: int, n_partition: int,
+        destination: Path, name_prefix: str
+) -> dict[int, Path]:
     """
     Returns: A dict of index and corresponding directory Path.
     """
@@ -264,13 +269,86 @@ def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 's
     click.echo('Not implemented error.', err=True)
 
 
+@click.command()
+@click.option('--file-pattern', default='.*',
+              help='regular expression to filter only matching files.')
+@click.option('--dir-pattern', default='.*',
+              help='regular expression to filter only matching directories.')
+@click.option('-s', '--source', required=True, prompt=True,
+              type=click.Path(exists=True, file_okay=False, readable=True, path_type=Path),
+              help='Root directory to traverse and merge all files in all of its subdirectories.')
+@click.option('-d', '--destination', required=True, prompt=True,
+              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path))
+@click.option('--overwrite',
+              type=click.Choice(['yes', 'no', 'same-size', 'keep-both'], case_sensitive=False),
+              help="overwrite files with the same name?")
+@click.option('-v', '--verbose', count=True)
+def merge(
+        file_pattern: str, dir_pattern: str, source: Path,
+        destination: Path, overwrite: bool, verbose: int
+):
+    files_moved = 0
+    for root, _, files in os.walk(source.absolute()):
+        current_dir = root.rpartition('/')[-1]
+        if re.search(dir_pattern, current_dir):
+            for f in files:
+                if re.search(file_pattern, f):
+                    file_to_move = Path(root) / f
+                    file_in_destination = Path(destination) / f
+                    renamed_file = ''
+                    if file_in_destination.exists():
+                        if overwrite == 'no' or (
+                            overwrite == 'same-size'
+                            and get_size(file_in_destination) != get_size(file_to_move)
+                        ):
+                            continue
+                        if overwrite == 'yes' and not file_in_destination.is_dir():
+                            os.remove(file_in_destination)
+                        else:
+                            for i in range(1, 10**3):
+                                name, ext = os.path.splitext(f)
+                                renamed_file = f'{name}({i}){ext}'
+
+                                if not (Path(destination) / renamed_file).exists():
+                                    break
+                            else:
+                                i = "".join(
+                                    random.choice(ascii_letters) for _ in range(10)
+                                )
+                                name, ext = os.path.splitext(f)
+                                renamed_file = f'{name}({i}){ext}'
+                            if not overwrite == 'keep-both':
+                                existing = 'file' if file_in_destination.is_file() else 'directory'
+                                choice = click.prompt(
+                                    f"Cannot move file {f} to {destination.absolute()} "
+                                    f"because a {existing} exists with the same name!\n"
+                                    f"1: rename file to <{renamed_file}>\n"
+                                    f"2: skip\n",
+                                    type=click.Choice(['1', '2']),
+                                    err=True, show_choices=False,
+                                )
+                                if choice == '2':
+                                    continue
+                    shutil.move(file_to_move, destination / renamed_file)
+                    files_moved += 1
+                    if verbose > 1:
+                        click.echo(f"Moved: {file_to_move}")
+    # remove empty directories
+    for root, _, files in os.walk(source.absolute()):
+        if get_size(Path(root)) == 0:
+            shutil.rmtree(root)
+
+    if verbose > 0:
+        click.echo(f"{files_moved} files merged into {destination.absolute()}.")
+
+
 @click.group()
 def file_management():
     pass
 
 
 file_management.add_command(partition)
-
+file_management.add_command(merge)
 
 if __name__ == '__main__':
     partition()
