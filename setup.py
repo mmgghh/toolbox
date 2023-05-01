@@ -11,6 +11,7 @@ setup(
     entry_points={
         'console_scripts': [
             'pyfm = pytoolbox.pyfm:file_management',
+            'pyssh = pytoolbox.pyssh:ssh_management',
         ],
     },
 )
