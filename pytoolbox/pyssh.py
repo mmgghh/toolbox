@@ -41,14 +41,22 @@ def double_ssh_tunnel_base(
 
 
 @click.command()
-@click.option('--u1', required=True, prompt=True)
-@click.option('--s1', required=True, prompt=True)
-@click.option('--p1', required=True, prompt=True, type=click.IntRange(0, 65535))
-@click.option('--u2', required=True, prompt=True)
-@click.option('--s2', required=True, prompt=True)
-@click.option('--p2', required=True, prompt=True, type=click.IntRange(0, 65535))
+@click.option('--u1', required=True, prompt=True, help="server 1 user")
+@click.option('--s1', required=True, prompt=True, help="server 1")
+@click.option('--p1', required=True, prompt=True, type=click.IntRange(0, 65535),
+              help="server 1 port")
+@click.option('--u2', required=True, prompt=True, help="server 2 user")
+@click.option('--s2', required=True, prompt=True, help="server 2")
+@click.option('--p2', required=True, prompt=True, type=click.IntRange(0, 65535),
+              help="server 2 port")
 @click.option('-v', '--verbose', count=True)
 def double_ssh_tunnel(u1: str, s1: str, p1: int, u2: str, s2: str, p2: int, verbose: int):
+    """
+    Creates an ssh tunnel to server 1 and from there to server 2.
+    Works for situations when you want to use server 1 as a bridge to server 2 that has free
+    access to internet.
+    By running this function you can access internet through socks5://localhost:9999.
+    """
     double_ssh_tunnel_base(u1, s1, p1, u2, s2, p2)
 
 
