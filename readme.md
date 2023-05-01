@@ -29,4 +29,7 @@ $ pyfm partition --split-size 15 -s /source --dir-prefix dir -v
 $
 $ # merge all files in /source and its sub-directories into /destination
 $ pyfm merge -s /source -d /destination --overwrite keep-both
+$
+$ pyssh --help
+$ pyssh double-ssh-tunnel --help
 ```
