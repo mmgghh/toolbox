@@ -5,9 +5,11 @@ import re
 import shutil
 from pathlib import Path
 from string import ascii_letters
-from typing import Literal
+from typing import Literal, Optional
 
 import click
+
+from pytoolbox.data import sentences, PATTERNS
 
 
 def get_size(path: Path) -> int:
@@ -228,6 +230,10 @@ def split_based_on_dir_size(
 def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 'size'],
               split_percentage: float, split_count: int, split_size: int, partitions: int,
               source: Path, destination: Path, verbose: int):
+    """
+    Creates subdirectories within the destination directory and distributes the contents of source directory
+    based on the number or size of them.
+    """
     if sum(
             bool(param) for param in (split_percentage, split_size, split_count, partitions)
     ) != 1:  # only one option is allowed and required
@@ -287,6 +293,9 @@ def merge(
         file_pattern: str, dir_pattern: str, source: Path,
         destination: Path, overwrite: bool, verbose: int
 ):
+    """
+    Merges (moves) the contents of a source directory into a destination directory.
+    """
     files_moved = 0
     for root, _, files in os.walk(source.absolute()):
         current_dir = root.rpartition('/')[-1]
@@ -342,6 +351,149 @@ def merge(
         click.echo(f"{files_moved} files merged into {destination.absolute()}.")
 
 
+@click.command()
+@click.option('-d', '--dir', type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path),
+              required=True, prompt=True, help='A path to an existing directory.')
+@click.option('-x', '--extension', type=click.STRING, multiple=True, default=['txt'],
+              help='A list of file extensions.')
+@click.option('-f', '--find', type=click.STRING, required=True, prompt=True,
+              help='A Python regex with optional named group support.'
+                   'Enter <UUID4> for uuid pattern, and '
+                   '<DOMAIN_PORT> for sub.domain:port .e.g. ber.com:443, www.example.co.uk:8080. '
+                   '(Use \\g<UUID4> and \\g<DOMAIN_PORT> in replacement string as backrefs if necessary.)')
+@click.option('-r', '--replace', type=click.STRING, required=True, prompt=True,
+              help='A replacement string with optional backref support.')
+@click.option('-v', '--verbose', count=True)
+def batch_find_replace(dir: Path, extension: list[str], find: str, replace: str, verbose: int):
+    """
+    Finds and replaces all the matching texts with replacement string in all files
+    with target extensions in target directory.
+    """
+    try:
+        pattern = re.compile(PATTERNS.get(find) or find)
+    except re.error as e:
+        click.echo(f'{find} is not a valid regex pattern!')
+        click.echo(repr(e), err=True)
+        return
+
+    total_num_replacements = 0
+    total_files_changed = 0
+    for file_path in dir.iterdir():
+        if file_path.suffix.lstrip('.') in extension:
+            with file_path.open('r+') as file:
+                content = file.read()
+                new_content, num_replacements = pattern.subn(replace, content)
+
+                if num_replacements:
+                    file.seek(0)
+                    file.write(new_content)
+                    file.truncate()
+                    total_files_changed += 1
+
+                if verbose > 1:
+                    click.echo(f"{file_path.absolute()} changes: {num_replacements}")
+                total_num_replacements += num_replacements
+    if verbose:
+        click.echo(f"{total_files_changed} files changed.\n{total_num_replacements} changes have been made.")
+
+
+@click.command()
+@click.option('-d', '--dir', type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path),
+              required=True, help='A path to an existing directory.')
+@click.option('-f', '--find', type=click.STRING, required=True, prompt=True,
+              help='A Python regex with optional named group support.'
+                   'Enter <UUID4> for uuid pattern, and '
+                   '<DOMAIN_PORT> for sub.domain:port .e.g. ber.com:443, www.example.co.uk:8080. '
+                   '(Use \\g<UUID4> and \\g<DOMAIN_PORT> in replacement string as backrefs if necessary.)')
+@click.option('-r', '--replace', type=click.STRING, required=True, prompt=True,
+              help='A replacement string with optional backref support.')
+@click.option('--include-dirs', is_flag=True,
+              help='If this flag is set, directories also will be renamed.')
+@click.option('--exclude-files', is_flag=True,
+              help='If this flag is set, files will not be renamed.')
+@click.option('-D', '--depth', type=click.INT, default=0,
+              help='Specifies how many levels of subtree should be processed. By default only direct files/dirs'
+                   'in `/path/to/dir` will be processed. If depth is 1 files/dirs in `path/to/dir/*/` also '
+                   'will be processed. If depth is 2 files/dirs in `path/to/dir/*/*/` also will be processed and so on.')
+@click.option('-v', '--verbose', count=True)
+def batch_rename(dir: Path, find: str, replace: str, include_dirs: bool, exclude_files: bool, depth: int, verbose: int):
+    """
+    Finds and replaces all matching texts in files/directories name with replacement string
+    in target directory and its subdirectories. Directories will not be renamed unless --include-dirs flag is set.
+    """
+    try:
+        pattern = re.compile(PATTERNS.get(find) or find)
+    except re.error as e:
+        click.echo(f'{find} is not a valid regex pattern!')
+        click.echo(repr(e), err=True)
+        return
+
+    total_rename = 0
+
+    for level in range(depth, -1, -1):  # loop over all levels from depth to 0
+        for file_path in dir.glob(f'{"*/" * level}*'):  # use glob with level parameter
+            file_path = Path(file_path)  # convert to Path object
+            if include_dirs is False and file_path.is_dir():
+                continue
+            if exclude_files and file_path.is_file():
+                continue
+            new_name, num_replacements = pattern.subn(replace, file_path.name)
+            original_file_path = file_path.absolute()
+            if num_replacements:
+                new_path = file_path.with_name(new_name)
+                file_path.rename(new_path)
+
+                if verbose >= 1:
+                    click.echo(f"{original_file_path} renamed to {new_name}")
+                total_rename += 1
+
+    click.echo(f"{total_rename} files/directories renamed.")
+
+
+@click.command()
+@click.option('-d', '--directory', type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path),
+              prompt=True, help='A path to an existing directory.')
+@click.option('-n', '--num_files', type=click.IntRange(min=1), prompt=True, help='The number of files.')
+@click.option('-l', '--num_lines', type=click.IntRange(min=0), default=None,
+              help='The number of file lines. By default a random number between 0 and 100 will be used.')
+@click.option('-p', '--name_prefix', default='file',
+              help='An optional template for file names .e.g: template-n.txt. By default file will be used.')
+@click.option('-v', '--verbose', count=True,
+              help='If -v is provided then the command logs the files directory full path and the number of files generated. '
+                   'If -vv is provided also the name of file and the number of lines of each file will be logged.')
+def generate_text_file(
+        directory: Path, num_files: int, num_lines: Optional[int],
+        name_prefix: str, verbose: int
+):
+    """
+    Generates some text files with each line containing a random sentence.
+    """
+    # Create a list of file names based on the name prefix and the number of files
+    file_names = [f"{name_prefix}-{i}.txt" for i in range(1, num_files + 1)]
+    # Loop through the file names
+    for file_name in file_names:
+        # Generate a random number of lines if not specified
+        if num_lines is None:
+            num_sentences = random.randint(0, 100)
+        else:
+            num_sentences = num_lines
+        # Create a list of random sentences from the tuple
+        content = []
+        while (content_length := len(content)) < num_sentences:
+            content += random.sample(sentences, k=min(num_sentences - content_length, len(sentences)))
+
+        # Write the content to the file in the directory
+        with open(directory / file_name, 'w') as f:
+            f.write('\n'.join(content))
+
+        # Log the file name and the number of lines if verbose level is 2
+        if verbose >= 2:
+            click.echo(f"Generated {file_name} with {num_sentences} lines.")
+    # Log the directory and the number of files if verbose level is 1 or more
+    if verbose >= 1:
+        click.echo(f"Generated {num_files} files in {directory}.")
+
+
 @click.group()
 def file_management():
     pass
@@ -349,6 +501,10 @@ def file_management():
 
 file_management.add_command(partition)
 file_management.add_command(merge)
+file_management.add_command(generate_text_file)
+file_management.add_command(batch_find_replace)
+file_management.add_command(batch_rename)
+
 
 if __name__ == '__main__':
-    partition()
+    file_management()
