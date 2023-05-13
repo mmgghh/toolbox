@@ -1,7 +1,7 @@
-# Import the sshtunnel module
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 import click
 
@@ -60,12 +60,49 @@ def double_ssh_tunnel(u1: str, s1: str, p1: int, u2: str, s2: str, p2: int, verb
     double_ssh_tunnel_base(u1, s1, p1, u2, s2, p2)
 
 
+@click.command()
+@click.option('-u', '--user', required=True, prompt=True, help="remote user")
+@click.option('-r', '--remote-address', required=True, prompt=True, help="server address")
+@click.option('-p', '--port', required=True, prompt=True, type=click.IntRange(0, 65535), 
+              help="remote port")
+@click.option('-s', '--source', required=True, prompt=True, type=click.Path(path_type=Path), 
+              help="path to source directory on remote machine")
+@click.option('-d', '--destination', prompt=True,
+              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path), 
+              help="path to destination directory on local machine")
+@click.option('-v', '--verbose', is_flag=True, help="increase verbosity")
+def rsync_dir(
+        user: str, remote_address: str, port: int, source: Path, destination: Path, verbose: int):
+    """
+    A simple wrapper for `rsync -avzP -e "ssh -p <port>" --ignore-existing <user>@<remote_address>:<source> <destination>` command.
+    """
+    # Build the rsync command
+    cmd = [
+        "rsync",
+        "-avzP",
+        "-e", f'"ssh -p {port}"',
+        "--ignore-existing",
+        f"{user}@{remote_address}:{source}",
+        f"{destination}"
+    ]
+
+    # Add the verbose flag if True
+    if verbose:
+        cmd.append("-v")
+
+    command = ' '.join(cmd)
+    # Run the command and print the output
+    click.echo(f"Running: {' '.join(cmd)}")
+    subprocess.run(command, shell=True, capture_output=False)
+
+
 @click.group()
 def ssh_management():
     pass
 
 
 ssh_management.add_command(double_ssh_tunnel)
+ssh_management.add_command(rsync_dir)
 
 if __name__ == '__main__':
     ssh_management()
