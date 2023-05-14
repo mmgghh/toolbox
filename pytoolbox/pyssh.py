@@ -7,7 +7,7 @@ from pathlib import Path
 import click
 
 
-def double_ssh_tunnel_base(
+def double_tunnel_base(
     user1: str, host1: str, port1: int,
     user2: str, host2: str, port2: int,
     local_port1: int = 9998,
@@ -44,7 +44,7 @@ def double_ssh_tunnel_base(
     ssh1.wait()
 
 
-def ssh_tunnel_base(
+def tunnel_base(
     user: str, host: str, port: int,
     local_port: int = 10099,
     public: bool = True
@@ -79,7 +79,7 @@ def ssh_tunnel_base(
 @click.option('--public', is_flag=True, default=False, type=click.BOOL,
               help="If true, <local port> will be accessible publicly.")
 @click.option('-v', '--verbose', count=True, help='increase verbosity')
-def ssh_tunnel(server: str, local_port: int, public: bool, verbose: int):
+def tunnel(server: str, local_port: int, public: bool, verbose: int):
     """
     This function creates a socks proxy that routes the traffic from your local machine to a remote server.
     This is handy when:
@@ -96,7 +96,7 @@ def ssh_tunnel(server: str, local_port: int, public: bool, verbose: int):
         click.echo(str(e), err=True)
         return
 
-    ssh_tunnel_base(user, host, port, local_port, public)
+    tunnel_base(user, host, port, local_port, public)
 
 
 def extract_user_host_port(server: str):
@@ -124,7 +124,7 @@ def extract_user_host_port(server: str):
 @click.option('--public', is_flag=True, default=False, type=click.BOOL,
               help="If true, other devices on the same network can access to local port 2")
 @click.option('-v', '--verbose', count=True, help='increase verbosity')
-def double_ssh_tunnel(
+def double_tunnel(
         server1: str, server2: str,
         lp1: int, lp2: int,
         public: bool,
@@ -148,7 +148,7 @@ def double_ssh_tunnel(
         click.echo(str(e), err=True)
         return
 
-    double_ssh_tunnel_base(u1, h1, p1, u2, h2, p2, lp1, lp2, public)
+    double_tunnel_base(u1, h1, p1, u2, h2, p2, lp1, lp2, public)
 
 
 @click.command()
@@ -196,8 +196,8 @@ def ssh_management():
     pass
 
 
-ssh_management.add_command(double_ssh_tunnel)
-ssh_management.add_command(ssh_tunnel)
+ssh_management.add_command(double_tunnel)
+ssh_management.add_command(tunnel)
 ssh_management.add_command(rsync_dir)
 
 if __name__ == '__main__':
