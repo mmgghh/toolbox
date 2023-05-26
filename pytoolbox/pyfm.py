@@ -8,6 +8,7 @@ from string import ascii_letters
 from typing import Literal, Optional
 
 import click
+import requests
 
 from pytoolbox.data import sentences, PATTERNS
 
@@ -494,16 +495,145 @@ def generate_text_file(
         click.echo(f"Generated {num_files} files in {directory}.")
 
 
+import click
+import re
+from pathlib import Path
+
+
+@click.command()
+@click.option('--pattern', default='.*',
+              help='Regular expression to filter only matching links.')
+@click.option('-s', '--source', required=True, prompt=True,
+              type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path))
+@click.option('-d', '--destination',
+              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path))
+@click.option('--overwrite', is_flag=True,
+              help='If this flag is set, existing links.txt will be deleted and only new extracted links '
+                   'will be written into the file.')
+@click.option('-v', '--verbose', count=True)
+def extract_links(pattern: str, source: Path, destination: Path, verbose: int, overwrite: bool):
+    """
+    Extracts all the links from a source file and writes them into a file named links.txt in the destination directory.
+
+    If a links.txt file already exists, new extracted links will be appended to the file.
+    If a regex pattern is provided, only matching links will be extracted.
+    """
+    if not destination:
+        destination = source.parent
+
+    # Compile the regex pattern
+    match_pattern = re.compile(pattern)
+
+    # Open the source file and read its content
+    with open(source) as f:
+        content = f.read()
+
+    # Find all the links in the content
+    links = re.findall(r'(https?://[^\"|\'| ]+)', content)
+
+    exclude_pattern = re.compile(r'^.*((\.(js|css|html|org|com|ir)(\?.*)?)|/)$')
+    # Filter the links by the pattern
+    links = [
+        link
+        for link in links
+        if match_pattern.match(link) and not exclude_pattern.match(link)
+    ]
+
+    # Open the destination file in append mode
+    output_file = destination / 'links.txt'
+    if overwrite:
+        output_file.unlink(missing_ok=True)
+
+    with open(output_file, 'a') as f:
+        # Write each link in a new line
+        for link in links:
+            f.write(link + '\n')
+
+    # Print some feedback if verbose is enabled
+    if verbose > 0:
+        click.echo(f'Extracted {len(links)} links from {source} to {destination / "links.txt"}')
+
+
+@click.command()
+@click.option('--pattern', default='.*',
+              help='Regular expression to filter only matching links.')
+@click.option('-s', '--source', required=True, prompt=True, type=str)
+@click.option('-d', '--destination',
+              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path))
+@click.option('--overwrite', is_flag=True,
+              help='If this flag is set, existing links.txt will be deleted and only new extracted links '
+                   'will be written into the file.')
+@click.option('-v', '--verbose', count=True)
+def extract_links(pattern: str, source: str, destination: Path, verbose: int, overwrite: bool):
+    """
+    Extracts all the links from a source file or url and writes them into a file named links.txt in the destination directory.
+
+    If a links.txt file already exists, new extracted links will be appended to the file.
+    If a regex pattern is provided, only matching links will be extracted.
+    """
+    if not destination:
+        destination = Path.cwd()  # Use the current working directory as default
+
+    # Compile the regex pattern
+    match_pattern = re.compile(pattern)
+
+    # Check if the source is a url or a file path
+    if source.startswith('http'):  # If it is a url
+        # Use requests to get the content of the url
+        response = requests.get(source)
+        if response.status_code == 200:  # If the request is successful
+            content = response.text
+        else:  # If the request fails
+            click.echo(f'Could not get the content of {source}', err=True)
+            return
+    else:  # If it is a file path
+        source = Path(source)  # Convert it to a Path object
+        if source.exists() and source.is_file() and os.access(source, os.R_OK):  # If it is a valid file
+            # Open the source file and read its content
+            with open(source) as f:
+                content = f.read()
+        else:  # If it is not a valid file
+            click.echo(f'{source} is not a valid file path.', err=True)
+            return
+
+    # Find all the links in the content
+    links = re.findall(r'(https?://[^\"|\'| ]+)', content)
+
+    exclude_pattern = re.compile(r'^.*((\.(js|css|html|org|com|ir)(\?.*)?)|/)$')
+    # Filter the links by the pattern
+    links = [
+        link
+        for link in links
+        if match_pattern.match(link) and not exclude_pattern.match(link)
+    ]
+
+    # Open the destination file in append mode
+    output_file = destination / 'links.txt'
+    if overwrite:
+        output_file.unlink(missing_ok=True)
+
+    with open(output_file, 'a') as f:
+        # Write each link in a new line
+        for link in links:
+            f.write(link + '\n')
+
+    # Print some feedback if verbose is enabled
+    if verbose > 0:
+        click.echo(f'Extracted {len(links)} links from {source} to {destination / "links.txt"}')
+
+
 @click.group()
 def file_management():
     pass
 
 
-file_management.add_command(partition)
-file_management.add_command(merge)
-file_management.add_command(generate_text_file)
-file_management.add_command(batch_find_replace)
-file_management.add_command(batch_rename)
+for cmd in (
+    partition, merge,
+    generate_text_file,
+    batch_find_replace, batch_rename,
+    extract_links,
+):
+    file_management.add_command(cmd)
 
 
 if __name__ == '__main__':
