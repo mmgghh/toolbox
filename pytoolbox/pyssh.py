@@ -2,7 +2,6 @@ import re
 import signal
 import subprocess
 import time
-from pathlib import Path
 
 import click
 
@@ -152,33 +151,33 @@ def double_tunnel(
 
 
 @click.command()
-@click.option('--server', required=True, prompt=True,
-              help="server username, host and port in format 'username@host:port'")
-@click.option('-s', '--source', required=True, prompt=True, type=click.Path(path_type=Path), 
-              help="path to source directory on remote machine")
+@click.option('-s', '--source', required=True, prompt=True,
+              help="local/path/to/target/directory or username@server:/path/to/target/directory")
 @click.option('-d', '--destination', prompt=True,
-              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path), 
-              help="path to destination directory on local machine")
+              # type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path),
+              help="local/path/to/target/directory or username@server:/path/to/target/directory")
+@click.option('-p', '--ssh-port', required=True, type=click.IntRange(0, 65535),
+              help="server ssh port")
+@click.option('-i', '--ignore-existing', is_flag=True,
+              help="do not replace existing files. (by default files that are older or "
+                   "have different size will be replaced)")
 @click.option('-v', '--verbose', is_flag=True, help="increase verbosity")
 def rsync_dir(
-        server: str, source: Path, destination: Path, verbose: int):
+        source: str, destination: str, ssh_port: int,
+        ignore_existing: bool, verbose: int
+):
     """
-    A simple wrapper for `rsync -avzP -e "ssh -p <port>" --ignore-existing <user>@<remote_address>:<source> <destination>` command.
+    A simple wrapper for `rsync -avzP -e "ssh -p <port>" <source> <destination>` command.
     """
-    try:
-        user, host, port = extract_user_host_port(server)
-    except ValueError as e:
-        click.echo(str(e), err=True)
-        return
 
     # Build the rsync command
     cmd = [
         "rsync",
         "-avzP",
-        "-e", f'"ssh -p {port}"',
-        "--ignore-existing",
-        f"{user}@{host}:{source}",
-        f"{destination}"
+        "-e", f'"ssh -p {ssh_port}"',
+        "--ignore-existing" if ignore_existing else "--update",
+        source,
+        destination
     ]
 
     # Add the verbose flag if True
