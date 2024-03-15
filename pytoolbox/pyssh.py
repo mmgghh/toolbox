@@ -150,6 +150,12 @@ def double_tunnel(
     double_tunnel_base(u1, h1, p1, u2, h2, p2, lp1, lp2, public)
 
 
+def escape_special_chars(unix_path: str) -> str:
+    special_chars = r'[\s(){}[\]<>|;&*?$!`\'"\\]'
+
+    return re.sub(special_chars, r'\\\g<0>', unix_path)
+
+
 @click.command()
 @click.option('-s', '--source', required=True, prompt=True,
               help="local/path/to/target/directory or username@server:/path/to/target/directory")
