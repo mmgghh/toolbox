@@ -92,9 +92,9 @@ def double_tunnel_base(
     ssh1_cmd = ['ssh', '-L', f'{local_port1}:{host2}:{port2}', '-N', f'{user1}@{host1}', '-p', str(port1)]
     if pass1_file:
         ssh1_cmd = ['sshpass', '-f', pass1_file] + ssh1_cmd + ignore_security_options
-    ssh1 = subprocess.Popen(ssh1_cmd)
     if temp_file('.ssh1_pid').exists():
         raise click.ClickException('.ssh1_pid exists before!')
+    ssh1 = subprocess.Popen(ssh1_cmd)
     with open(temp_file('.ssh1_pid'), 'w') as ssh1file:
         ssh1file.write(str(ssh1.pid))
     # Wait for a few seconds to establish the first tunnel
@@ -104,9 +104,9 @@ def double_tunnel_base(
     ssh2_cmd = ['ssh', '-D', f'{local_host}:{local_port2}', '-N', f'{user2}@localhost', '-p', str(local_port1)]
     if pass2_file:
         ssh2_cmd = ['sshpass', '-f', pass2_file] + ssh2_cmd + ignore_security_options
-    ssh2 = subprocess.Popen(ssh2_cmd)
     if temp_file('.ssh2_pid').exists():
         raise click.ClickException('.ssh2_pid exists before!')
+    ssh2 = subprocess.Popen(ssh2_cmd)
     with open(temp_file('.ssh2_pid'), 'w') as ssh2file:
         ssh2file.write(str(ssh2.pid))
     # Print a message to indicate the function is running
@@ -114,13 +114,6 @@ def double_tunnel_base(
         f"Double SSH tunnel is running. You can access internet through socks5://{local_host}:{local_port2}\n"
         f"Press Ctrl-C to stop."
         )
-
-
-def _kill_ssh_1_and_2_processes():
-    for f in (temp_file('.ssh1_pid'), temp_file('.ssh2_pid')):
-        if f.exists():
-            kill_by_pid(str(f.read_text()).strip())
-            f.unlink()
 
 
 @click.command()
@@ -181,10 +174,16 @@ def double_tunnel(
         with open(pass2_temp_file, 'w') as p2file:
             p2file.write(pass2)
 
+    def kill_ssh_1_and_2_processes():
+        for f in (temp_file('.ssh1_pid'), temp_file('.ssh2_pid')):
+            if f.exists():
+                kill_by_pid(str(f.read_text()).strip())
+                f.unlink()
+
     def cleanup():
         Path(pass1_temp_file).unlink()
         Path(pass2_temp_file).unlink()
-        _kill_ssh_1_and_2_processes()
+        kill_ssh_1_and_2_processes()
 
     def monitor_and_restart_tunnel():
         """Monitor the tunnel and restart if necessary."""
@@ -195,7 +194,7 @@ def double_tunnel(
                     continue
                 else:
                     click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
-                    _kill_ssh_1_and_2_processes()
+                    kill_ssh_1_and_2_processes()
                     time.sleep(1)
                     process = multiprocessing.Process(
                         target=double_tunnel_base,
@@ -217,39 +216,48 @@ def double_tunnel(
 def tunnel_base(
     user: str, host: str, port: int,
     local_port: int = 10099,
-    public: bool = True
+    public: bool = True,
+    pass_file: str = "",
 ):
     local_host = '0.0.0.0' if public else 'localhost'
-    ssh = subprocess.Popen(
-        ['ssh', '-D', f'{local_host}:{local_port}', '-N', f"{user}@{host}", '-p', str(port)])
+    ssh_cmd = ['ssh', '-D', f'{local_host}:{local_port}', '-N', f"{user}@{host}", '-p', str(port)]
+    if pass_file:
+        ignore_security_options = ['-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null']
+        ssh_cmd = ['sshpass', '-f', pass_file] + ssh_cmd + ignore_security_options
+    if temp_file('.ssh_pid').exists():
+        raise click.ClickException('.ssh_pid exists before!')
+    ssh = subprocess.Popen(ssh_cmd)
+    with open(temp_file('.ssh_pid'), 'w') as ssh_file:
+        ssh_file.write(str(ssh.pid))
 
-    # Define a handler function for terminating signals
-    def handler(signum, frame):
-        ssh.kill()
-        click.echo("Double SSH tunnel is stopped.")
-
-    # Register the handler function for SIGINT and SIGTERM signals
-    signal.signal(signal.SIGINT, handler)
-    signal.signal(signal.SIGTERM, handler)
     # Print a message to indicate the function is running
     click.echo(
         "SSH tunnel is running.\n"
         f"You can access internet through socks5://localhost:{local_port}\n"
         "Press Ctrl-C to stop."
     )
-    # Wait for the background processes to finish
-    ssh.wait()
 
 
 @click.command()
-@click.option('-s', '--server', required=True, prompt=True,
-              help="server username, host and port in format 'username@host:port'")
+@click.option('-s', '--server',
+              help="server username, host and port in format 'username@host:port' or 'username:pass@host:port'")
+@click.option('--server-conf', type=click.Path(exists=True, dir_okay=False, readable=True),
+              help="path/to/server/config containing only 1 line in format username:pass@host:port")
 @click.option('-p', '--local-port', required=True, default=9998, type=click.IntRange(0, 65535),
               help="local port")
 @click.option('--public', is_flag=True, default=False, type=click.BOOL,
               help="If true, <local port> will be accessible publicly.")
 @click.option('-v', '--verbose', count=True, help='increase verbosity')
-def tunnel(server: str, local_port: int, public: bool, verbose: int):
+@click.option('--reconnecting', is_flag=True, default=False, type=click.BOOL,
+              help="If true, the socks proxy will be checked every 5 seconds and the tunnel will be reset if necessary.")
+def tunnel(
+        server: str,
+        server_conf: Optional[Path],
+        local_port: int,
+        public: bool,
+        verbose: int,
+        reconnecting: bool
+):
     """
     This function creates a socks proxy that routes the traffic from your local machine to a remote server.
     This is handy when:
@@ -260,13 +268,57 @@ def tunnel(server: str, local_port: int, public: bool, verbose: int):
     After calling this function you can use socks5://localhost:<local-port> or
     socks5://<your-ip>:<local-port> if public is true and enjoy free internet.
     """
+    help_text = (
+        '\nUsage: pyssh tunnel [OPTIONS]'
+        '\nTry pyssh tunnel --help for help.'
+    )
+    if server is None and server_conf is None:
+        raise click.ClickException(f'Exactly one of server or server1_conf is required!{help_text}')
     try:
-        user, password, host, port = extract_user_host_port(server)
+        user, password, host, port = extract_user_host_port(server or open(server_conf, 'r').readline())
     except ValueError as e:
-        click.echo(str(e), err=True)
-        return
+        raise click.ClickException(str(e) + help_text)
+    else:
+        pass_temp_file = str((temp_file('.tmp_p')).absolute())
+        with open(pass_temp_file, 'w') as password_file:
+            password_file.write(password)
 
-    tunnel_base(user, host, port, local_port, public)
+    def kill_ssh_process():
+        for f in (temp_file('.ssh_pid'),):
+            if f.exists():
+                kill_by_pid(str(f.read_text()).strip())
+                f.unlink()
+
+    def cleanup():
+        Path(pass_temp_file).unlink()
+        kill_ssh_process()
+
+    def monitor_and_restart_tunnel():
+        """Monitor the tunnel and restart if necessary."""
+        try:
+            while True:
+                time.sleep(5)  # Check the proxy every 5 seconds
+                if check_socks5_proxy('localhost', local_port):
+                    continue
+                else:
+                    click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
+                    kill_ssh_process()
+                    time.sleep(1)
+                    process = multiprocessing.Process(
+                        target=tunnel_base,
+                        args=(user, host, port, local_port, public, pass_temp_file)
+                    )
+                    process.start()
+        finally:
+            cleanup()
+    try:
+        if reconnecting:
+            monitor_and_restart_tunnel()
+        else:
+            tunnel_base(user, host, port, local_port, public, pass_temp_file)
+    finally:
+        if not reconnecting:
+            cleanup()
 
 
 @click.command()
