@@ -59,7 +59,9 @@ def check_socks5_proxy(
     try:
         response = requests.get(address, timeout=10)
         return response.status_code == 200
-    except requests.RequestException:
+    except requests.RequestException as e:
+        if 'InvalidSchema' in str(e):
+            raise
         return False
     finally:
         if os_https_proxy_before:
