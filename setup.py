@@ -16,6 +16,7 @@ setup(
             'pyfm = pytoolbox.pyfm:file_management',
             'pyssh = pytoolbox.pyssh:ssh_management',
             'pynet = pytoolbox.pynet:net_cli',
+            'pyjdate = pytoolbox.pyjdate:jdate_cli',
         ],
     },
 )

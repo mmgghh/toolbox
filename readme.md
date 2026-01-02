@@ -12,6 +12,8 @@ toolbox is a package of useful Python scripts for managing files. In theory it s
   - generate_text_file: Generates some text files with each line containing a random sentence.
 - **SSH**
     - double_ssh_tunnel: Creates an ssh tunnel to server 1 and from there to server 2. Helps in situations when you want to use server 1 as a bridge to server 2 that has free access to internet. By running this function you can access internet through socks5://localhost:9999.
+- **Dates**
+  - pyjdate: Jalali/Gregorian current date, conversion, and period intervals.
 
 
 ## Instructions
