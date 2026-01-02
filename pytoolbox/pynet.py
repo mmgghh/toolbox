@@ -76,8 +76,10 @@ def sort_by_imdb_rate(source: Path, proxy: str | None):
             if 'No result found' in result:
                 rate = -1
             else:
-                rate = float(re.search(r'rate: (\d+(\.\d*)?)', result).group(1))
-
+                if rate_match := re.search(r'rate: (\d+(\.\d*)?)', result):
+                    rate = float(rate_match.group(1))
+                else:
+                    rate = -1
             targets.append((name if rate == -1 else result, rate))
             click.echo(result)
 
