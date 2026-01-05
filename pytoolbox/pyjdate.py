@@ -628,18 +628,18 @@ def interval(
         j_end = gregorian_to_jalali(*g_end)
         click.echo("Start:")
         click.echo(
-            f"  Gregorian: {format_datetime('gregorian', *g_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, start_time_provided)}"
+            f"  Gregorian: {format_datetime('gregorian', *g_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, True)}"
         )
         click.echo(
-            f"  Jalali:    {format_datetime('jalali', *j_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, start_time_provided)}"
+            f"  Jalali:    {format_datetime('jalali', *j_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, True)}"
         )
         click.echo(f"  Unix:      {format_unix_timestamp(start_dt)}")
         click.echo("End:")
         click.echo(
-            f"  Gregorian: {format_datetime('gregorian', *g_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, end_time_provided)}"
+            f"  Gregorian: {format_datetime('gregorian', *g_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, True)}"
         )
         click.echo(
-            f"  Jalali:    {format_datetime('jalali', *j_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, end_time_provided)}"
+            f"  Jalali:    {format_datetime('jalali', *j_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, True)}"
         )
         click.echo(f"  Unix:      {format_unix_timestamp(end_dt)}")
         return
@@ -678,14 +678,14 @@ def interval(
     g_end, j_end = convert_from(cal, *end_date)
 
     click.echo("Start:")
-    click.echo(f"  Gregorian: {format_date('gregorian', *g_start)}")
-    click.echo(f"  Jalali:    {format_date('jalali', *j_start)}")
+    click.echo(f"  Gregorian: {format_datetime('gregorian', *g_start, 0, 0, 0, 0, True)}")
+    click.echo(f"  Jalali:    {format_datetime('jalali', *j_start, 0, 0, 0, 0, True)}")
     start_ts = build_datetime(cal, *start_date, 0, 0, 0, 0, local_timezone())
     click.echo(f"  Unix:      {format_unix_timestamp(start_ts)}")
     click.echo("End:")
-    click.echo(f"  Gregorian: {format_date('gregorian', *g_end)}")
-    click.echo(f"  Jalali:    {format_date('jalali', *j_end)}")
-    end_ts = build_datetime(cal, *end_date, 0, 0, 0, 0, local_timezone())
+    click.echo(f"  Gregorian: {format_datetime('gregorian', *g_end, 23, 59, 59, 0, True)}")
+    click.echo(f"  Jalali:    {format_datetime('jalali', *j_end, 23, 59, 59, 0, True)}")
+    end_ts = build_datetime(cal, *end_date, 23, 59, 59, 0, local_timezone())
     click.echo(f"  Unix:      {format_unix_timestamp(end_ts)}")
 
 
