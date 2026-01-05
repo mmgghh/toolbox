@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import click
@@ -226,6 +226,226 @@ def format_date(calendar: str, year: int, month: int, day: int) -> str:
     return f"{year:04d}-{month:02d}-{day:02d} ({month_name(calendar, month)})"
 
 
+def format_datetime(
+    calendar: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int,
+    microsecond: int,
+    show_time: bool,
+) -> str:
+    base = f"{year:04d}-{month:02d}-{day:02d}"
+    if show_time or any((hour, minute, second, microsecond)):
+        time_part = f"{hour:02d}:{minute:02d}:{second:02d}"
+        if microsecond:
+            time_part = f"{time_part}.{microsecond:06d}"
+        return f"{base} {time_part} ({month_name(calendar, month)})"
+    return f"{base} ({month_name(calendar, month)})"
+
+
+def local_timezone() -> timezone:
+    tzinfo = datetime.now().astimezone().tzinfo
+    return tzinfo if tzinfo is not None else timezone.utc
+
+
+def validate_time(hour: int, minute: int, second: int, microsecond: int = 0) -> None:
+    if hour < 0 or hour > 23:
+        raise click.ClickException("Hour must be between 0 and 23.")
+    if minute < 0 or minute > 59:
+        raise click.ClickException("Minute must be between 0 and 59.")
+    if second < 0 or second > 59:
+        raise click.ClickException("Second must be between 0 and 59.")
+    if microsecond < 0 or microsecond > 999999:
+        raise click.ClickException("Microsecond must be between 0 and 999999.")
+
+
+def parse_timezone_offset(offset: str) -> timezone:
+    raw = offset.strip()
+    if raw.upper() == "Z":
+        return timezone.utc
+    sign = 1 if raw[0] == "+" else -1
+    payload = raw[1:]
+    hours = minutes = "00"
+    if ":" in payload:
+        hours, minutes = payload.split(":", 1)
+    elif len(payload) in (2, 4):
+        hours = payload[:2]
+        minutes = payload[2:] if len(payload) == 4 else "00"
+    else:
+        raise click.ClickException(f"Invalid timezone offset: {offset}")
+    delta = timedelta(hours=int(hours), minutes=int(minutes)) * sign
+    return timezone(delta)
+
+
+def normalize_calendar(calendar: str) -> str:
+    cal = calendar.lower()
+    if cal in ("g", "gregorian"):
+        return "gregorian"
+    if cal in ("j", "jalali"):
+        return "jalali"
+    raise click.ClickException(f"Unknown calendar: {calendar}")
+
+
+def parse_date_parts(calendar: str, date_part: str) -> tuple[int, int, int]:
+    raw = date_part.strip().replace(",", "")
+    if raw.isdigit() and len(raw) == 8:
+        return int(raw[:4]), int(raw[4:6]), int(raw[6:])
+    sep = "-" if "-" in raw else "/" if "/" in raw else None
+    if sep is None:
+        if calendar == "gregorian":
+            for fmt in ("%b %d %Y", "%B %d %Y", "%d %b %Y", "%d %B %Y"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                except ValueError:
+                    continue
+                return dt.year, dt.month, dt.day
+        raise click.ClickException(f"Invalid {calendar} date: {date_part}")
+    parts = raw.split(sep)
+    if len(parts) != 3:
+        raise click.ClickException(f"Invalid {calendar} date: {date_part}")
+    if len(parts[0]) == 4:
+        year, month, day = parts
+    elif len(parts[2]) == 4:
+        day, month, year = parts
+    else:
+        raise click.ClickException(f"Invalid {calendar} date: {date_part}")
+    return int(year), int(month), int(day)
+
+
+def split_datetime_parts(raw: str) -> tuple[str, str, str]:
+    date_part = raw
+    time_part = ""
+    tz_part = ""
+    if "T" in raw:
+        date_part, time_part = raw.split("T", 1)
+    elif " " in raw:
+        tokens = raw.split()
+        time_index = next((i for i, token in enumerate(tokens) if ":" in token), None)
+        if time_index is not None:
+            date_part = " ".join(tokens[:time_index])
+            time_part = tokens[time_index]
+            if time_index + 1 < len(tokens) and tokens[time_index + 1][0] in "+-":
+                time_part = f"{time_part}{tokens[time_index + 1]}"
+        else:
+            date_part = raw
+    if time_part:
+        if time_part.upper().endswith("Z"):
+            tz_part = "Z"
+            time_part = time_part[:-1]
+        else:
+            plus = time_part.rfind("+")
+            minus = time_part.rfind("-")
+            idx = max(plus, minus)
+            if idx > 0:
+                tz_part = time_part[idx:]
+                time_part = time_part[:idx]
+    return date_part, time_part, tz_part
+
+
+def parse_time_parts(time_part: str, value: str, calendar: str) -> tuple[int, int, int, int, bool]:
+    if not time_part:
+        return 0, 0, 0, 0, False
+    time_provided = True
+    microsecond = 0
+    if "." in time_part:
+        time_part, micro_str = time_part.split(".", 1)
+        micro_str = micro_str.ljust(6, "0")[:6]
+        microsecond = int(micro_str)
+    parts = time_part.split(":")
+    if len(parts) == 1:
+        hour = int(parts[0])
+        minute = 0
+        second = 0
+    elif len(parts) == 2:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = 0
+    elif len(parts) == 3:
+        hour = int(parts[0])
+        minute = int(parts[1])
+        second = int(parts[2])
+    else:
+        raise click.ClickException(f"Invalid {calendar} time: {value}")
+    return hour, minute, second, microsecond, time_provided
+
+
+def parse_full_date(calendar: str, value: str) -> tuple[int, int, int, int, int, int, int, timezone, bool]:
+    raw = value.strip()
+    date_part, time_part, tz_part = split_datetime_parts(raw)
+    year, month, day = parse_date_parts(calendar, date_part)
+    hour, minute, second, microsecond, time_provided = parse_time_parts(time_part, value, calendar)
+    tzinfo = parse_timezone_offset(tz_part) if tz_part else local_timezone()
+    return year, month, day, hour, minute, second, microsecond, tzinfo, time_provided
+
+
+def parse_epoch(value: str) -> datetime:
+    try:
+        ts = float(value.strip())
+    except ValueError as exc:
+        raise click.ClickException(f"Invalid unix timestamp: {value}") from exc
+    return datetime.fromtimestamp(ts, tz=local_timezone())
+
+
+def is_epoch_candidate(value: str) -> bool:
+    raw = value.strip()
+    if raw.startswith(("+", "-")):
+        raw = raw[1:]
+    if not raw:
+        return False
+    if "." in raw:
+        left, right = raw.split(".", 1)
+        return left.isdigit() and right.isdigit()
+    return raw.isdigit() and len(raw) >= 10
+
+
+def parse_interval_endpoint(calendar: str, value: str) -> tuple[datetime, bool]:
+    if is_epoch_candidate(value):
+        return parse_epoch(value), True
+    (
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        microsecond,
+        tzinfo,
+        time_provided,
+    ) = parse_full_date(calendar, value)
+    validate_date(calendar, year, month, day)
+    validate_time(hour, minute, second, microsecond)
+    dt = build_datetime(calendar, year, month, day, hour, minute, second, microsecond, tzinfo)
+    show_time = time_provided or any((hour, minute, second, microsecond))
+    return dt, show_time
+
+
+def build_datetime(
+    calendar: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+    second: int,
+    microsecond: int,
+    tzinfo: timezone,
+) -> datetime:
+    if calendar == "jalali":
+        year, month, day = jalali_to_gregorian(year, month, day)
+    tzinfo = tzinfo or local_timezone()
+    return datetime(year, month, day, hour, minute, second, microsecond, tzinfo=tzinfo)
+
+
+def format_unix_timestamp(dt: datetime) -> str:
+    timestamp = dt.timestamp()
+    if dt.microsecond:
+        return f"{timestamp:.6f}".rstrip("0").rstrip(".")
+    return str(int(timestamp))
+
+
 def convert_from(calendar: str, year: int, month: int, day: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     if calendar == "gregorian":
         j = gregorian_to_jalali(year, month, day)
@@ -242,58 +462,200 @@ def jdate_cli():
 @click.command()
 def current():
     """Print current date in both calendars."""
-    today = date.today()
-    g = (today.year, today.month, today.day)
+    now = datetime.now().astimezone().replace(microsecond=0)
+    g = (now.year, now.month, now.day)
     j = gregorian_to_jalali(*g)
-    click.echo(f"Gregorian: {format_date('gregorian', *g)}")
-    click.echo(f"Jalali:    {format_date('jalali', *j)}")
+    click.echo(
+        f"Gregorian: {format_datetime('gregorian', *g, now.hour, now.minute, now.second, 0, True)}"
+    )
+    click.echo(
+        f"Jalali:    {format_datetime('jalali', *j, now.hour, now.minute, now.second, 0, True)}"
+    )
+    click.echo(f"Unix:      {format_unix_timestamp(now)}")
 
 
 @click.command()
 @click.option(
     "-c",
     "--calendar",
-    type=click.Choice(["gregorian", "jalali"], case_sensitive=False),
+    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
     required=True,
-    help="Input calendar.",
+    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
 )
-@click.option("-y", "--year", type=int, required=True)
-@click.option("-m", "--month", type=str, required=True, help="Month number or name.")
-@click.option("-d", "--day", type=int, required=True)
-def convert(calendar: str, year: int, month: str, day: int):
-    """Convert a date between Jalali and Gregorian."""
-    cal = calendar.lower()
-    m = parse_month(month, cal)
-    validate_date(cal, year, m, day)
-    g, j = convert_from(cal, year, m, day)
-    click.echo(f"Gregorian: {format_date('gregorian', *g)}")
-    click.echo(f"Jalali:    {format_date('jalali', *j)}")
-
-
-@click.command()
 @click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali"], case_sensitive=False),
-    required=True,
-    help="Input calendar.",
+    "--full-date",
+    type=str,
+    required=False,
+    help=(
+        "Full date/time string. Examples: "
+        "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
+        "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
+    ),
 )
-@click.option("-y", "--year", type=int, required=True)
+@click.option(
+    "-e",
+    "--epoch",
+    type=str,
+    required=False,
+    help="Unix timestamp (seconds, optional fraction). Displayed in local timezone.",
+)
+@click.option("-y", "--year", type=int, required=False, help="Year number.")
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
-@click.option("-d", "--day", type=int, required=False)
-def interval(calendar: str, year: int, month: Optional[str], day: Optional[int]):
+@click.option("-d", "--day", type=int, required=False, help="Day of month.")
+@click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
+@click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
+@click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
+def convert(
+    calendar: str,
+    full_date: Optional[str],
+    epoch: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+):
+    """Convert a date between Jalali and Gregorian."""
+    cal = normalize_calendar(calendar)
+    if epoch:
+        if any(value is not None for value in (full_date, year, month, day, hour, minute, second)):
+            raise click.ClickException("Use --epoch alone; it is incompatible with other date inputs.")
+        dt = parse_epoch(epoch)
+        g = (dt.year, dt.month, dt.day)
+        j = gregorian_to_jalali(*g)
+        click.echo(
+            f"Gregorian: {format_datetime('gregorian', *g, dt.hour, dt.minute, dt.second, dt.microsecond, True)}"
+        )
+        click.echo(
+            f"Jalali:    {format_datetime('jalali', *j, dt.hour, dt.minute, dt.second, dt.microsecond, True)}"
+        )
+        click.echo(f"Unix:      {format_unix_timestamp(dt)}")
+        return
+    if full_date:
+        if any(value is not None for value in (year, month, day, hour, minute, second)):
+            raise click.ClickException("Use --full-date or -y/-m/-d options, not both.")
+        (
+            year,
+            m,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
+            tzinfo,
+            time_provided,
+        ) = parse_full_date(cal, full_date)
+        validate_date(cal, year, m, day)
+        validate_time(hour, minute, second, microsecond)
+    else:
+        if year is None or month is None or day is None:
+            raise click.ClickException("Year, month, and day are required when --full-date is not used.")
+        m = parse_month(month, cal)
+        validate_date(cal, year, m, day)
+        time_provided = any(value is not None for value in (hour, minute, second))
+        hour = hour or 0
+        minute = minute or 0
+        second = second or 0
+        microsecond = 0
+        tzinfo = local_timezone()
+        validate_time(hour, minute, second, microsecond)
+
+    g, j = convert_from(cal, year, m, day)
+    show_time = time_provided or any((hour, minute, second, microsecond))
+    click.echo(
+        f"Gregorian: {format_datetime('gregorian', *g, hour, minute, second, microsecond, show_time)}"
+    )
+    click.echo(
+        f"Jalali:    {format_datetime('jalali', *j, hour, minute, second, microsecond, show_time)}"
+    )
+    ts = build_datetime(cal, year, m, day, hour, minute, second, microsecond, tzinfo)
+    click.echo(f"Unix:      {format_unix_timestamp(ts)}")
+
+
+@click.command()
+@click.option(
+    "-c",
+    "--calendar",
+    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+    required=True,
+    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+)
+@click.option(
+    "-s",
+    "--start",
+    type=str,
+    required=False,
+    help=(
+        "Interval start (unix timestamp or full date/time string). "
+        "Must be provided with --end."
+    ),
+)
+@click.option(
+    "-e",
+    "--end",
+    type=str,
+    required=False,
+    help=(
+        "Interval end (unix timestamp or full date/time string). "
+        "Must be provided with --start."
+    ),
+)
+@click.option("-y", "--year", type=int, required=False, help="Year number.")
+@click.option("-m", "--month", type=str, required=False, help="Month number or name.")
+@click.option("-d", "--day", type=int, required=False, help="Day of month.")
+def interval(
+    calendar: str,
+    start: Optional[str],
+    end: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+):
     """Show period start/end in both calendars."""
-    cal = calendar.lower()
+    cal = normalize_calendar(calendar)
+    if (start is None) != (end is None):
+        raise click.ClickException("Start and end must be provided together.")
+    if start is not None and any(value is not None for value in (year, month, day)):
+        raise click.ClickException("Start/end are incompatible with year/month/day inputs.")
+
+    if start is not None:
+        start_dt, start_time_provided = parse_interval_endpoint(cal, start)
+        end_dt, end_time_provided = parse_interval_endpoint(cal, end)
+        g_start = (start_dt.year, start_dt.month, start_dt.day)
+        j_start = gregorian_to_jalali(*g_start)
+        g_end = (end_dt.year, end_dt.month, end_dt.day)
+        j_end = gregorian_to_jalali(*g_end)
+        click.echo("Start:")
+        click.echo(
+            f"  Gregorian: {format_datetime('gregorian', *g_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, start_time_provided)}"
+        )
+        click.echo(
+            f"  Jalali:    {format_datetime('jalali', *j_start, start_dt.hour, start_dt.minute, start_dt.second, start_dt.microsecond, start_time_provided)}"
+        )
+        click.echo(f"  Unix:      {format_unix_timestamp(start_dt)}")
+        click.echo("End:")
+        click.echo(
+            f"  Gregorian: {format_datetime('gregorian', *g_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, end_time_provided)}"
+        )
+        click.echo(
+            f"  Jalali:    {format_datetime('jalali', *j_end, end_dt.hour, end_dt.minute, end_dt.second, end_dt.microsecond, end_time_provided)}"
+        )
+        click.echo(f"  Unix:      {format_unix_timestamp(end_dt)}")
+        return
+
+    if year is None:
+        raise click.ClickException("Year is required when start/end are not provided.")
     if month is None and day is not None:
         raise click.ClickException("Day requires month.")
 
     if month is None:
-        start = (year, 1, 1)
+        start_date = (year, 1, 1)
         if cal == "gregorian":
-            end = (year, 12, 31)
+            end_date = (year, 12, 31)
         else:
             end_day = 30 if is_leap_jalali(year) else 29
-            end = (year, 12, end_day)
+            end_date = (year, 12, end_day)
     else:
         m = parse_month(month, cal)
         if day is None:
@@ -305,22 +667,26 @@ def interval(calendar: str, year: int, month: Optional[str], day: Optional[int])
                 month_days = [0, 31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
                 if is_leap_jalali(year):
                     month_days[12] = 30
-            start = (year, m, 1)
-            end = (year, m, month_days[m])
+            start_date = (year, m, 1)
+            end_date = (year, m, month_days[m])
         else:
             validate_date(cal, year, m, day)
-            start = (year, m, day)
-            end = (year, m, day)
+            start_date = (year, m, day)
+            end_date = (year, m, day)
 
-    g_start, j_start = convert_from(cal, *start)
-    g_end, j_end = convert_from(cal, *end)
+    g_start, j_start = convert_from(cal, *start_date)
+    g_end, j_end = convert_from(cal, *end_date)
 
     click.echo("Start:")
     click.echo(f"  Gregorian: {format_date('gregorian', *g_start)}")
     click.echo(f"  Jalali:    {format_date('jalali', *j_start)}")
+    start_ts = build_datetime(cal, *start_date, 0, 0, 0, 0, local_timezone())
+    click.echo(f"  Unix:      {format_unix_timestamp(start_ts)}")
     click.echo("End:")
     click.echo(f"  Gregorian: {format_date('gregorian', *g_end)}")
     click.echo(f"  Jalali:    {format_date('jalali', *j_end)}")
+    end_ts = build_datetime(cal, *end_date, 0, 0, 0, 0, local_timezone())
+    click.echo(f"  Unix:      {format_unix_timestamp(end_ts)}")
 
 
 for cmd in (current, convert, interval):
