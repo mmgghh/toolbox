@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import click
@@ -446,6 +446,139 @@ def format_unix_timestamp(dt: datetime) -> str:
     return str(int(timestamp))
 
 
+def format_total_value(value: float) -> str:
+    if value.is_integer():
+        return str(int(value))
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def days_in_month(calendar: str, year: int, month: int) -> int:
+    if calendar == "gregorian":
+        month_days = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        if is_leap_gregorian(year):
+            month_days[2] = 29
+    else:
+        month_days = [0, 31, 31, 31, 31, 31, 31, 30, 30, 30, 30, 30, 29]
+        if is_leap_jalali(year):
+            month_days[12] = 30
+    return month_days[month]
+
+
+def calendar_date_from_gregorian(calendar: str, g_date: date) -> tuple[int, int, int]:
+    if calendar == "gregorian":
+        return g_date.year, g_date.month, g_date.day
+    return gregorian_to_jalali(g_date.year, g_date.month, g_date.day)
+
+
+def diff_calendar_components(
+    calendar: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> tuple[int, int, int, int, int, int]:
+    start_local = start_dt.astimezone(local_timezone()).replace(microsecond=0)
+    end_local = end_dt.astimezone(local_timezone()).replace(microsecond=0)
+    if end_local < start_local:
+        start_local, end_local = end_local, start_local
+
+    start_time_seconds = start_local.hour * 3600 + start_local.minute * 60 + start_local.second
+    end_time_seconds = end_local.hour * 3600 + end_local.minute * 60 + end_local.second
+    end_date = end_local.date()
+    if end_time_seconds < start_time_seconds:
+        end_date = (end_local - timedelta(days=1)).date()
+        end_time_seconds += 86400
+    time_diff = end_time_seconds - start_time_seconds
+    hours = time_diff // 3600
+    minutes = (time_diff % 3600) // 60
+    seconds = time_diff % 60
+
+    start_y, start_m, start_d = calendar_date_from_gregorian(calendar, start_local.date())
+    end_y, end_m, end_d = calendar_date_from_gregorian(calendar, end_date)
+    if end_d < start_d:
+        if end_m == 1:
+            end_y -= 1
+            end_m = 12
+        else:
+            end_m -= 1
+        end_d += days_in_month(calendar, end_y, end_m)
+    if end_m < start_m:
+        end_y -= 1
+        end_m += 12
+    years = end_y - start_y
+    months = end_m - start_m
+    days = end_d - start_d
+    return years, months, days, int(hours), int(minutes), int(seconds)
+
+
+def parse_input_datetime(
+    calendar: str,
+    full_date: Optional[str],
+    epoch: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+) -> datetime:
+    if epoch:
+        if any(value is not None for value in (full_date, year, month, day, hour, minute, second)):
+            raise click.ClickException("Use --epoch alone; it is incompatible with other date inputs.")
+        return parse_epoch(epoch)
+    if full_date:
+        if any(value is not None for value in (year, month, day, hour, minute, second)):
+            raise click.ClickException("Use --full-date or -y/-m/-d options, not both.")
+        (
+            year,
+            m,
+            day,
+            hour,
+            minute,
+            second,
+            microsecond,
+            tzinfo,
+            _time_provided,
+        ) = parse_full_date(calendar, full_date)
+        validate_date(calendar, year, m, day)
+        validate_time(hour, minute, second, microsecond)
+        return build_datetime(calendar, year, m, day, hour, minute, second, microsecond, tzinfo)
+    if year is None or month is None or day is None:
+        raise click.ClickException("Year, month, and day are required when --full-date is not used.")
+    m = parse_month(month, calendar)
+    validate_date(calendar, year, m, day)
+    hour = hour or 0
+    minute = minute or 0
+    second = second or 0
+    validate_time(hour, minute, second, 0)
+    return build_datetime(calendar, year, m, day, hour, minute, second, 0, local_timezone())
+
+
+def print_distance(start_dt: datetime, end_dt: datetime) -> None:
+    start_utc = start_dt.astimezone(timezone.utc)
+    end_utc = end_dt.astimezone(timezone.utc)
+    if end_utc < start_utc:
+        start_utc, end_utc = end_utc, start_utc
+        start_dt, end_dt = end_dt, start_dt
+    delta = end_utc - start_utc
+    total_seconds = delta.total_seconds()
+    total_days = total_seconds / 86400
+
+    g_parts = diff_calendar_components("gregorian", start_dt, end_dt)
+    j_parts = diff_calendar_components("jalali", start_dt, end_dt)
+
+    click.echo(
+        "Gregorian: "
+        f"{g_parts[0]} years, {g_parts[1]} months, {g_parts[2]} days, "
+        f"{g_parts[3]} hours, {g_parts[4]} minutes, {g_parts[5]} seconds"
+    )
+    click.echo(
+        "Jalali:    "
+        f"{j_parts[0]} years, {j_parts[1]} months, {j_parts[2]} days, "
+        f"{j_parts[3]} hours, {j_parts[4]} minutes, {j_parts[5]} seconds"
+    )
+    click.echo(f"Total days:    {format_total_value(total_days)}")
+    click.echo(f"Total seconds: {format_total_value(total_seconds)}")
+
+
 def convert_from(calendar: str, year: int, month: int, day: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
     if calendar == "gregorian":
         j = gregorian_to_jalali(year, month, day)
@@ -689,7 +822,92 @@ def interval(
     click.echo(f"  Unix:      {format_unix_timestamp(end_ts)}")
 
 
-for cmd in (current, convert, interval):
+@click.command()
+@click.option(
+    "-c",
+    "--calendar",
+    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+    required=True,
+    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+)
+@click.option(
+    "--full-date",
+    type=str,
+    required=False,
+    help=(
+        "Full date/time string. Examples: "
+        "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
+        "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
+    ),
+)
+@click.option(
+    "-e",
+    "--epoch",
+    type=str,
+    required=False,
+    help="Unix timestamp (seconds, optional fraction). Displayed in local timezone.",
+)
+@click.option("-y", "--year", type=int, required=False, help="Year number.")
+@click.option("-m", "--month", type=str, required=False, help="Month number or name.")
+@click.option("-d", "--day", type=int, required=False, help="Day of month.")
+@click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
+@click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
+@click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
+def distance(
+    calendar: str,
+    full_date: Optional[str],
+    epoch: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+):
+    """Show time difference between now and the input date."""
+    cal = normalize_calendar(calendar)
+    input_dt = parse_input_datetime(cal, full_date, epoch, year, month, day, hour, minute, second)
+    now = datetime.now().astimezone()
+    print_distance(now, input_dt)
+
+
+@click.command(name="distance-between")
+@click.option(
+    "-c",
+    "--calendar",
+    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+    required=True,
+    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+)
+@click.option(
+    "-s",
+    "--start",
+    type=str,
+    required=True,
+    help=(
+        "Start date/time (unix timestamp or full date/time string). "
+        "Examples: '2026-01-04 10:43:45+03:30', '2026-01-04', '1404/10/14 10:44:46'."
+    ),
+)
+@click.option(
+    "-e",
+    "--end",
+    type=str,
+    required=True,
+    help=(
+        "End date/time (unix timestamp or full date/time string). "
+        "Examples: '2026-02-01 08:00', '2026-02-01', '1404/11/12 12:00:00'."
+    ),
+)
+def distance_between(calendar: str, start: str, end: str):
+    """Show time difference between two dates."""
+    cal = normalize_calendar(calendar)
+    start_dt, _ = parse_interval_endpoint(cal, start)
+    end_dt, _ = parse_interval_endpoint(cal, end)
+    print_distance(start_dt, end_dt)
+
+
+for cmd in (current, convert, interval, distance, distance_between):
     jdate_cli.add_command(cmd)
 
 
