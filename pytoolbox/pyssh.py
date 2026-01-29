@@ -1,7 +1,10 @@
+"""SSH helper commands and tunnel management."""
+
+# pylint: disable=line-too-long
+
 import multiprocessing
 import os
 import re
-import signal
 import socket
 import subprocess
 import time
@@ -17,10 +20,12 @@ TMP_DIR.mkdir(exist_ok=True)
 
 
 def temp_file(name: str) -> Path:
+    """Return a temp file path inside the module temp directory."""
     return TMP_DIR / name
 
 
 def escape_special_chars(unix_path: str) -> str:
+    """Escape shell-sensitive characters in a unix path."""
     special_chars = r'[\s(){}[\]<>|;&*?$!`\'"\\]'
 
     return re.sub(special_chars, r'\\\g<0>', unix_path)
@@ -54,6 +59,7 @@ def check_socks5_proxy(
         host: str, port: int,
         address='https://www.facebook.com'
 ):
+    """Check if a SOCKS5 proxy can reach the given address."""
     # Set the environment variable for the proxy
     os_https_proxy_before = os.environ.get('https_proxy')
     os.environ['https_proxy'] = f'socks5h://{host}:{port}'
@@ -72,7 +78,8 @@ def check_socks5_proxy(
 
 
 def kill_by_pid(pid: str):
-    subprocess.run(['kill', '-9', pid])
+    """Terminate a process by PID."""
+    subprocess.run(['kill', '-9', pid], check=False)
 
 
 def double_tunnel_base(
@@ -84,6 +91,7 @@ def double_tunnel_base(
     pass1_file: str = "",
     pass2_file: str = ""
 ):
+    """Start a chained SSH tunnel (server1 -> server2) with a SOCKS proxy."""
     # Check if the ports are available
     if not check_port(local_port1) or not check_port(local_port2):
         return False
@@ -98,7 +106,7 @@ def double_tunnel_base(
     if temp_file('.ssh1_pid').exists():
         raise click.ClickException('.ssh1_pid exists before!')
     ssh1 = subprocess.Popen(ssh1_cmd)
-    with open(temp_file('.ssh1_pid'), 'w') as ssh1file:
+    with open(temp_file('.ssh1_pid'), 'w', encoding='utf-8') as ssh1file:
         ssh1file.write(str(ssh1.pid))
     # Wait for a few seconds to establish the first tunnel
     time.sleep(2)
@@ -110,13 +118,14 @@ def double_tunnel_base(
     if temp_file('.ssh2_pid').exists():
         raise click.ClickException('.ssh2_pid exists before!')
     ssh2 = subprocess.Popen(ssh2_cmd)
-    with open(temp_file('.ssh2_pid'), 'w') as ssh2file:
+    with open(temp_file('.ssh2_pid'), 'w', encoding='utf-8') as ssh2file:
         ssh2file.write(str(ssh2.pid))
     # Print a message to indicate the function is running
     click.echo(
         f"Double SSH tunnel is running. You can access internet through socks5://{local_host}:{local_port2}\n"
         f"Press Ctrl-C to stop."
         )
+    return True
 
 
 @click.command()
@@ -156,6 +165,7 @@ def double_tunnel(
     After calling this function you can use socks5://localhost:<local-port-2> or
     socks5://<your-ip>:<local-port-2> if public is true and enjoy free internet.
     """
+    _ = verbose
     help_text = (
         '\nUsage: pyssh double-tunnel [OPTIONS]'
         '\nTry pyssh double-tunnel --help for help.'
@@ -195,15 +205,14 @@ def double_tunnel(
                 time.sleep(5)  # Check the proxy every 5 seconds
                 if check_socks5_proxy('localhost', lp2):
                     continue
-                else:
-                    click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
-                    kill_ssh_1_and_2_processes()
-                    time.sleep(1)
-                    process = multiprocessing.Process(
-                        target=double_tunnel_base,
-                        args=(u1, h1, p1, u2, h2, p2, lp1, lp2, public, pass1_temp_file, pass2_temp_file)
-                    )
-                    process.start()
+                click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
+                kill_ssh_1_and_2_processes()
+                time.sleep(1)
+                process = multiprocessing.Process(
+                    target=double_tunnel_base,
+                    args=(u1, h1, p1, u2, h2, p2, lp1, lp2, public, pass1_temp_file, pass2_temp_file)
+                )
+                process.start()
         finally:
             cleanup()
     try:
@@ -222,6 +231,7 @@ def tunnel_base(
     public: bool = True,
     pass_file: str = "",
 ):
+    """Start a single-hop SSH SOCKS proxy."""
     local_host = '0.0.0.0' if public else 'localhost'
     ssh_cmd = ['ssh', '-D', f'{local_host}:{local_port}', '-N', f"{user}@{host}", '-p', str(port)]
     if pass_file:
@@ -230,7 +240,7 @@ def tunnel_base(
     if temp_file('.ssh_pid').exists():
         raise click.ClickException('.ssh_pid exists before!')
     ssh = subprocess.Popen(ssh_cmd)
-    with open(temp_file('.ssh_pid'), 'w') as ssh_file:
+    with open(temp_file('.ssh_pid'), 'w', encoding='utf-8') as ssh_file:
         ssh_file.write(str(ssh.pid))
 
     # Print a message to indicate the function is running
@@ -271,6 +281,7 @@ def tunnel(
     After calling this function you can use socks5://localhost:<local-port> or
     socks5://<your-ip>:<local-port> if public is true and enjoy free internet.
     """
+    _ = verbose
     help_text = (
         '\nUsage: pyssh tunnel [OPTIONS]'
         '\nTry pyssh tunnel --help for help.'
@@ -278,13 +289,12 @@ def tunnel(
     if server is None and server_conf is None:
         raise click.ClickException(f'Exactly one of server or server1_conf is required!{help_text}')
     try:
-        user, password, host, port = extract_user_host_port(server or open(server_conf, 'r').readline())
+        user, password, host, port = extract_user_host_port(server or read_server_conf_line(server_conf))
     except ValueError as e:
         raise click.ClickException(str(e) + help_text)
-    else:
-        pass_temp_file = str((temp_file('.tmp_p')).absolute())
-        with open(pass_temp_file, 'w') as password_file:
-            password_file.write(password)
+    pass_temp_file = str((temp_file('.tmp_p')).absolute())
+    with open(pass_temp_file, 'w', encoding='utf-8') as password_file:
+        password_file.write(password)
 
     def kill_ssh_process():
         for f in (temp_file('.ssh_pid'),):
@@ -303,15 +313,14 @@ def tunnel(
                 time.sleep(5)  # Check the proxy every 5 seconds
                 if check_socks5_proxy('localhost', local_port):
                     continue
-                else:
-                    click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
-                    kill_ssh_process()
-                    time.sleep(1)
-                    process = multiprocessing.Process(
-                        target=tunnel_base,
-                        args=(user, host, port, local_port, public, pass_temp_file)
-                    )
-                    process.start()
+                click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
+                kill_ssh_process()
+                time.sleep(1)
+                process = multiprocessing.Process(
+                    target=tunnel_base,
+                    args=(user, host, port, local_port, public, pass_temp_file)
+                )
+                process.start()
         finally:
             cleanup()
     try:
@@ -366,6 +375,7 @@ def rsync_dir(
 
 @click.group()
 def ssh_management():
+    """CLI group for SSH helpers."""
     pass
 
 

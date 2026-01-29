@@ -1,4 +1,6 @@
-from setuptools import setup, find_packages
+"""Package setup for pytoolbox."""
+
+from setuptools import find_packages, setup
 
 setup(
     name='pytoolbox',

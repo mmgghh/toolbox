@@ -1,8 +1,13 @@
+"""File management utilities and CLI commands."""
+
+# pylint: disable=line-too-long
+
 import math
 import os
 import random
 import re
 import shutil
+import sys
 from pathlib import Path
 from string import ascii_letters
 from typing import Literal, Optional
@@ -14,18 +19,18 @@ from pytoolbox.data import sentences, PATTERNS
 
 
 def get_size(path: Path) -> int:
+    """Return total size in bytes for a file or directory tree."""
     if path.is_file():
         return os.path.getsize(path)
-    else:
-        total_size = 0
-        for dir_path, dir_names, filenames in os.walk(path):
-            for f in filenames:
-                fp = os.path.join(dir_path, f)
-                # skip if it is symbolic link
-                if not os.path.islink(fp):
-                    total_size += os.path.getsize(fp)
+    total_size = 0
+    for dir_path, _, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dir_path, f)
+            # skip if it is symbolic link
+            if not os.path.islink(fp):
+                total_size += os.path.getsize(fp)
 
-        return total_size
+    return total_size
 
 
 def mkdirs(
@@ -50,12 +55,13 @@ def mkdirs(
             f'Directory {e.filename} already exists! '
             f'Use a unique prefix.', err=True
         )
-        exit(-1)
+        sys.exit(1)
 
     return dirs
 
 
 def split_based_on_count(dirs: dict[int, Path], files_or_dirs: list[Path], verbose: int):
+    """Split files into directories based on count."""
     start_from = min(dirs.keys())
     n_partition = len(dirs)
     # Move files into directories
@@ -82,6 +88,7 @@ def split_based_on_count(dirs: dict[int, Path], files_or_dirs: list[Path], verbo
 
 
 def split_based_on_size(dirs: dict[int, Path], files_or_dirs: list[Path], verbose: int):
+    """Split files into directories based on size."""
     files_moved = 0
     sored_files = sorted(
         [(f, get_size(f)) for f in files_or_dirs],
@@ -112,6 +119,7 @@ def split_to_n_dir(
         pattern: str, dir_prefix: str, split_based_on: Literal['count', 'size'],
         n_partition: int, source: Path, destination: Path, verbose: int
 ):
+    """Split files into a fixed number of directories."""
     start_from = 1
     dirs = mkdirs(start_from, n_partition, destination, dir_prefix)
     # Get all files in source directory that match the regex pattern
@@ -127,6 +135,7 @@ def split_based_on_file_count(
         pattern: str, dir_prefix: str, file_count: int,
         source: Path, destination: Path, verbose: int
 ):
+    """Split files into directories by a target file count."""
     start_from = 1
     # Get all files in source directory that match the regex pattern.
     files_or_dirs = [f for f in source.iterdir() if re.search(pattern, f.name)]
@@ -156,6 +165,7 @@ def split_based_on_dir_size(
         pattern: str, dir_prefix: str, directory_size: int,
         source: Path, destination: Path, verbose: int, threshold=0.05
 ):
+    """Split files into directories by approximate size in MB."""
 
     start_from = 1
     # Get all files in source directory that match the regex pattern.
@@ -259,21 +269,25 @@ def partition(pattern: str, dir_prefix: str, split_based_on: Literal['count', 's
 
     # (split_percentage, split_size, split_count, partitions)
     if partitions:
-        return split_to_n_dir(
+        split_to_n_dir(
             pattern, dir_prefix, split_based_on,
             partitions, source, destination, verbose
         )
+        return None
     if split_count:
-        return split_based_on_file_count(
+        split_based_on_file_count(
             pattern, dir_prefix, split_count, source, destination, verbose
         )
+        return None
     if split_size:
-        return split_based_on_dir_size(
+        split_based_on_dir_size(
             pattern, dir_prefix, split_size,
             source, destination, verbose
         )
+        return None
 
     click.echo('Not implemented error.', err=True)
+    return None
 
 
 @click.command()
@@ -365,7 +379,7 @@ def merge(
 @click.option('-r', '--replace', type=click.STRING, required=True, prompt=True,
               help='A replacement string with optional backref support.')
 @click.option('-v', '--verbose', count=True)
-def batch_find_replace(dir: Path, extension: list[str], find: str, replace: str, verbose: int):
+def batch_find_replace(directory: Path, extension: list[str], find: str, replace: str, verbose: int):
     """
     Finds and replaces all the matching texts with replacement string in all files
     with target extensions in target directory.
@@ -379,9 +393,9 @@ def batch_find_replace(dir: Path, extension: list[str], find: str, replace: str,
 
     total_num_replacements = 0
     total_files_changed = 0
-    for file_path in dir.iterdir():
+    for file_path in directory.iterdir():
         if file_path.suffix.lstrip('.') in extension:
-            with file_path.open('r+') as file:
+            with file_path.open('r+', encoding='utf-8') as file:
                 content = file.read()
                 new_content, num_replacements = pattern.subn(replace, content)
 
@@ -417,7 +431,15 @@ def batch_find_replace(dir: Path, extension: list[str], find: str, replace: str,
                    'in `/path/to/dir` will be processed. If depth is 1 files/dirs in `path/to/dir/*/` also '
                    'will be processed. If depth is 2 files/dirs in `path/to/dir/*/*/` also will be processed and so on.')
 @click.option('-v', '--verbose', count=True)
-def batch_rename(dir: Path, find: str, replace: str, include_dirs: bool, exclude_files: bool, depth: int, verbose: int):
+def batch_rename(
+    directory: Path,
+    find: str,
+    replace: str,
+    include_dirs: bool,
+    exclude_files: bool,
+    depth: int,
+    verbose: int,
+):
     """
     Finds and replaces all matching texts in files/directories name with replacement string
     in target directory and its subdirectories. Directories will not be renamed unless --include-dirs flag is set.
@@ -432,7 +454,7 @@ def batch_rename(dir: Path, find: str, replace: str, include_dirs: bool, exclude
     total_rename = 0
 
     for level in range(depth, -1, -1):  # loop over all levels from depth to 0
-        for file_path in dir.glob(f'{"*/" * level}*'):  # use glob with level parameter
+        for file_path in directory.glob(f'{"*/" * level}*'):  # use glob with level parameter
             file_path = Path(file_path)  # convert to Path object
             if include_dirs is False and file_path.is_dir():
                 continue
@@ -484,7 +506,7 @@ def generate_text_file(
             content += random.sample(sentences, k=min(num_sentences - content_length, len(sentences)))
 
         # Write the content to the file in the directory
-        with open(directory / file_name, 'w') as f:
+        with open(directory / file_name, 'w', encoding='utf-8') as f:
             f.write('\n'.join(content))
 
         # Log the file name and the number of lines if verbose level is 2
@@ -493,65 +515,6 @@ def generate_text_file(
     # Log the directory and the number of files if verbose level is 1 or more
     if verbose >= 1:
         click.echo(f"Generated {num_files} files in {directory}.")
-
-
-import click
-import re
-from pathlib import Path
-
-
-@click.command()
-@click.option('--pattern', default='.*',
-              help='Regular expression to filter only matching links.')
-@click.option('-s', '--source', required=True, prompt=True,
-              type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path))
-@click.option('-d', '--destination',
-              type=click.Path(exists=True, file_okay=False, writable=True, path_type=Path))
-@click.option('--overwrite', is_flag=True,
-              help='If this flag is set, existing links.txt will be deleted and only new extracted links '
-                   'will be written into the file.')
-@click.option('-v', '--verbose', count=True)
-def extract_links(pattern: str, source: Path, destination: Path, verbose: int, overwrite: bool):
-    """
-    Extracts all the links from a source file and writes them into a file named links.txt in the destination directory.
-
-    If a links.txt file already exists, new extracted links will be appended to the file.
-    If a regex pattern is provided, only matching links will be extracted.
-    """
-    if not destination:
-        destination = source.parent
-
-    # Compile the regex pattern
-    match_pattern = re.compile(pattern)
-
-    # Open the source file and read its content
-    with open(source) as f:
-        content = f.read()
-
-    # Find all the links in the content
-    links = re.findall(r'(https?://[^\"|\'| ]+)', content)
-
-    exclude_pattern = re.compile(r'^.*((\.(js|css|html|org|com|ir)(\?.*)?)|/)$')
-    # Filter the links by the pattern
-    links = [
-        link
-        for link in links
-        if match_pattern.match(link) and not exclude_pattern.match(link)
-    ]
-
-    # Open the destination file in append mode
-    output_file = destination / 'links.txt'
-    if overwrite:
-        output_file.unlink(missing_ok=True)
-
-    with open(output_file, 'a') as f:
-        # Write each link in a new line
-        for link in links:
-            f.write(link + '\n')
-
-    # Print some feedback if verbose is enabled
-    if verbose > 0:
-        click.echo(f'Extracted {len(links)} links from {source} to {destination / "links.txt"}')
 
 
 @click.command()
@@ -580,7 +543,7 @@ def extract_links(pattern: str, source: str, destination: Path, verbose: int, ov
     # Check if the source is a url or a file path
     if source.startswith('http'):  # If it is a url
         # Use requests to get the content of the url
-        response = requests.get(source)
+        response = requests.get(source, timeout=10)
         if response.status_code == 200:  # If the request is successful
             content = response.text
         else:  # If the request fails
@@ -590,7 +553,7 @@ def extract_links(pattern: str, source: str, destination: Path, verbose: int, ov
         source = Path(source)  # Convert it to a Path object
         if source.exists() and source.is_file() and os.access(source, os.R_OK):  # If it is a valid file
             # Open the source file and read its content
-            with open(source) as f:
+            with open(source, encoding='utf-8') as f:
                 content = f.read()
         else:  # If it is not a valid file
             click.echo(f'{source} is not a valid file path.', err=True)
@@ -612,7 +575,7 @@ def extract_links(pattern: str, source: str, destination: Path, verbose: int, ov
     if overwrite:
         output_file.unlink(missing_ok=True)
 
-    with open(output_file, 'a') as f:
+    with open(output_file, 'a', encoding='utf-8') as f:
         # Write each link in a new line
         for link in links:
             f.write(link + '\n')
@@ -624,6 +587,7 @@ def extract_links(pattern: str, source: str, destination: Path, verbose: int, ov
 
 @click.group()
 def file_management():
+    """CLI group for file management commands."""
     pass
 
 
