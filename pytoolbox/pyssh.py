@@ -32,12 +32,13 @@ def check_port(port):
         return s.connect_ex(('localhost', port)) != 0
 
 
-def extract_user_host_port(server: str) -> tuple[str, str, str, int]:
-    match = re.match(r"([\w:]+)@([\w\-.]+):(\d+)", server)
+def extract_user_host_port(server: str) -> tuple[str, str | None, str, int]:
+    server = server.strip()
+    match = re.match(r"([^@]+)@([^:]+):(\d+)$", server)
     if match:
-        user_pass = match.group(1)
+        user_pass: str = match.group(1)
         if ':' in user_pass:
-            user, password = user_pass.split(':')
+            user, password = user_pass.split(':', 1)
         else:
             user, password = user_pass, None
         host = match.group(2)
