@@ -9,7 +9,7 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import click
 import requests
@@ -37,7 +37,7 @@ def check_port(port):
         return s.connect_ex(('localhost', port)) != 0
 
 
-def extract_user_host_port(server: str) -> tuple[str, str | None, str, int]:
+def extract_user_host_port(server: str) -> tuple[str, Union[str, None], str, int]:
     server = server.strip()
     match = re.match(r"([^@]+)@([^:]+):(\d+)$", server)
     if match:
@@ -79,7 +79,7 @@ def check_socks5_proxy(
 
 def kill_by_pid(pid: str):
     """Terminate a process by PID."""
-    subprocess.run(['kill', '-9', pid], check=False)
+    subprocess.run(['kill', '-9', pid])
 
 
 def double_tunnel_base(
@@ -125,7 +125,6 @@ def double_tunnel_base(
         f"Double SSH tunnel is running. You can access internet through socks5://{local_host}:{local_port2}\n"
         f"Press Ctrl-C to stop."
         )
-    return True
 
 
 @click.command()
@@ -289,7 +288,7 @@ def tunnel(
     if server is None and server_conf is None:
         raise click.ClickException(f'Exactly one of server or server1_conf is required!{help_text}')
     try:
-        user, password, host, port = extract_user_host_port(server or read_server_conf_line(server_conf))
+        user, password, host, port = extract_user_host_port(server or open(server_conf, 'r').readline())
     except ValueError as e:
         raise click.ClickException(str(e) + help_text)
     pass_temp_file = str((temp_file('.tmp_p')).absolute())
