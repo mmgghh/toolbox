@@ -1,3 +1,7 @@
+"""Shared data constants for pytoolbox."""
+
+# pylint: disable=line-too-long
+
 sentences = (
     "The longest time between two twins being born is 87 days.",
     "The world’s deepest postbox is in Susami Bay in Japan. It’s 10 meters underwater.",

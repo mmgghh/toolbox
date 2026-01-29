@@ -1,3 +1,7 @@
+"""Jalali/Gregorian date utilities and CLI commands."""
+
+# pylint: disable=line-too-long,missing-function-docstring
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
@@ -111,8 +115,8 @@ def is_leap_jalali(year: int) -> bool:
         jp = jm
     n = year - jp
     leap_j += n // 33 * 8 + (n % 33 + 3) // 4
-    if jump - n < 6:
-        n = n - jump + (jump + 4) // 33 * 33
+    if jump - n < 6: # type: ignore
+        n = n - jump + (jump + 4) // 33 * 33 # type: ignore
     leap = ((n + 1) % 33 - 1) % 4
     if leap == -1:
         leap = 4
@@ -248,7 +252,9 @@ def format_datetime(
 
 def local_timezone() -> timezone:
     tzinfo = datetime.now().astimezone().tzinfo
-    return tzinfo if tzinfo is not None else timezone.utc
+    if tzinfo is not None and isinstance(tzinfo, timezone):
+        return tzinfo
+    return timezone.utc
 
 
 def validate_time(hour: int, minute: int, second: int, microsecond: int = 0) -> None:
@@ -753,8 +759,8 @@ def interval(
         raise click.ClickException("Start/end are incompatible with year/month/day inputs.")
 
     if start is not None:
-        start_dt, start_time_provided = parse_interval_endpoint(cal, start)
-        end_dt, end_time_provided = parse_interval_endpoint(cal, end)
+        start_dt, _start_time_provided = parse_interval_endpoint(cal, start)
+        end_dt, _end_time_provided = parse_interval_endpoint(cal, end) # type: ignore
         g_start = (start_dt.year, start_dt.month, start_dt.day)
         j_start = gregorian_to_jalali(*g_start)
         g_end = (end_dt.year, end_dt.month, end_dt.day)
