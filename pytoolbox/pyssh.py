@@ -145,13 +145,16 @@ def double_tunnel_base(
 @click.option('-v', '--verbose', count=True, help='increase verbosity')
 @click.option('--reconnecting', is_flag=True, default=False, type=click.BOOL,
               help="If true, the socks proxy will be checked every 5 seconds and the tunnel will be reset if necessary.")
+@click.option('--check-url', default='https://www.facebook.com',
+              help='URL used to verify proxy connectivity.')
 def double_tunnel(
         server1: str, server2: str,
         server1_conf: Optional[Path], server2_conf: Optional[Path],
         lp1: int, lp2: int,
         public: bool,
         verbose: int,
-        reconnecting: bool
+        reconnecting: bool,
+        check_url: str,
 ):
     """
     This function creates a socks proxy that routes the traffic from your local machine to server 2 via server 1.
@@ -202,9 +205,11 @@ def double_tunnel(
         try:
             while True:
                 time.sleep(5)  # Check the proxy every 5 seconds
-                if check_socks5_proxy('localhost', lp2):
+                if check_socks5_proxy('localhost', lp2, check_url):
                     continue
-                click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
+                click.echo(
+                    f"{check_url} is not accessible through the SOCKS proxy. Restarting the tunnel..."
+                )
                 kill_ssh_1_and_2_processes()
                 time.sleep(1)
                 process = multiprocessing.Process(
@@ -262,13 +267,16 @@ def tunnel_base(
 @click.option('-v', '--verbose', count=True, help='increase verbosity')
 @click.option('--reconnecting', is_flag=True, default=False, type=click.BOOL,
               help="If true, the socks proxy will be checked every 5 seconds and the tunnel will be reset if necessary.")
+@click.option('--check-url', default='https://www.facebook.com',
+              help='URL used to verify proxy connectivity.')
 def tunnel(
         server: str,
         server_conf: Optional[Path],
         local_port: int,
         public: bool,
         verbose: int,
-        reconnecting: bool
+        reconnecting: bool,
+        check_url: str,
 ):
     """
     This function creates a socks proxy that routes the traffic from your local machine to a remote server.
@@ -310,9 +318,11 @@ def tunnel(
         try:
             while True:
                 time.sleep(5)  # Check the proxy every 5 seconds
-                if check_socks5_proxy('localhost', local_port):
+                if check_socks5_proxy('localhost', local_port, check_url):
                     continue
-                click.echo("Facebook is not accessible through the SOCKS proxy. Restarting the tunnel...")
+                click.echo(
+                    f"{check_url} is not accessible through the SOCKS proxy. Restarting the tunnel..."
+                )
                 kill_ssh_process()
                 time.sleep(1)
                 process = multiprocessing.Process(
