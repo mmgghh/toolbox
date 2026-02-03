@@ -20,6 +20,76 @@ import click
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
+MONTH_NAME_PATTERN = (
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|"
+    r"Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|"
+    r"Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)"
+)
+URL_PATTERN = r"\b(?:https?://|ftp://|www\.)[^\s<>'\"\\)\]]+"
+EMAIL_PATTERN = r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
+IPV4_PATTERN = r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b"
+IPV6_PATTERN = (
+    r"\b(?:"
+    r"(?:[A-Fa-f0-9]{1,4}:){7}[A-Fa-f0-9]{1,4}|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,7}:|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,5}(?::[A-Fa-f0-9]{1,4}){1,2}|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,4}(?::[A-Fa-f0-9]{1,4}){1,3}|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,3}(?::[A-Fa-f0-9]{1,4}){1,4}|"
+    r"(?:[A-Fa-f0-9]{1,4}:){1,2}(?::[A-Fa-f0-9]{1,4}){1,5}|"
+    r"[A-Fa-f0-9]{1,4}:(?:(?::[A-Fa-f0-9]{1,4}){1,6})|"
+    r":(?:(?::[A-Fa-f0-9]{1,4}){1,7}|:)"
+    r")\b"
+)
+IP_PATTERN = rf"(?:{IPV4_PATTERN}|{IPV6_PATTERN})"
+PHONE_PATTERN = r"\b(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}\b"
+ZIP_PATTERN = r"\b\d{5}(?:-\d{4})?\b"
+POSTAL_PATTERN = (
+    r"\b(?:"
+    r"\d{5}(?:-\d{4})?|"
+    r"[A-Za-z]\d[A-Za-z][ -]?\d[A-Za-z]\d|"
+    r"[A-Za-z]{1,2}\d[A-Za-z\d]?\s?\d[A-Za-z]{2}"
+    r")\b"
+)
+DATE_PATTERN = (
+    rf"\b(?:"
+    rf"\d{{4}}[-/]\d{{2}}[-/]\d{{2}}|"
+    rf"\d{{2}}[-/]\d{{2}}[-/]\d{{4}}|"
+    rf"{MONTH_NAME_PATTERN}\s+\d{{1,2}},?\s+\d{{4}}"
+    rf")\b"
+)
+TIME_PATTERN = r"\b(?:[01]?\d|2[0-3]):[0-5]\d(?:[:][0-5]\d)?(?:\s?[APap][Mm])?\b"
+UUID_PATTERN = r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b"
+MAC_PATTERN = r"\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b"
+
+COMMON_TAG_PATTERNS: dict[str, str] = {
+    "url": URL_PATTERN,
+    "link": URL_PATTERN,
+    "email": EMAIL_PATTERN,
+    "ip": IP_PATTERN,
+    "ipv4": IPV4_PATTERN,
+    "ipv6": IPV6_PATTERN,
+    "phone": PHONE_PATTERN,
+    "mobile": PHONE_PATTERN,
+    "zip": ZIP_PATTERN,
+    "zip-code": ZIP_PATTERN,
+    "zipcode": ZIP_PATTERN,
+    "postal": POSTAL_PATTERN,
+    "postal-code": POSTAL_PATTERN,
+    "postalcode": POSTAL_PATTERN,
+    "date": DATE_PATTERN,
+    "time": TIME_PATTERN,
+    "uuid": UUID_PATTERN,
+    "mac": MAC_PATTERN,
+}
+
+TAG_HELP = (
+    "Common tags (repeatable): "
+    "url/link, email, ip/ipv4/ipv6, phone/mobile, "
+    "zip (zip-code/zipcode), postal (postal-code/postalcode), "
+    "date, time, uuid, mac."
+)
+
 
 @dataclass(frozen=True)
 class SearchStats:
@@ -122,6 +192,53 @@ def _compile_search_pattern(
         raise click.ClickException(f"Invalid search pattern: {exc}") from exc
 
 
+def _resolve_tag_patterns(tags: Sequence[str]) -> list[str]:
+    resolved: list[str] = []
+    unknown: list[str] = []
+    for tag in tags:
+        key = tag.strip().lower()
+        if not key:
+            continue
+        pattern = COMMON_TAG_PATTERNS.get(key)
+        if pattern is None:
+            unknown.append(tag)
+        else:
+            resolved.append(pattern)
+    if unknown:
+        valid = ", ".join(sorted(COMMON_TAG_PATTERNS.keys()))
+        raise click.ClickException(f"Unknown tag(s): {', '.join(unknown)}. Available tags: {valid}.")
+    return resolved
+
+
+def _build_search_pattern(
+    query: Optional[str],
+    tags: Sequence[str],
+    use_regex: bool,
+    ignore_case: bool,
+    whole_word: bool,
+) -> Pattern[str]:
+    parts: list[str] = []
+    if query:
+        query_pattern = query if use_regex else re.escape(query)
+        if whole_word:
+            query_pattern = rf"\b{query_pattern}\b"
+        parts.append(query_pattern)
+    tag_patterns = _resolve_tag_patterns(tags)
+    if tag_patterns:
+        tag_union = "|".join(f"(?:{pattern})" for pattern in tag_patterns)
+        parts.append(tag_union)
+    if not parts:
+        raise click.ClickException("QUERY or --tag is required.")
+    pattern_text = "|".join(f"(?:{pattern})" for pattern in parts)
+    flags = re.MULTILINE
+    if ignore_case:
+        flags |= re.IGNORECASE
+    try:
+        return re.compile(pattern_text, flags)
+    except re.error as exc:
+        raise click.ClickException(f"Invalid search pattern: {exc}") from exc
+
+
 def _is_hidden_name(name: str) -> bool:
     return name.startswith(".") and name not in (".", "..")
 
@@ -209,25 +326,65 @@ def _is_probably_text(path: Path, max_bytes: int = 2048) -> bool:
     return (non_text / len(sample)) < 0.3
 
 
-def _iter_line_matches(
+def _collect_line_hits(
     lines: Iterable[str],
     pattern: Pattern[str],
-    capture: bool,
-) -> tuple[int, list[LineMatch]]:
+    capture_lines: bool,
+    capture_values: bool,
+) -> tuple[int, list[LineMatch], list[str]]:
     matches: list[LineMatch] = []
+    values: list[str] = []
     total = 0
     for line_no, line in enumerate(lines, 1):
         line_matches = list(pattern.finditer(line))
-        if line_matches:
-            count = len(line_matches)
-            total += count
-            if capture:
-                matches.append(LineMatch(line_no=line_no, line=line.rstrip("\n"), count=count))
-    return total, matches
+        if not line_matches:
+            continue
+        total += len(line_matches)
+        if capture_lines:
+            matches.append(LineMatch(line_no=line_no, line=line.rstrip("\n"), count=len(line_matches)))
+        if capture_values:
+            values.extend(match.group(0) for match in line_matches)
+    return total, matches, values
 
 
 def _format_path(path: Path, absolute: bool) -> str:
     return str(path.resolve()) if absolute else str(path)
+
+
+def _emit_text_search_results(
+    label: str,
+    text: str,
+    pattern: Pattern[str],
+    verbose: int,
+    count: bool,
+    stats: bool,
+    only_matches: bool,
+) -> None:
+    lines = text.splitlines()
+    total, matches, values = _collect_line_hits(
+        lines,
+        pattern,
+        capture_lines=verbose > 0 and not only_matches,
+        capture_values=only_matches,
+    )
+    if total == 0:
+        if stats:
+            click.echo("Scanned: 1 input, Matched: 0 input, Matches: 0")
+        return
+
+    if only_matches:
+        for value in values:
+            click.echo(value)
+    elif verbose > 0:
+        for match in matches:
+            click.echo(f"{label}:{match.line_no}: {match.line}")
+    elif count:
+        click.echo(f"{label}:{total}")
+    else:
+        click.echo(label)
+
+    if stats:
+        click.echo(f"Scanned: 1 input, Matched: 1 input, Matches: {total}")
 
 
 def _apply_replacement(
@@ -329,16 +486,19 @@ def str_cli():
     Examples:
         pystr search ./src "TODO"
         pystr search . "error" -i -e log --stats
+        pystr search . --tag email --tag ip
         pystr replace ./src "foo" "bar" -e py --yes
         pystr replace . "(\\d+)" "[\\1]" --regex --dry-run
+        pystr search "token" --text "token=abcd"
+        echo "hello world" | pystr search "world" --stdin
         pystr clip-search "token" --ignore-case
         pystr clip-replace "foo" "bar" --yes
     """
 
 
 @str_cli.command("search")
-@click.argument("path", type=click.Path(exists=True, path_type=Path))
-@click.argument("query", type=str)
+@click.argument("path_or_query", type=str)
+@click.argument("query", required=False, type=str)
 @click.option("-v", "--verbose", count=True, help="Print matching lines with file name and line number.")
 @click.option("-d", "--depth", type=int, default=None, help="Max directory depth to search (0 = only the root).")
 @click.option("-i", "--ignore-case", is_flag=True, help="Case-insensitive search.")
@@ -346,6 +506,8 @@ def str_cli():
 @click.option("--file-name", default=None, help="Regex to include files with matching names.")
 @click.option("--regex/--literal", default=False, help="Treat query as regex or literal string (default: literal).")
 @click.option("-w", "--whole-word", is_flag=True, help="Match whole words only.")
+@click.option("-t", "--tag", "tags", multiple=True, help=TAG_HELP)
+@click.option("-o", "--only-matches", is_flag=True, help="Print only the matching text (overrides --verbose/--count).")
 @click.option("--exclude", multiple=True, help="Glob patterns to exclude files.")
 @click.option("--exclude-dir", multiple=True, help="Glob patterns to exclude directories.")
 @click.option("--hidden", is_flag=True, help="Include hidden files and directories.")
@@ -362,9 +524,12 @@ def str_cli():
 @click.option("--count", is_flag=True, help="Print match counts per file instead of just file names.")
 @click.option("--absolute", is_flag=True, help="Print absolute paths.")
 @click.option("--binary", is_flag=True, help="Include binary files (default: skipped).")
+@click.option("--text", "input_text", default=None, help="Search within provided text instead of files (PATH can be omitted).")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read text to search from stdin (PATH can be omitted).")
+@click.option("--label", default=None, help="Label for input text results (default: input/stdin).")
 def search(
-    path: Path,
-    query: str,
+    path_or_query: str,
+    query: Optional[str],
     verbose: int,
     depth: Optional[int],
     ignore_case: bool,
@@ -372,6 +537,8 @@ def search(
     file_name: Optional[str],
     regex: bool,
     whole_word: bool,
+    tags: Sequence[str],
+    only_matches: bool,
     exclude: Sequence[str],
     exclude_dir: Sequence[str],
     hidden: bool,
@@ -383,19 +550,45 @@ def search(
     count: bool,
     absolute: bool,
     binary: bool,
+    input_text: Optional[str],
+    from_stdin: bool,
+    label: Optional[str],
 ):
-    """Search for a query in text files under PATH.
+    """Search for a query in text files under PATH or within provided text.
 
     Examples:
         pystr search ./src "TODO"
         pystr search . "error" -i -e log --stats
         pystr search . "def\\s+main" --regex -e py -v
         pystr search ./logs "timeout" --file-name ".*\\.log$" --count
+        pystr search . --tag email --tag ip
+        pystr search . --tag email --only-matches
+        pystr search "token" --text "token=abcd"
+        echo "hello world" | pystr search "world" --stdin
     """
+    if input_text is not None or from_stdin:
+        if input_text is not None and from_stdin:
+            raise click.ClickException("Use either --text or --stdin, not both.")
+        effective_query = query
+        if effective_query is None and not tags:
+            effective_query = path_or_query
+        if effective_query is None and not tags:
+            raise click.ClickException("QUERY or --tag is required when using --text/--stdin.")
+        pattern = _build_search_pattern(effective_query, tags, regex, ignore_case, whole_word)
+        text_value = input_text if input_text is not None else sys.stdin.read()
+        label_value = label or ("stdin" if from_stdin else "input")
+        _emit_text_search_results(label_value, text_value, pattern, verbose, count, stats, only_matches)
+        return
+
+    if query is None and not tags:
+        raise click.ClickException("QUERY or --tag is required.")
+    path = Path(path_or_query)
+    if not path.exists():
+        raise click.ClickException(f"Path not found: {path}")
     extensions = _normalize_extensions(extension)
     filename_pattern = _compile_filename_pattern(file_name)
     max_bytes = int(max_size * 1024 * 1024) if max_size is not None else None
-    pattern = _compile_search_pattern(query, regex, ignore_case, whole_word)
+    pattern = _build_search_pattern(query, tags, regex, ignore_case, whole_word)
     stats_acc = SearchStats()
 
     for file_path in _iter_files(
@@ -418,7 +611,12 @@ def search(
             continue
         try:
             with open(file_path, "r", encoding=encoding, errors=errors) as handle:
-                total, matches = _iter_line_matches(handle, pattern, capture=verbose > 0)
+                total, matches, values = _collect_line_hits(
+                    handle,
+                    pattern,
+                    capture_lines=verbose > 0 and not only_matches,
+                    capture_values=only_matches,
+                )
         except OSError as exc:
             click.echo(f"Could not read {file_path}: {exc}", err=True)
             continue
@@ -433,7 +631,10 @@ def search(
         )
 
         formatted_path = _format_path(file_path, absolute)
-        if verbose > 0:
+        if only_matches:
+            for value in values:
+                click.echo(value)
+        elif verbose > 0:
             for match in matches:
                 click.echo(f"{formatted_path}:{match.line_no}: {match.line}")
         elif count:
@@ -581,18 +782,22 @@ def replace(
 
 
 @str_cli.command("clip-search")
-@click.argument("query", type=str)
+@click.argument("query", required=False, type=str)
 @click.option("-v", "--verbose", count=True, help="Print matching lines with line numbers.")
 @click.option("-i", "--ignore-case", is_flag=True, help="Case-insensitive search.")
 @click.option("--regex/--literal", default=False, help="Treat query as regex or literal string (default: literal).")
 @click.option("-w", "--whole-word", is_flag=True, help="Match whole words only.")
+@click.option("-t", "--tag", "tags", multiple=True, help=TAG_HELP)
+@click.option("-o", "--only-matches", is_flag=True, help="Print only the matching text (overrides --verbose/--count).")
 @click.option("--count", is_flag=True, help="Print match count.")
 def clip_search(
-    query: str,
+    query: Optional[str],
     verbose: int,
     ignore_case: bool,
     regex: bool,
     whole_word: bool,
+    tags: Sequence[str],
+    only_matches: bool,
     count: bool,
 ):
     """Search clipboard text for a query.
@@ -601,17 +806,29 @@ def clip_search(
         pystr clip-search "secret"
         pystr clip-search "token" -i --count
         pystr clip-search "(\\w+)" --regex -v
+        pystr clip-search --tag email
+        pystr clip-search --tag email --only-matches
     """
-    pattern = _compile_search_pattern(query, regex, ignore_case, whole_word)
+    if query is None and not tags:
+        raise click.ClickException("QUERY or --tag is required.")
+    pattern = _build_search_pattern(query, tags, regex, ignore_case, whole_word)
     text = get_clipboard_text()
     lines = text.splitlines()
-    total, matches = _iter_line_matches(lines, pattern, capture=verbose > 0)
+    total, matches, values = _collect_line_hits(
+        lines,
+        pattern,
+        capture_lines=verbose > 0 and not only_matches,
+        capture_values=only_matches,
+    )
 
     if total == 0:
         click.echo("No matches found in clipboard.")
         return
 
-    if verbose > 0:
+    if only_matches:
+        for value in values:
+            click.echo(value)
+    elif verbose > 0:
         for match in matches:
             click.echo(f"clipboard:{match.line_no}: {match.line}")
     elif count:
