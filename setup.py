@@ -19,6 +19,7 @@ setup(
             'pyssh = pytoolbox.pyssh:ssh_management',
             'pynet = pytoolbox.pynet:net_cli',
             'pyjdate = pytoolbox.pyjdate:jdate_cli',
+            'pystr = pytoolbox.pystr:str_cli',
         ],
     },
 )
