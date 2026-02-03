@@ -493,6 +493,9 @@ def str_cli():
         echo "hello world" | pystr search "world" --stdin
         pystr clip-search "token" --ignore-case
         pystr clip-replace "foo" "bar" --yes
+        pystr getclip
+        pystr setclip "hello"
+        echo "hello" | pystr setclip --stdin
     """
 
 
@@ -881,6 +884,48 @@ def clip_replace(
     set_clipboard_text(new_text)
     if print_output:
         click.echo(new_text)
+
+
+@str_cli.command("getclip")
+@click.option("--strip-ansi", "strip_ansi_output", is_flag=True, help="Remove ANSI escape sequences.")
+@click.option("--trim", is_flag=True, help="Trim surrounding whitespace.")
+def getclip(strip_ansi_output: bool, trim: bool):
+    """Print clipboard text.
+
+    Examples:
+        pystr getclip
+        pystr getclip --trim
+    """
+    text = get_clipboard_text()
+    if strip_ansi_output:
+        text = strip_ansi(text)
+    if trim:
+        text = text.strip()
+    click.echo(text, nl=True)
+
+
+@str_cli.command("setclip")
+@click.argument("text", required=False, type=str)
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read clipboard text from stdin.")
+@click.option("--strip-ansi", "strip_ansi_input", is_flag=True, help="Remove ANSI escape sequences.")
+@click.option("--trim", is_flag=True, help="Trim surrounding whitespace.")
+def setclip(text: Optional[str], from_stdin: bool, strip_ansi_input: bool, trim: bool):
+    """Set clipboard text.
+
+    Examples:
+        pystr setclip "hello"
+        echo "hello" | pystr setclip --stdin
+    """
+    if text is not None and from_stdin:
+        raise click.ClickException("Use either TEXT argument or --stdin, not both.")
+    if text is None and not from_stdin:
+        raise click.ClickException("Provide TEXT or use --stdin.")
+    value = sys.stdin.read() if from_stdin else text or ""
+    if strip_ansi_input:
+        value = strip_ansi(value)
+    if trim:
+        value = value.strip()
+    set_clipboard_text(value)
 
 
 if __name__ == "__main__":
