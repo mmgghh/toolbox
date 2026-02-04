@@ -12,11 +12,13 @@ import subprocess
 import sys
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional, Pattern, Sequence
 
 import click
 
+from pytoolbox.normalize_data import NORMALIZE_RULES
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
@@ -89,6 +91,41 @@ TAG_HELP = (
     "zip (zip-code/zipcode), postal (postal-code/postalcode), "
     "date, time, uuid, mac."
 )
+
+PERSIAN_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
+ARABIC_DIGITS = "٠١٢٣٤٥٦٧٨٩"
+EN_DIGITS = "0123456789"
+
+ARABIC_TO_PERSIAN_LETTERS = {
+    "ي": "ی",
+    "ى": "ی",
+    "ئ": "ی",
+    "ك": "ک",
+    "ة": "ه",
+    "ؤ": "و",
+    "أ": "ا",
+    "إ": "ا",
+    "ٱ": "ا",
+}
+
+ARABIC_PUNCT_TO_EN = {
+    "؟": "?",
+    "،": ",",
+    "؛": ";",
+    "٪": "%",
+    "٫": ".",
+    "٬": ",",
+}
+
+EN_PUNCT_TO_FA = {
+    "?": "؟",
+    ",": "،",
+    ";": "؛",
+    "%": "٪",
+}
+
+EN_DASHES = "–—‑−"
+FA_KASHIDA = "ـ"
 
 
 @dataclass(frozen=True)
@@ -239,6 +276,58 @@ def _build_search_pattern(
         raise click.ClickException(f"Invalid search pattern: {exc}") from exc
 
 
+@lru_cache(maxsize=1)
+def _normalize_translation_table() -> dict[int, Optional[str]]:
+    mapping: dict[int, Optional[str]] = {}
+    for line in NORMALIZE_RULES.splitlines():
+        if not line:
+            continue
+        if "\t" in line:
+            left, right = line.split("\t", 1)
+        else:
+            left, right = line, ""
+        if not left:
+            continue
+        mapping[ord(left)] = right if right != "" else None
+    return mapping
+
+
+def normalize_text(text: str) -> str:
+    """Normalize text using the built-in normalize.rules mapping."""
+    return text.translate(_normalize_translation_table())
+
+
+def _digit_map(source: str, target: str) -> dict[str, str]:
+    return {src: dst for src, dst in zip(source, target)}
+
+
+@lru_cache(maxsize=2)
+def _translation_table(language: str) -> dict[int, str]:
+    lang = language.lower()
+    if lang == "en":
+        mapping: dict[str, str] = {}
+        mapping.update(_digit_map(PERSIAN_DIGITS, EN_DIGITS))
+        mapping.update(_digit_map(ARABIC_DIGITS, EN_DIGITS))
+        mapping.update(ARABIC_PUNCT_TO_EN)
+        mapping.update({dash: "-" for dash in EN_DASHES})
+        mapping[FA_KASHIDA] = "_"
+        return {ord(key): value for key, value in mapping.items()}
+    if lang == "fa":
+        mapping = {}
+        mapping.update(_digit_map(EN_DIGITS, PERSIAN_DIGITS))
+        mapping.update(_digit_map(ARABIC_DIGITS, PERSIAN_DIGITS))
+        mapping.update(ARABIC_TO_PERSIAN_LETTERS)
+        mapping.update(EN_PUNCT_TO_FA)
+        mapping.update({dash: FA_KASHIDA for dash in f"-_{EN_DASHES}"})
+        return {ord(key): value for key, value in mapping.items()}
+    raise click.ClickException("Invalid destination language. Use 'en' or 'fa'.")
+
+
+def translate_text(text: str, language: str) -> str:
+    """Translate digits/letters/punctuation into English or Persian forms."""
+    return text.translate(_translation_table(language))
+
+
 def _is_hidden_name(name: str) -> bool:
     return name.startswith(".") and name not in (".", "..")
 
@@ -387,6 +476,47 @@ def _emit_text_search_results(
         click.echo(f"Scanned: 1 input, Matched: 1 input, Matches: {total}")
 
 
+def _read_text_source(
+    path: Optional[Path],
+    input_text: Optional[str],
+    from_stdin: bool,
+    encoding: str,
+    errors: str,
+) -> tuple[str, Optional[Path]]:
+    if input_text is not None and from_stdin:
+        raise click.ClickException("Use either --text or --stdin, not both.")
+    if input_text is not None:
+        return input_text, None
+    if from_stdin:
+        return sys.stdin.read(), None
+    if path is None:
+        raise click.ClickException("Provide PATH, --text, or --stdin.")
+    if not path.exists():
+        raise click.ClickException(f"Path not found: {path}")
+    try:
+        return path.read_text(encoding=encoding, errors=errors), path
+    except OSError as exc:
+        raise click.ClickException(f"Could not read {path}: {exc}") from exc
+
+
+def _emit_text_output(
+    text: str,
+    source_path: Optional[Path],
+    inplace: bool,
+    encoding: str,
+    errors: str,
+) -> None:
+    if inplace:
+        if source_path is None:
+            raise click.ClickException("--inplace requires a file PATH.")
+        try:
+            source_path.write_text(text, encoding=encoding, errors=errors)
+        except OSError as exc:
+            raise click.ClickException(f"Could not write {source_path}: {exc}") from exc
+        return
+    click.echo(text, nl=True)
+
+
 def _apply_replacement(
     text: str,
     pattern: Pattern[str],
@@ -491,6 +621,8 @@ def str_cli():
         pystr replace . "(\\d+)" "[\\1]" --regex --dry-run
         pystr search "token" --text "token=abcd"
         echo "hello world" | pystr search "world" --stdin
+        pystr normalize --text "Résumé — ١٢٣"
+        pystr translate --to en --text "شماره ۱۲۳؟"
         pystr clip-search "token" --ignore-case
         pystr clip-replace "foo" "bar" --yes
         pystr getclip
@@ -884,6 +1016,72 @@ def clip_replace(
     set_clipboard_text(new_text)
     if print_output:
         click.echo(new_text)
+
+
+@str_cli.command("normalize")
+@click.argument("path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--text", "input_text", default=None, help="Normalize the provided text instead of a file.")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read text to normalize from stdin.")
+@click.option("--inplace", is_flag=True, help="Overwrite the input file in place.")
+@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
+@click.option(
+    "--errors",
+    default="replace",
+    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
+    help="Encoding error handler.",
+)
+def normalize(
+    path: Optional[Path],
+    input_text: Optional[str],
+    from_stdin: bool,
+    inplace: bool,
+    encoding: str,
+    errors: str,
+):
+    """Normalize text using the bundled normalize.rules mapping.
+
+    Examples:
+        pystr normalize --text "Résumé — ١٢٣"
+        echo "… hello" | pystr normalize --stdin
+        pystr normalize ./docs/readme.txt --inplace
+    """
+    text, source_path = _read_text_source(path, input_text, from_stdin, encoding, errors)
+    normalized = normalize_text(text)
+    _emit_text_output(normalized, source_path, inplace, encoding, errors)
+
+
+@str_cli.command("translate")
+@click.argument("path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--to", "dest", required=True, type=click.Choice(["en", "fa"], case_sensitive=False))
+@click.option("--text", "input_text", default=None, help="Translate the provided text instead of a file.")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read text to translate from stdin.")
+@click.option("--inplace", is_flag=True, help="Overwrite the input file in place.")
+@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
+@click.option(
+    "--errors",
+    default="replace",
+    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
+    help="Encoding error handler.",
+)
+def translate(
+    path: Optional[Path],
+    dest: str,
+    input_text: Optional[str],
+    from_stdin: bool,
+    inplace: bool,
+    encoding: str,
+    errors: str,
+):
+    """Translate digits/punctuation for English or Persian display.
+
+    Examples:
+        pystr translate --to en --text "شماره ۱۲۳؟"
+        pystr translate --to fa --text "Issue 123?"
+        pystr translate ./notes.txt --to fa --inplace
+    """
+    text, source_path = _read_text_source(path, input_text, from_stdin, encoding, errors)
+    translated = translate_text(text, dest)
+    _emit_text_output(translated, source_path, inplace, encoding, errors)
 
 
 @str_cli.command("getclip")
