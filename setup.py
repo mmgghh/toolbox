@@ -11,6 +11,7 @@ setup(
     include_package_data=True,
     install_requires=[
         'Click',
+        'openpyxl',
         'requests[socks]'
     ],
     entry_points={
@@ -20,6 +21,7 @@ setup(
             'pynet = pytoolbox.pynet:net_cli',
             'pyjdate = pytoolbox.pyjdate:jdate_cli',
             'pystr = pytoolbox.pystr:str_cli',
+            'pytime = pytoolbox.pytime:time_cli',
         ],
     },
 )
