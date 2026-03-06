@@ -42,3 +42,20 @@ $ # merge all files in /source and its sub-directories into /destination
 $ pyfm merge -s /source -d /destination --overwrite keep-both
 $
 ```
+
+## pyjdate quick examples
+
+```shell
+$ # convert by interval relative to current datetime (calendar not required)
+$ pyjdate convert --interval "1 y"
+$ pyjdate convert -i "-3.4 hours"
+$
+$ # distance from now to a relative target time (calendar not required)
+$ pyjdate distance -i "2 days 4 hours"
+$
+$ # distance between two endpoints: date/epoch, and fallback to interval
+$ pyjdate distance-between -c g -s "2026-01-01 00:00" -e "2026-01-02 12:00"
+$ pyjdate distance-between -s "-3 days" -e "6 hours"
+$
+$ # outputs now include total days, total hours, and total seconds
+```
