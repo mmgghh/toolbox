@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+import re
 from typing import Optional
 
 import click
@@ -116,6 +117,7 @@ class TimeParts:
 @dataclass(frozen=True)
 class DateInputOptions:
     full_date: Optional[str]
+    interval: Optional[str]
     epoch: Optional[str]
     year: Optional[int]
     month: Optional[str]
@@ -133,6 +135,54 @@ class IntervalOptions:
     year: Optional[int]
     month: Optional[str]
     day: Optional[int]
+
+
+@dataclass(frozen=True)
+class IntervalDelta:
+    years: int = 0
+    months: int = 0
+    days: float = 0.0
+    seconds: float = 0.0
+
+
+UNIT_ALIASES = {
+    "year": "years",
+    "years": "years",
+    "yr": "years",
+    "yrs": "years",
+    "y": "years",
+    "month": "months",
+    "months": "months",
+    "mon": "months",
+    "mons": "months",
+    "week": "weeks",
+    "weeks": "weeks",
+    "w": "weeks",
+    "day": "days",
+    "days": "days",
+    "d": "days",
+    "hour": "hours",
+    "hours": "hours",
+    "hr": "hours",
+    "hrs": "hours",
+    "h": "hours",
+    "minute": "minutes",
+    "minutes": "minutes",
+    "min": "minutes",
+    "mins": "minutes",
+    "m": "minutes",
+    "second": "seconds",
+    "seconds": "seconds",
+    "sec": "seconds",
+    "secs": "seconds",
+    "s": "seconds",
+}
+
+
+TOKEN_RE = re.compile(
+    r"(?P<time>[+-]?\d+:\d{2}(?::\d{2}(?:\.\d+)?)?)|"
+    r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z]+)",
+)
 
 
 def date_parts_from_tuple(parts: tuple[int, int, int]) -> DateParts:
@@ -434,6 +484,133 @@ def parse_epoch(value: str) -> datetime:
     return datetime.fromtimestamp(ts, tz=local_timezone())
 
 
+def parse_pg_interval(value: str) -> IntervalDelta:
+    raw = value.strip()
+    if not raw:
+        raise click.ClickException("Interval cannot be empty.")
+
+    delta = IntervalDelta()
+    pos = 0
+    matched = False
+
+    for match in TOKEN_RE.finditer(raw):
+        if raw[pos:match.start()].strip(" ,"):
+            raise click.ClickException(f"Invalid interval segment: {raw[pos:match.start()].strip()}")
+        pos = match.end()
+        matched = True
+
+        if match.group("time"):
+            delta = _add_time_literal(delta, match.group("time"))
+            continue
+
+        value_str = match.group("value") or "0"
+        unit_str = match.group("unit") or ""
+        unit_key = UNIT_ALIASES.get(unit_str.lower())
+        if unit_key is None:
+            raise click.ClickException(f"Unknown interval unit: {unit_str}")
+
+        numeric = float(value_str)
+        if unit_key in ("years", "months") and not numeric.is_integer():
+            raise click.ClickException(f"{unit_key} must be whole numbers in interval values.")
+
+        delta = _apply_interval_token(delta, unit_key, numeric)
+
+    if raw[pos:].strip(" ,"):
+        raise click.ClickException(f"Invalid interval segment: {raw[pos:].strip()}")
+
+    if not matched:
+        raise click.ClickException("Interval format not recognized.")
+
+    return delta
+
+
+def _add_time_literal(delta: IntervalDelta, value: str) -> IntervalDelta:
+    sign = -1 if value.startswith("-") else 1
+    payload = value[1:] if value[0] in "+-" else value
+    parts = payload.split(":")
+    if len(parts) < 2 or len(parts) > 3:
+        raise click.ClickException(f"Invalid interval time segment: {value}")
+    hours = int(parts[0])
+    minutes = int(parts[1])
+    seconds = float(parts[2]) if len(parts) == 3 else 0.0
+    total_seconds = sign * (hours * 3600 + minutes * 60 + seconds)
+    return IntervalDelta(
+        years=delta.years,
+        months=delta.months,
+        days=delta.days,
+        seconds=delta.seconds + total_seconds,
+    )
+
+
+def _apply_interval_token(delta: IntervalDelta, unit: str, value: float) -> IntervalDelta:
+    if unit == "years":
+        return IntervalDelta(
+            years=delta.years + int(value),
+            months=delta.months,
+            days=delta.days,
+            seconds=delta.seconds,
+        )
+    if unit == "months":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months + int(value),
+            days=delta.days,
+            seconds=delta.seconds,
+        )
+    if unit == "weeks":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months,
+            days=delta.days + value * 7,
+            seconds=delta.seconds,
+        )
+    if unit == "days":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months,
+            days=delta.days + value,
+            seconds=delta.seconds,
+        )
+    if unit == "hours":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months,
+            days=delta.days,
+            seconds=delta.seconds + value * 3600,
+        )
+    if unit == "minutes":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months,
+            days=delta.days,
+            seconds=delta.seconds + value * 60,
+        )
+    if unit == "seconds":
+        return IntervalDelta(
+            years=delta.years,
+            months=delta.months,
+            days=delta.days,
+            seconds=delta.seconds + value,
+        )
+    raise click.ClickException(f"Unsupported interval unit: {unit}")
+
+
+def shift_months(dt: datetime, months: int) -> datetime:
+    if months == 0:
+        return dt
+    year = dt.year + (dt.month - 1 + months) // 12
+    month = (dt.month - 1 + months) % 12 + 1
+    max_day = days_in_month("gregorian", year, month)
+    day = min(dt.day, max_day)
+    return dt.replace(year=year, month=month, day=day)
+
+
+def apply_interval(dt: datetime, delta: IntervalDelta) -> datetime:
+    month_delta = delta.years * 12 + delta.months
+    shifted = shift_months(dt, month_delta)
+    return shifted + timedelta(days=delta.days, seconds=delta.seconds)
+
+
 def is_epoch_candidate(value: str) -> bool:
     raw = value.strip()
     if raw.startswith(("+", "-")):
@@ -557,29 +734,75 @@ def diff_calendar_components(
     return years, months, days, hours, minutes, seconds
 
 
-def parse_input_datetime(calendar: str, options: DateInputOptions) -> datetime:
-    if options.epoch:
-        if any(
-            value is not None
-            for value in (options.full_date, options.year, options.month, options.day, options.hour, options.minute, options.second)
-        ):
-            raise click.ClickException("Use --epoch alone; it is incompatible with other date inputs.")
-        return parse_epoch(options.epoch)
-    if options.full_date:
-        if any(value is not None for value in (options.year, options.month, options.day, options.hour, options.minute, options.second)):
-            raise click.ClickException("Use --full-date or -y/-m/-d options, not both.")
-        date_parts, time_parts, tzinfo, _time_provided = parse_full_date(calendar, options.full_date)
-        validate_date(calendar, date_parts.year, date_parts.month, date_parts.day)
+def detect_date_input_mode(options: DateInputOptions) -> str:
+    has_interval = options.interval is not None
+    has_full_date = options.full_date is not None
+    has_epoch = options.epoch is not None
+    has_parts = any(
+        value is not None
+        for value in (options.year, options.month, options.day, options.hour, options.minute, options.second)
+    )
+    selected = [name for name, active in (
+        ("interval", has_interval),
+        ("full-date", has_full_date),
+        ("epoch", has_epoch),
+        ("parts", has_parts),
+    ) if active]
+    if not selected:
+        raise click.ClickException(
+            "Provide one input: --interval, --full-date, --epoch, or -y/-m/-d (-H/--minute/--second optional)."
+        )
+    if len(selected) > 1:
+        raise click.ClickException(
+            "Provide only one of --interval, --full-date, --epoch, or -y/-m/-d (-H/--minute/--second optional)."
+        )
+    return selected[0]
+
+
+def parse_input_datetime(calendar: Optional[str], options: DateInputOptions, now: Optional[datetime] = None) -> datetime:
+    mode = detect_date_input_mode(options)
+    if mode == "interval":
+        base = now or datetime.now().astimezone()
+        return apply_interval(base, parse_pg_interval(options.interval or ""))
+    if mode == "epoch":
+        return parse_epoch(options.epoch or "")
+
+    if calendar is None:
+        raise click.ClickException("Calendar is required for --full-date and -y/-m/-d inputs.")
+    cal = normalize_calendar(calendar)
+
+    if mode == "full-date":
+        date_parts, time_parts, tzinfo, _time_provided = parse_full_date(cal, options.full_date or "")
+        validate_date(cal, date_parts.year, date_parts.month, date_parts.day)
         validate_time(time_parts.hour, time_parts.minute, time_parts.second, time_parts.microsecond)
-        return build_datetime(calendar, date_parts, time_parts, tzinfo)
+        return build_datetime(cal, date_parts, time_parts, tzinfo)
+
     if options.year is None or options.month is None or options.day is None:
         raise click.ClickException("Year, month, and day are required when --full-date is not used.")
-    m = parse_month(options.month, calendar)
-    validate_date(calendar, options.year, m, options.day)
+    m = parse_month(options.month, cal)
+    validate_date(cal, options.year, m, options.day)
     time_parts = TimeParts(options.hour or 0, options.minute or 0, options.second or 0, 0)
     validate_time(time_parts.hour, time_parts.minute, time_parts.second, time_parts.microsecond)
     date_parts = DateParts(options.year, m, options.day)
-    return build_datetime(calendar, date_parts, time_parts, local_timezone())
+    return build_datetime(cal, date_parts, time_parts, local_timezone())
+
+
+def parse_distance_between_endpoint(value: str, calendar: Optional[str], now: datetime, label: str) -> datetime:
+    if calendar is not None:
+        try:
+            dt, _ = parse_interval_endpoint(calendar, value)
+            return dt
+        except click.ClickException:
+            return apply_interval(now, parse_pg_interval(value))
+
+    if is_epoch_candidate(value):
+        return parse_epoch(value)
+    try:
+        return apply_interval(now, parse_pg_interval(value))
+    except click.ClickException as exc:
+        raise click.ClickException(
+            f"Invalid {label} value: {value}. Without --calendar, only epoch or interval formats are accepted."
+        ) from exc
 
 
 def _resolve_conversion_inputs(
@@ -611,6 +834,7 @@ def print_distance(start_dt: datetime, end_dt: datetime) -> None:
         start_dt, end_dt = end_dt, start_dt
     delta = end_utc - start_utc
     total_seconds = delta.total_seconds()
+    total_hours = total_seconds / 3600
     total_days = total_seconds / 86400
 
     g_parts = diff_calendar_components("gregorian", start_dt, end_dt)
@@ -627,6 +851,7 @@ def print_distance(start_dt: datetime, end_dt: datetime) -> None:
         f"{j_parts[3]} hours, {j_parts[4]} minutes, {j_parts[5]} seconds"
     )
     click.echo(f"Total days:    {format_total_value(total_days)}")
+    click.echo(f"Total hours:   {format_total_value(total_hours)}")
     click.echo(f"Total seconds: {format_total_value(total_seconds)}")
 
 
@@ -703,8 +928,8 @@ def current():
     "-c",
     "--calendar",
     type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=True,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+    required=False,
+    help="Input calendar (gregorian|jalali, shortcuts: g|j). Required for full-date and -y/-m/-d inputs.",
 )
 @click.option(
     "--full-date",
@@ -715,6 +940,13 @@ def current():
         "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
         "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
     ),
+)
+@click.option(
+    "-i",
+    "--interval",
+    type=str,
+    required=False,
+    help="Relative interval (PostgreSQL style) added to current datetime. Example: '1 y', '-3.4 hours'.",
 )
 @click.option(
     "-e",
@@ -733,22 +965,19 @@ def convert(**kwargs):
     """Convert a date between Jalali and Gregorian."""
     calendar = kwargs.pop("calendar")
     options = DateInputOptions(**kwargs)
-    cal = normalize_calendar(calendar)
-    if options.epoch:
-        if any(
-            value is not None
-            for value in (options.full_date, options.year, options.month, options.day, options.hour, options.minute, options.second)
-        ):
-            raise click.ClickException("Use --epoch alone; it is incompatible with other date inputs.")
-        dt = parse_epoch(options.epoch)
+    mode = detect_date_input_mode(options)
+    if mode == "epoch":
+        dt = parse_epoch(options.epoch or "")
         _emit_datetime_block(None, dt)
         return
-    if options.full_date and any(
-        value is not None
-        for value in (options.year, options.month, options.day, options.hour, options.minute, options.second)
-    ):
-        raise click.ClickException("Use --full-date or -y/-m/-d options, not both.")
+    if mode == "interval":
+        dt = apply_interval(datetime.now().astimezone(), parse_pg_interval(options.interval or ""))
+        _emit_datetime_block(None, dt)
+        return
 
+    if calendar is None:
+        raise click.ClickException("Calendar is required for --full-date and -y/-m/-d inputs.")
+    cal = normalize_calendar(calendar)
     date_parts, time_parts, tzinfo, time_provided = _resolve_conversion_inputs(cal, options)
     g_tuple, j_tuple = convert_from(cal, date_parts.year, date_parts.month, date_parts.day)
     g = date_parts_from_tuple(g_tuple)
@@ -824,8 +1053,8 @@ def interval(**kwargs):
     "-c",
     "--calendar",
     type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=True,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+    required=False,
+    help="Input calendar (gregorian|jalali, shortcuts: g|j). Required for full-date and -y/-m/-d inputs.",
 )
 @click.option(
     "--full-date",
@@ -836,6 +1065,13 @@ def interval(**kwargs):
         "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
         "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
     ),
+)
+@click.option(
+    "-i",
+    "--interval",
+    type=str,
+    required=False,
+    help="Relative interval (PostgreSQL style) added to current datetime. Example: '1 y', '-3.4 hours'.",
 )
 @click.option(
     "-e",
@@ -854,9 +1090,8 @@ def distance(**kwargs):
     """Show time difference between now and the input date."""
     calendar = kwargs.pop("calendar")
     options = DateInputOptions(**kwargs)
-    cal = normalize_calendar(calendar)
-    input_dt = parse_input_datetime(cal, options)
     now = datetime.now().astimezone()
+    input_dt = parse_input_datetime(calendar, options, now=now)
     print_distance(now, input_dt)
 
 
@@ -865,8 +1100,11 @@ def distance(**kwargs):
     "-c",
     "--calendar",
     type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=True,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
+    required=False,
+    help=(
+        "Input calendar (gregorian|jalali, shortcuts: g|j). "
+        "Required only when --start/--end are full-date values."
+    ),
 )
 @click.option(
     "-s",
@@ -874,8 +1112,8 @@ def distance(**kwargs):
     type=str,
     required=True,
     help=(
-        "Start date/time (unix timestamp or full date/time string). "
-        "Examples: '2026-01-04 10:43:45+03:30', '2026-01-04', '1404/10/14 10:44:46'."
+        "Start date/time (unix timestamp, full date/time string, or PostgreSQL interval relative to now). "
+        "Examples: '2026-01-04 10:43:45+03:30', '2026-01-04', '1404/10/14 10:44:46', '-3.4 hours'."
     ),
 )
 @click.option(
@@ -884,15 +1122,16 @@ def distance(**kwargs):
     type=str,
     required=True,
     help=(
-        "End date/time (unix timestamp or full date/time string). "
-        "Examples: '2026-02-01 08:00', '2026-02-01', '1404/11/12 12:00:00'."
+        "End date/time (unix timestamp, full date/time string, or PostgreSQL interval relative to now). "
+        "Examples: '2026-02-01 08:00', '2026-02-01', '1404/11/12 12:00:00', '2 days'."
     ),
 )
-def distance_between(calendar: str, start: str, end: str):
+def distance_between(calendar: Optional[str], start: str, end: str):
     """Show time difference between two dates."""
-    cal = normalize_calendar(calendar)
-    start_dt, _ = parse_interval_endpoint(cal, start)
-    end_dt, _ = parse_interval_endpoint(cal, end)
+    cal = normalize_calendar(calendar) if calendar is not None else None
+    now = datetime.now().astimezone()
+    start_dt = parse_distance_between_endpoint(start, cal, now, "start")
+    end_dt = parse_distance_between_endpoint(end, cal, now, "end")
     print_distance(start_dt, end_dt)
 
 
