@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Convert Markdown files to PDF using fpdf2 and DejaVu/Vazir fonts.
 
-Exposes the ``md2pdf`` console script (see ``md2pdf --help``).
+Exposes the ``pymd2pdf`` console script (see ``pymd2pdf --help``).
 
 Supports: headings, bold, inline code, code blocks, tables, bullets,
 numbered lists, horizontal rules, and nested lists. Persian/Arabic text is
@@ -553,7 +553,7 @@ def convert(md_path, pdf_path):
     help="Output PDF path. Only valid with a single input file; "
          "otherwise each <input>.md is written as <input>.pdf.",
 )
-def md2pdf_cli(files: tuple[Path, ...], output: Path | None):
+def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
     """Convert Markdown file(s) to PDF.
 
     \b
@@ -564,9 +564,9 @@ def md2pdf_cli(files: tuple[Path, ...], output: Path | None):
 
     \b
     Examples:
-      md2pdf README.md                     # writes README.pdf
-      md2pdf doc.md -o report.pdf          # writes report.pdf
-      md2pdf a.md b.md c.md                # writes a.pdf, b.pdf, c.pdf
+      pymd2pdf README.md                     # writes README.pdf
+      pymd2pdf doc.md -o report.pdf          # writes report.pdf
+      pymd2pdf a.md b.md c.md                # writes a.pdf, b.pdf, c.pdf
 
     \b
     ── Fonts ──────────────────────────────────────────────────────────
@@ -601,4 +601,4 @@ def md2pdf_cli(files: tuple[Path, ...], output: Path | None):
 
 
 if __name__ == "__main__":
-    md2pdf_cli()
+    pymd2pdf_cli()
