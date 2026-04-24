@@ -12,8 +12,15 @@ setup(
     install_requires=[
         'Click',
         'openpyxl',
-        'requests[socks]'
+        'requests[socks]',
+        'fpdf2',
     ],
+    extras_require={
+        # Needed by md2pdf to shape and reorder Persian/Arabic text correctly.
+        # The DejaVu and Vazir TTFs are system-installed separately; see
+        # `md2pdf --help` for instructions.
+        'rtl': ['arabic-reshaper', 'python-bidi'],
+    },
     entry_points={
         'console_scripts': [
             'pyfm = pytoolbox.pyfm:file_management',
@@ -22,6 +29,7 @@ setup(
             'pyjdate = pytoolbox.pyjdate:jdate_cli',
             'pystr = pytoolbox.pystr:str_cli',
             'pytime = pytoolbox.pytime:time_cli',
+            'md2pdf = pytoolbox.md2pdf:md2pdf_cli',
         ],
     },
 )
