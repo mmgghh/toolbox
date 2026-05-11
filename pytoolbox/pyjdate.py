@@ -129,7 +129,6 @@ class DateInputOptions:
 
 @dataclass(frozen=True)
 class IntervalOptions:
-    calendar: str
     start: Optional[str]
     end: Optional[str]
     year: Optional[int]
@@ -634,6 +633,12 @@ def parse_interval_endpoint(calendar: str, value: str) -> tuple[datetime, bool]:
     return dt, show_time
 
 
+def parse_calendar_endpoint(calendar: str, value: str) -> tuple[datetime, bool]:
+    if is_epoch_candidate(value):
+        raise click.ClickException("Use -e/--epoch for Unix timestamp inputs.")
+    return parse_interval_endpoint(calendar, value)
+
+
 def build_datetime(calendar: str, date_parts: DateParts, time_parts: TimeParts, tzinfo: timezone) -> datetime:
     year, month, day = date_parts.year, date_parts.month, date_parts.day
     if calendar == "jalali":
@@ -744,17 +749,17 @@ def detect_date_input_mode(options: DateInputOptions) -> str:
     )
     selected = [name for name, active in (
         ("interval", has_interval),
-        ("full-date", has_full_date),
+        ("date", has_full_date),
         ("epoch", has_epoch),
         ("parts", has_parts),
     ) if active]
     if not selected:
         raise click.ClickException(
-            "Provide one input: --interval, --full-date, --epoch, or -y/-m/-d (-H/--minute/--second optional)."
+            "Provide one input: --interval, VALUE, -e VALUE, or -y/-m/-d (-H/--minute/--second optional)."
         )
     if len(selected) > 1:
         raise click.ClickException(
-            "Provide only one of --interval, --full-date, --epoch, or -y/-m/-d (-H/--minute/--second optional)."
+            "Provide only one of --interval, VALUE, -e VALUE, or -y/-m/-d (-H/--minute/--second optional)."
         )
     return selected[0]
 
@@ -768,17 +773,17 @@ def parse_input_datetime(calendar: Optional[str], options: DateInputOptions, now
         return parse_epoch(options.epoch or "")
 
     if calendar is None:
-        raise click.ClickException("Calendar is required for --full-date and -y/-m/-d inputs.")
+        raise click.ClickException("Calendar is required for VALUE and -y/-m/-d inputs.")
     cal = normalize_calendar(calendar)
 
-    if mode == "full-date":
+    if mode == "date":
         date_parts, time_parts, tzinfo, _time_provided = parse_full_date(cal, options.full_date or "")
         validate_date(cal, date_parts.year, date_parts.month, date_parts.day)
         validate_time(time_parts.hour, time_parts.minute, time_parts.second, time_parts.microsecond)
         return build_datetime(cal, date_parts, time_parts, tzinfo)
 
     if options.year is None or options.month is None or options.day is None:
-        raise click.ClickException("Year, month, and day are required when --full-date is not used.")
+        raise click.ClickException("Year, month, and day are required when VALUE is not used.")
     m = parse_month(options.month, cal)
     validate_date(cal, options.year, m, options.day)
     time_parts = TimeParts(options.hour or 0, options.minute or 0, options.second or 0, 0)
@@ -801,7 +806,7 @@ def parse_distance_between_endpoint(value: str, calendar: Optional[str], now: da
         return apply_interval(now, parse_pg_interval(value))
     except click.ClickException as exc:
         raise click.ClickException(
-            f"Invalid {label} value: {value}. Without --calendar, only epoch or interval formats are accepted."
+            f"Invalid {label} value: {value}. Use -j/--jalali or -g/--gregorian for full-date values."
         ) from exc
 
 
@@ -816,7 +821,7 @@ def _resolve_conversion_inputs(
         return date_parts, time_parts, tzinfo, time_provided
 
     if options.year is None or options.month is None or options.day is None:
-        raise click.ClickException("Year, month, and day are required when --full-date is not used.")
+        raise click.ClickException("Year, month, and day are required when VALUE is not used.")
     m = parse_month(options.month, calendar)
     validate_date(calendar, options.year, m, options.day)
     time_provided = any(value is not None for value in (options.hour, options.minute, options.second))
@@ -902,6 +907,86 @@ def _resolve_interval_dates(
     return start_date, start_date
 
 
+def _selected_date_kind(jalali: bool, gregorian: bool, epoch: bool, allow_epoch: bool = True) -> str:
+    selected = [
+        name
+        for name, active in (
+            ("jalali", jalali),
+            ("gregorian", gregorian),
+            ("epoch", epoch),
+        )
+        if active
+    ]
+    allowed = "-j/--jalali, -g/--gregorian, or -e/--epoch" if allow_epoch else "-j/--jalali or -g/--gregorian"
+    if len(selected) != 1:
+        raise click.ClickException(f"Provide exactly one of {allowed}.")
+    if selected[0] == "epoch" and not allow_epoch:
+        raise click.ClickException("-e/--epoch is not supported for this input.")
+    return selected[0]
+
+
+def _date_options_from_cli(
+    *,
+    value: Optional[str],
+    jalali: bool,
+    gregorian: bool,
+    epoch_mode: bool,
+    interval: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+) -> tuple[Optional[str], DateInputOptions]:
+    has_kind = any((jalali, gregorian, epoch_mode))
+    has_parts = any(part is not None for part in (year, month, day, hour, minute, second))
+    if interval is not None:
+        if has_kind or value is not None or has_parts:
+            raise click.ClickException("--interval is incompatible with -j, -g, -e, VALUE, and -y/-m/-d inputs.")
+        return None, DateInputOptions(
+            full_date=None,
+            interval=interval,
+            epoch=None,
+            year=None,
+            month=None,
+            day=None,
+            hour=None,
+            minute=None,
+            second=None,
+        )
+
+    kind = _selected_date_kind(jalali, gregorian, epoch_mode)
+    if kind == "epoch":
+        if value is None:
+            raise click.ClickException("VALUE is required with -e/--epoch.")
+        if has_parts:
+            raise click.ClickException("-e/--epoch is incompatible with -y/-m/-d inputs.")
+        return None, DateInputOptions(
+            full_date=None,
+            interval=None,
+            epoch=value,
+            year=None,
+            month=None,
+            day=None,
+            hour=None,
+            minute=None,
+            second=None,
+        )
+
+    return kind, DateInputOptions(
+        full_date=value,
+        interval=None,
+        epoch=None,
+        year=year,
+        month=month,
+        day=day,
+        hour=hour,
+        minute=minute,
+        second=second,
+    )
+
+
 @click.group()
 def jdate_cli():
     return None
@@ -924,23 +1009,10 @@ def current():
 
 
 @click.command()
-@click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=False,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j). Required for full-date and -y/-m/-d inputs.",
-)
-@click.option(
-    "--full-date",
-    type=str,
-    required=False,
-    help=(
-        "Full date/time string. Examples: "
-        "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
-        "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
-    ),
-)
+@click.argument("value", required=False)
+@click.option("-j", "--jalali", is_flag=True, help="Treat VALUE or -y/-m/-d as a Jalali date.")
+@click.option("-g", "--gregorian", is_flag=True, help="Treat VALUE or -y/-m/-d as a Gregorian date.")
+@click.option("-e", "--epoch", "epoch_mode", is_flag=True, help="Treat VALUE as a Unix timestamp.")
 @click.option(
     "-i",
     "--interval",
@@ -948,23 +1020,42 @@ def current():
     required=False,
     help="Relative interval (PostgreSQL style) added to current datetime. Example: '1 y', '-3.4 hours'.",
 )
-@click.option(
-    "-e",
-    "--epoch",
-    type=str,
-    required=False,
-    help="Unix timestamp (seconds, optional fraction). Displayed in local timezone.",
-)
 @click.option("-y", "--year", type=int, required=False, help="Year number.")
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
 @click.option("-d", "--day", type=int, required=False, help="Day of month.")
 @click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
 @click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
 @click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
-def convert(**kwargs):
-    """Convert a date between Jalali and Gregorian."""
-    calendar = kwargs.pop("calendar")
-    options = DateInputOptions(**kwargs)
+def convert(
+    value: Optional[str],
+    jalali: bool,
+    gregorian: bool,
+    epoch_mode: bool,
+    interval: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+):
+    """Convert a date between Jalali and Gregorian.
+
+    For concrete inputs, use exactly one of -j, -g, or -e.
+    """
+    calendar, options = _date_options_from_cli(
+        value=value,
+        jalali=jalali,
+        gregorian=gregorian,
+        epoch_mode=epoch_mode,
+        interval=interval,
+        year=year,
+        month=month,
+        day=day,
+        hour=hour,
+        minute=minute,
+        second=second,
+    )
     mode = detect_date_input_mode(options)
     if mode == "epoch":
         dt = parse_epoch(options.epoch or "")
@@ -976,7 +1067,7 @@ def convert(**kwargs):
         return
 
     if calendar is None:
-        raise click.ClickException("Calendar is required for --full-date and -y/-m/-d inputs.")
+        raise click.ClickException("Calendar is required for VALUE and -y/-m/-d inputs.")
     cal = normalize_calendar(calendar)
     date_parts, time_parts, tzinfo, time_provided = _resolve_conversion_inputs(cal, options)
     g_tuple, j_tuple = convert_from(cal, date_parts.year, date_parts.month, date_parts.day)
@@ -990,48 +1081,65 @@ def convert(**kwargs):
 
 
 @click.command()
-@click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=True,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j).",
-)
+@click.option("-j", "--jalali", is_flag=True, help="Use Jalali dates for the input range or year/month/day.")
+@click.option("-g", "--gregorian", is_flag=True, help="Use Gregorian dates for the input range or year/month/day.")
+@click.option("-e", "--epoch", "epoch_mode", is_flag=True, help="Treat --start/--end as Unix timestamps.")
 @click.option(
     "-s",
     "--start",
     type=str,
     required=False,
     help=(
-        "Interval start (unix timestamp or full date/time string). "
+        "Interval start (full date/time string; with -e, unix timestamp). "
         "Must be provided with --end."
     ),
 )
 @click.option(
-    "-e",
     "--end",
     type=str,
     required=False,
     help=(
-        "Interval end (unix timestamp or full date/time string). "
+        "Interval end (full date/time string; with -e, unix timestamp). "
         "Must be provided with --start."
     ),
 )
 @click.option("-y", "--year", type=int, required=False, help="Year number.")
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
 @click.option("-d", "--day", type=int, required=False, help="Day of month.")
-def interval(**kwargs):
-    """Show period start/end in both calendars."""
-    options = IntervalOptions(**kwargs)
-    cal = normalize_calendar(options.calendar)
+def interval(
+    jalali: bool,
+    gregorian: bool,
+    epoch_mode: bool,
+    start: Optional[str],
+    end: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+):
+    """Show period start/end in both calendars.
+
+    Use exactly one of -j, -g, or -e.
+    """
+    kind = _selected_date_kind(jalali, gregorian, epoch_mode)
+    options = IntervalOptions(start=start, end=end, year=year, month=month, day=day)
     if (options.start is None) != (options.end is None):
         raise click.ClickException("Start and end must be provided together.")
     if options.start is not None and any(value is not None for value in (options.year, options.month, options.day)):
         raise click.ClickException("Start/end are incompatible with year/month/day inputs.")
 
+    if kind == "epoch":
+        if options.start is None:
+            raise click.ClickException("--start and --end are required with -e/--epoch.")
+        start_dt = parse_epoch(options.start)
+        end_dt = parse_epoch(options.end or "")
+        _emit_datetime_block("Start:", start_dt)
+        _emit_datetime_block("End:", end_dt)
+        return
+
+    cal = kind
     if options.start is not None:
-        start_dt, _start_time_provided = parse_interval_endpoint(cal, options.start)
-        end_dt, _end_time_provided = parse_interval_endpoint(cal, options.end)  # type: ignore[arg-type]
+        start_dt, _start_time_provided = parse_calendar_endpoint(cal, options.start)
+        end_dt, _end_time_provided = parse_calendar_endpoint(cal, options.end)  # type: ignore[arg-type]
         _emit_datetime_block("Start:", start_dt)
         _emit_datetime_block("End:", end_dt)
         return
@@ -1049,23 +1157,10 @@ def interval(**kwargs):
 
 
 @click.command()
-@click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=False,
-    help="Input calendar (gregorian|jalali, shortcuts: g|j). Required for full-date and -y/-m/-d inputs.",
-)
-@click.option(
-    "--full-date",
-    type=str,
-    required=False,
-    help=(
-        "Full date/time string. Examples: "
-        "'2026-01-04 10:43:45.024995+03:30', '2026/01/04 10:43', "
-        "'2026-01-04', 'Jan 04 2026', '1404/10/14 10:44:46'."
-    ),
-)
+@click.argument("value", required=False)
+@click.option("-j", "--jalali", is_flag=True, help="Treat VALUE or -y/-m/-d as a Jalali date.")
+@click.option("-g", "--gregorian", is_flag=True, help="Treat VALUE or -y/-m/-d as a Gregorian date.")
+@click.option("-e", "--epoch", "epoch_mode", is_flag=True, help="Treat VALUE as a Unix timestamp.")
 @click.option(
     "-i",
     "--interval",
@@ -1073,65 +1168,85 @@ def interval(**kwargs):
     required=False,
     help="Relative interval (PostgreSQL style) added to current datetime. Example: '1 y', '-3.4 hours'.",
 )
-@click.option(
-    "-e",
-    "--epoch",
-    type=str,
-    required=False,
-    help="Unix timestamp (seconds, optional fraction). Displayed in local timezone.",
-)
 @click.option("-y", "--year", type=int, required=False, help="Year number.")
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
 @click.option("-d", "--day", type=int, required=False, help="Day of month.")
 @click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
 @click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
 @click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
-def distance(**kwargs):
-    """Show time difference between now and the input date."""
-    calendar = kwargs.pop("calendar")
-    options = DateInputOptions(**kwargs)
+def distance(
+    value: Optional[str],
+    jalali: bool,
+    gregorian: bool,
+    epoch_mode: bool,
+    interval: Optional[str],
+    year: Optional[int],
+    month: Optional[str],
+    day: Optional[int],
+    hour: Optional[int],
+    minute: Optional[int],
+    second: Optional[int],
+):
+    """Show time difference between now and the input date.
+
+    For concrete inputs, use exactly one of -j, -g, or -e.
+    """
+    calendar, options = _date_options_from_cli(
+        value=value,
+        jalali=jalali,
+        gregorian=gregorian,
+        epoch_mode=epoch_mode,
+        interval=interval,
+        year=year,
+        month=month,
+        day=day,
+        hour=hour,
+        minute=minute,
+        second=second,
+    )
     now = datetime.now().astimezone()
     input_dt = parse_input_datetime(calendar, options, now=now)
     print_distance(now, input_dt)
 
 
 @click.command(name="distance-between")
-@click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    required=False,
-    help=(
-        "Input calendar (gregorian|jalali, shortcuts: g|j). "
-        "Required only when --start/--end are full-date values."
-    ),
-)
+@click.option("-j", "--jalali", is_flag=True, help="Treat full-date endpoints as Jalali dates.")
+@click.option("-g", "--gregorian", is_flag=True, help="Treat full-date endpoints as Gregorian dates.")
+@click.option("-e", "--epoch", "epoch_mode", is_flag=True, help="Treat --start/--end as Unix timestamps.")
 @click.option(
     "-s",
     "--start",
     type=str,
     required=True,
     help=(
-        "Start date/time (unix timestamp, full date/time string, or PostgreSQL interval relative to now). "
+        "Start date/time (full date/time string, PostgreSQL interval relative to now, or unix timestamp with -e). "
         "Examples: '2026-01-04 10:43:45+03:30', '2026-01-04', '1404/10/14 10:44:46', '-3.4 hours'."
     ),
 )
 @click.option(
-    "-e",
     "--end",
     type=str,
     required=True,
     help=(
-        "End date/time (unix timestamp, full date/time string, or PostgreSQL interval relative to now). "
+        "End date/time (full date/time string, PostgreSQL interval relative to now, or unix timestamp with -e). "
         "Examples: '2026-02-01 08:00', '2026-02-01', '1404/11/12 12:00:00', '2 days'."
     ),
 )
-def distance_between(calendar: Optional[str], start: str, end: str):
-    """Show time difference between two dates."""
-    cal = normalize_calendar(calendar) if calendar is not None else None
+def distance_between(jalali: bool, gregorian: bool, epoch_mode: bool, start: str, end: str):
+    """Show time difference between two dates.
+
+    Use exactly one of -j, -g, or -e.
+    """
+    kind = _selected_date_kind(jalali, gregorian, epoch_mode)
     now = datetime.now().astimezone()
-    start_dt = parse_distance_between_endpoint(start, cal, now, "start")
-    end_dt = parse_distance_between_endpoint(end, cal, now, "end")
+    if kind == "epoch":
+        start_dt = parse_epoch(start)
+        end_dt = parse_epoch(end)
+    else:
+        if is_epoch_candidate(start) or is_epoch_candidate(end):
+            raise click.ClickException("Use -e/--epoch for Unix timestamp inputs.")
+        start_dt = parse_distance_between_endpoint(start, kind, now, "start")
+        end_dt = parse_distance_between_endpoint(end, kind, now, "end")
     print_distance(start_dt, end_dt)
 
 

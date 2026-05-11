@@ -298,6 +298,12 @@ Depending on the subcommand, inputs can be:
 - Unix timestamps
 - PostgreSQL-style intervals like `1 y`, `-3.4 hours`, `2 days 04:30`
 
+Use exactly one date-kind flag for concrete date inputs:
+
+- `-j`, `--jalali`
+- `-g`, `--gregorian`
+- `-e`, `--epoch`
+
 Examples:
 
 ```shell
@@ -308,20 +314,21 @@ pyjdate convert --interval "1 y"
 pyjdate convert -i "-3.4 hours"
 
 # Convert a concrete Gregorian or Jalali date.
-pyjdate convert -c g --full-date "2026-01-04 10:43"
-pyjdate convert -c j --full-date "1404/10/14 10:44:46"
+pyjdate convert -g "2026-01-04 10:43"
+pyjdate convert -j "1404/10/14 10:44:46"
+pyjdate convert -e "1700000000"
 
 # Show the range of an entire month or year.
-pyjdate interval -c g -y 2026 -m 02
-pyjdate interval -c j -y 1404
+pyjdate interval -g -y 2026 -m 02
+pyjdate interval -j -y 1404
 
 # Distance from now.
 pyjdate distance -i "2 days 4 hours"
-pyjdate distance -c g --full-date "2026-01-10 08:00"
+pyjdate distance -g "2026-01-10 08:00"
 
 # Distance between two endpoints.
-pyjdate distance-between -c g -s "2026-01-01 00:00" -e "2026-01-02 12:00"
-pyjdate distance-between -s "-3 days" -e "6 hours"
+pyjdate distance-between -g -s "2026-01-01 00:00" --end "2026-01-02 12:00"
+pyjdate distance-between -g -s "-3 days" --end "6 hours"
 ```
 
 `distance` and `distance-between` print:
