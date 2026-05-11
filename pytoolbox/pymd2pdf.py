@@ -51,10 +51,27 @@ def _is_rtl(text):
     return bool(text) and bool(_RTL_RE.search(text))
 
 
+# Glyphs missing from the base Vazir font. Replaced before shaping when only
+# base Vazir is available — Vazirmatn (its successor) covers them natively.
+_VAZIR_GLYPH_FALLBACK = {
+    '→': '->',   # →
+    '←': '<-',   # ←
+    '×': 'x',    # ×
+    '÷': '/',    # ÷
+}
+
+# Populated by _find_persian_font when the chosen Persian face needs glyph
+# substitution. Empty when the face has full coverage (e.g. Vazirmatn).
+_persian_glyph_fallback: dict = {}
+
+
 def _shape_rtl(text):
     """Reshape Arabic/Persian letters and apply the bidi algorithm."""
     if not _HAS_SHAPER or not text:
         return text
+    if _persian_glyph_fallback:
+        for src, dst in _persian_glyph_fallback.items():
+            text = text.replace(src, dst)
     return get_display(arabic_reshaper.reshape(text))
 
 # ── Colour palette ──────────────────────────────────────────────────
@@ -100,12 +117,29 @@ def _find_font_dir():
 
 
 def _find_persian_font():
-    """Return (regular_path, bold_path) for Vazir, or (None, None) if absent."""
+    """Return (regular_path, bold_path) for the best available Persian face.
+
+    Prefers Vazirmatn (Vazir's successor, broader Unicode coverage) over
+    base Vazir. When falling back to base Vazir, populates the
+    ``_persian_glyph_fallback`` map so missing glyphs get substituted at
+    shape time. Returns (None, None) if neither family is installed.
+    """
+    global _persian_glyph_fallback
+    # (regular, bold, needs_glyph_fallback)
+    candidates = (
+        ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf", False),
+        ("Vazirmatn.ttf",         "Vazirmatn-Bold.ttf", False),
+        ("Vazir.ttf",              "Vazir-Bold.ttf",     True),
+    )
     for d in FONT_PERSIAN_DIRS:
-        reg = d / "Vazir.ttf"
-        if reg.is_file():
-            bold = d / "Vazir-Bold.ttf"
-            return reg, (bold if bold.is_file() else reg)
+        for reg_name, bold_name, needs_fallback in candidates:
+            reg = d / reg_name
+            if reg.is_file():
+                bold = d / bold_name
+                _persian_glyph_fallback = (
+                    dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
+                )
+                return reg, (bold if bold.is_file() else reg)
     return None, None
 
 
@@ -146,9 +180,14 @@ class PDF(FPDF):
 
     def header(self):
         if self.page_no() > 1 and self._doc_title:
-            self.set_font(FONT_SANS, "I", 8)
+            title = self._doc_title
             self.set_text_color(140, 140, 140)
-            self.cell(0, 6, self._doc_title, align="R")
+            if _is_rtl(title) and self.has_persian:
+                self.set_font(FONT_FA, "", 8)
+                self.cell(0, 6, _shape_rtl(title), align="R")
+            else:
+                self.set_font(FONT_SANS, "I", 8)
+                self.cell(0, 6, title, align="R")
             self.ln(8)
 
     def footer(self):
@@ -209,8 +248,8 @@ def _render_rich(pdf, text, base_size=BODY_SIZE, base_style=""):
 # ═══════════════════════════════════════════════════════════════════
 
 def _add_heading(pdf, level, text):
-    sizes = {1: 18, 2: 14, 3: 12, 4: 11}
-    sz = sizes.get(level, 11)
+    sizes = {1: 18, 2: 14, 3: 12, 4: 11, 5: 10, 6: 10}
+    sz = sizes.get(level, 10)
     pdf.ln(4 if level > 1 else 6)
     pdf.set_text_color(*CLR_HEADING)
     stripped = _strip_md(text)
@@ -500,7 +539,7 @@ def convert(md_path, pdf_path):
             continue
 
         # ── heading ─────────────────────────────────────────────
-        m = re.match(r'^(#{1,4})\s+(.*)', line)
+        m = re.match(r'^(#{1,6})\s+(.*)', line)
         if m:
             _add_heading(pdf, len(m.group(1)), m.group(2))
             i += 1
