@@ -72,6 +72,7 @@ pytime = "pytoolbox.pytime:time_cli"
 pyssh = "pytoolbox.pyssh:ssh_management"
 pynet = "pytoolbox.pynet:net_cli"
 pymd2pdf = "pytoolbox.pymd2pdf:pymd2pdf_cli"
+pydocx2md = "pytoolbox.pydocx2md:docx2md_cli"
 
 [tool.setuptools.packages.find]
 include = ["pytoolbox*"]

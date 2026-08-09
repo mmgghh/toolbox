@@ -28,6 +28,7 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "ssh": ("pytoolbox.pyssh", "ssh_management", "SSH tunnels and rsync (pyssh)"),
     "net": ("pytoolbox.pynet", "net_cli", "Network diagnostics (pynet)"),
     "md2pdf": ("pytoolbox.pymd2pdf", "pymd2pdf_cli", "Markdown to PDF (pymd2pdf)"),
+    "docx2md": ("pytoolbox.pydocx2md", "docx2md_cli", "Word to Markdown (pydocx2md)"),
 }
 
 
@@ -86,6 +87,11 @@ class LazyGroup(AliasedGroup):
             return _MissingDependencyCommand(name, description, exc)
         command = getattr(module, attribute)
         command.short_help = description
+        # Rename to the umbrella's alias so usage and error lines read
+        # `toolbox fm ...` rather than `toolbox file-management ...`, which is
+        # not a command anyone can type. AliasedGroup.resolve_command reports
+        # command.name, so this is what makes those lines copy-pasteable.
+        command.name = name
         return command
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
@@ -115,6 +121,7 @@ def toolbox() -> None:
       toolbox ssh ...     ==  pyssh ...
       toolbox net ...     ==  pynet ...
       toolbox md2pdf ...  ==  pymd2pdf ...
+      toolbox docx2md ... ==  pydocx2md ...
 
     \b
     Examples:
@@ -201,7 +208,7 @@ def completion(shell: Optional[str]) -> None:
     """Print shell-completion setup for every pytoolbox command.
 
     \b
-    Covers `toolbox` and all seven standalone `py*` commands at once.
+    Covers `toolbox` and every standalone `py*` command at once.
     SHELL defaults to the one named by $SHELL.
 
     \b
@@ -238,7 +245,7 @@ def completion(shell: Optional[str]) -> None:
     for prog_name in console_scripts():
         # `source()` only formats the program name and env var into a template;
         # it never inspects the command object. Passing the umbrella group for
-        # every script therefore avoids importing all seven modules just to
+        # every script therefore avoids importing every module just to
         # print a few lines of shell.
         source = completion_class(toolbox, {}, prog_name, f"_{prog_name.upper()}_COMPLETE").source()
         click.echo(source.strip())

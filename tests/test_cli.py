@@ -61,6 +61,17 @@ def test_umbrella_forwards_to_each_subcommand(runner, name):
     assert "Usage:" in result.output
 
 
+@pytest.mark.parametrize("name", sorted(SUBCOMMANDS))
+def test_umbrella_usage_line_names_the_command_you_typed(runner, name):
+    """`toolbox fm --help` must not say `Usage: toolbox file-management`.
+
+    The usage line is the thing users copy; it has to be a command that runs.
+    """
+    result = runner.invoke(toolbox, [name, "--help"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout.startswith(f"Usage: toolbox {name} ")
+
+
 def test_umbrella_runs_a_real_subcommand(runner):
     result = runner.invoke(toolbox, ["jdate", "convert", "-g", "2026-01-04"])
     assert result.exit_code == 0, result.output

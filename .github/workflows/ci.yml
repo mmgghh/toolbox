@@ -81,6 +81,7 @@ jobs:
           pyfm --help
           pytime --help
           pyssh --help
+          pydocx2md --help
       # Completion asks the umbrella for every subcommand, so a subcommand
       # whose dependency is absent must not take the whole thing down.
       - name: Smoke test shell completion

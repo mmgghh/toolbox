@@ -14,6 +14,7 @@ toolbox fm duplicates ~/photos # find identical files
 toolbox net port example.com 443
 toolbox time start "write docs"
 toolbox md2pdf notes.md
+toolbox docx2md reviewed.docx  # Word to Markdown, comments and all
 ```
 
 ## The commands
@@ -27,6 +28,7 @@ toolbox md2pdf notes.md
 | `pyssh`    | `toolbox ssh`    | SOCKS tunnels (single and chained) and an rsync wrapper          | [docs/pyssh.md](docs/pyssh.md) |
 | `pynet`    | `toolbox net`    | IP, DNS, ports, ping, HTTP, WHOIS, quick file server             | [docs/pynet.md](docs/pynet.md) |
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
+| `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |
 
 Every command supports `-h/--help` and `-V/--version`, accepts unambiguous
 subcommand prefixes (`pyfm part` == `pyfm partition`), suggests alternatives
@@ -61,8 +63,8 @@ installs anywhere without a compiler. Add what you need:
 
 ### Shell completion
 
-`toolbox completion` prints the setup for `toolbox` **and** all seven `py*`
-commands in one go. It supports bash, zsh and fish, and detects your shell from
+`toolbox completion` prints the setup for `toolbox` **and** every `py*`
+command in one go. It supports bash, zsh and fish, and detects your shell from
 `$SHELL` when you do not name one.
 
 ```shell

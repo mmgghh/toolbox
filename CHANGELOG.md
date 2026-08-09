@@ -7,8 +7,21 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **New `pydocx2md` command** (`toolbox docx2md`) — converts Word `.docx` to
+  Markdown and keeps the comments, which is the part every other converter
+  drops. Each comment gets a numbered marker at the text it annotates and its
+  thread quoted under the containing paragraph or table; replies nest as
+  `[1.1]`, and comments marked done are labelled `(resolved)`. Headings, lists,
+  tables, images, footnotes and hyperlinks convert; tracked insertions are kept
+  and tracked deletions dropped, so the output reads as the final text.
+
+  The reader is built on `zipfile` and `xml.etree`, so this adds **no
+  dependency** and works on a bare Termux install. Headings are matched on the
+  OOXML style id rather than its display name, so documents authored in a
+  localised Word convert correctly.
+
 - **Shell completion for every command.** `toolbox completion [bash|zsh|fish]`
-  prints the setup for `toolbox` and all seven standalone `py*` commands at
+  prints the setup for `toolbox` and every standalone `py*` command at
   once, and detects the shell from `$SHELL` when none is given. Subcommands,
   options, `--format` choices and path arguments all complete.
 - `toolbox doctor` points at `toolbox completion`.
