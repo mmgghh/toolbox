@@ -3,6 +3,25 @@
 All notable changes to this project are documented here.
 This project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Shell completion for every command.** `toolbox completion [bash|zsh|fish]`
+  prints the setup for `toolbox` and all seven standalone `py*` commands at
+  once, and detects the shell from `$SHELL` when none is given. Subcommands,
+  options, `--format` choices and path arguments all complete.
+- `toolbox doctor` points at `toolbox completion`.
+
+### Fixed
+
+- A missing optional dependency no longer breaks shell completion for the
+  *whole* umbrella command. Completion asks the lazy group for every
+  subcommand, so the import error raised while loading (say) `md2pdf` without
+  `fpdf2` installed left `toolbox <TAB>` printing a traceback and no
+  candidates. The subcommand now stays listed and raises its install hint only
+  when it is actually invoked.
+
 ## [0.2.0] — 2026-08-09
 
 A broad overhaul: new commands, a shared core, real tests, and fixes for

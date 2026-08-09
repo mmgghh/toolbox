@@ -81,3 +81,10 @@ jobs:
           pyfm --help
           pytime --help
           pyssh --help
+      # Completion asks the umbrella for every subcommand, so a subcommand
+      # whose dependency is absent must not take the whole thing down.
+      - name: Smoke test shell completion
+        run: |
+          toolbox completion bash > /dev/null
+          COMP_WORDS="toolbox " COMP_CWORD=1 _TOOLBOX_COMPLETE=bash_complete toolbox \
+            | grep -qx "plain,md2pdf"

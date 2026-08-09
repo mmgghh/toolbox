@@ -29,8 +29,8 @@ toolbox md2pdf notes.md
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 
 Every command supports `-h/--help` and `-V/--version`, accepts unambiguous
-subcommand prefixes (`pyfm part` == `pyfm partition`), and suggests
-alternatives when you mistype one.
+subcommand prefixes (`pyfm part` == `pyfm partition`), suggests alternatives
+when you mistype one, and has [shell completion](#shell-completion).
 
 ## Install
 
@@ -58,6 +58,23 @@ installs anywhere without a compiler. Add what you need:
 | `socks` | `requests[socks]`                 | `pyssh --reconnect` proxy health checks |
 | `all`   | all of the above                  |                                         |
 | `dev`   | `pytest`, `pytest-cov`, `ruff`    | working on toolbox itself               |
+
+### Shell completion
+
+`toolbox completion` prints the setup for `toolbox` **and** all seven `py*`
+commands in one go. It supports bash, zsh and fish, and detects your shell from
+`$SHELL` when you do not name one.
+
+```shell
+eval "$(toolbox completion bash)"        # this session only
+toolbox completion bash >> ~/.bashrc     # every session
+toolbox completion zsh  >> ~/.zshrc
+toolbox completion fish > ~/.config/fish/completions/pytoolbox.fish
+```
+
+Subcommands, options, `--format` choices and path arguments all complete. A
+missing optional dependency only affects its own command: `toolbox <TAB>` keeps
+working even without the `pdf` extra installed.
 
 ### Check your setup
 
@@ -105,7 +122,8 @@ instead of the XDG ones.
 
 ## Shared conventions
 
-- `-h/--help` everywhere, `-V/--version` everywhere.
+- `-h/--help` everywhere, `-V/--version` everywhere, completion everywhere
+  (`toolbox completion`).
 - `-v/--verbose` (repeatable) for progress detail, `-q/--quiet` to suppress it.
 - `-n/--dry-run` on anything that changes files, `-y/--yes` to skip prompts.
 - `--json` (or `--format json`) wherever output is structured.

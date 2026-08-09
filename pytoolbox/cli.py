@@ -31,6 +31,40 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
 }
 
 
+#: Shells Click can generate completion scripts for.
+SHELLS = ("bash", "zsh", "fish")
+
+
+def console_scripts() -> list[str]:
+    """Every console script this package installs.
+
+    Derived from :data:`SUBCOMMANDS` rather than hard-coded, since each
+    ``toolbox <name>`` is installed standalone as ``py<name>``.
+    """
+    return ["toolbox", *(f"py{name}" for name in sorted(SUBCOMMANDS))]
+
+
+class _MissingDependencyCommand(click.Command):
+    """Stand-in for a subcommand whose optional dependency is not installed.
+
+    Shell completion asks the group for *every* subcommand, so raising at import
+    time would take down completion for the whole umbrella -- including the
+    commands that do work, which is the opposite of what the lazy group is for.
+    This placeholder keeps the name listed and defers the error to the moment
+    someone actually runs it.
+    """
+
+    def __init__(self, name: str, description: str, exc: ImportError) -> None:
+        super().__init__(name, short_help=description)
+        self._exc = exc
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        raise click.ClickException(
+            f"`toolbox {self.name}` needs a dependency that is not installed: {self._exc}. "
+            f"Try `pip install 'pytoolbox[all]'`."
+        )
+
+
 class LazyGroup(AliasedGroup):
     """Resolves each subcommand's module only when that subcommand is invoked."""
 
@@ -49,10 +83,7 @@ class LazyGroup(AliasedGroup):
         try:
             module = importlib.import_module(module_name)
         except ImportError as exc:
-            raise click.ClickException(
-                f"`toolbox {name}` needs a dependency that is not installed: {exc}. "
-                f"Try `pip install 'pytoolbox[all]'`."
-            ) from exc
+            return _MissingDependencyCommand(name, description, exc)
         command = getattr(module, attribute)
         command.short_help = description
         return command
@@ -153,11 +184,65 @@ def doctor() -> None:
         click.echo(f"  {click.style('ok', fg='green')} using {backend}")
 
     click.echo("")
+    click.echo("Shell completion")
+    click.echo("  run `toolbox completion` and follow the instructions it prints")
+
+    click.echo("")
     click.echo("Paths")
     click.echo(f"  config   {paths.config_dir()}")
     click.echo(f"  data     {paths.data_dir()}")
     click.echo(f"  cache    {paths.cache_dir()}")
     click.echo(f"  runtime  {paths.runtime_dir()}")
+
+
+@toolbox.command()
+@click.argument("shell", type=click.Choice(SHELLS), required=False)
+def completion(shell: Optional[str]) -> None:
+    """Print shell-completion setup for every pytoolbox command.
+
+    \b
+    Covers `toolbox` and all seven standalone `py*` commands at once.
+    SHELL defaults to the one named by $SHELL.
+
+    \b
+    Examples:
+      toolbox completion                      # print, to see what it does
+      eval "$(toolbox completion bash)"       # enable for this session
+      toolbox completion bash >> ~/.bashrc    # enable permanently
+    """
+    import os
+
+    from click.shell_completion import get_completion_class
+
+    if shell is None:
+        detected = os.path.basename(os.environ.get("SHELL", ""))
+        if detected not in SHELLS:
+            raise click.ClickException(
+                f"Could not tell which shell you use from $SHELL={os.environ.get('SHELL', '')!r}. "
+                f"Pass one explicitly: {', '.join(SHELLS)}."
+            )
+        shell = detected
+
+    completion_class = get_completion_class(shell)
+    if completion_class is None:  # pragma: no cover - guarded by click.Choice
+        raise click.ClickException(f"Click cannot generate completion for {shell!r}.")
+
+    click.echo(f"# pytoolbox completion for {shell}. To enable it:")
+    if shell == "fish":
+        click.echo("#   toolbox completion fish > ~/.config/fish/completions/pytoolbox.fish")
+    else:
+        click.echo(f'#   eval "$(toolbox completion {shell})"      # this session')
+        click.echo(f"#   toolbox completion {shell} >> ~/.{shell}rc   # every session")
+    click.echo("")
+
+    for prog_name in console_scripts():
+        # `source()` only formats the program name and env var into a template;
+        # it never inspects the command object. Passing the umbrella group for
+        # every script therefore avoids importing all seven modules just to
+        # print a few lines of shell.
+        source = completion_class(toolbox, {}, prog_name, f"_{prog_name.upper()}_COMPLETE").source()
+        click.echo(source.strip())
+        click.echo("")
 
 
 @toolbox.command("where")

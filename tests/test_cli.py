@@ -5,10 +5,11 @@ from __future__ import annotations
 import importlib
 
 import pytest
+from click.shell_completion import ShellComplete
 from click.testing import CliRunner
 
 from pytoolbox import __version__
-from pytoolbox.cli import SUBCOMMANDS, toolbox
+from pytoolbox.cli import SHELLS, SUBCOMMANDS, console_scripts, toolbox
 
 #: Every console script declared in pyproject.toml.
 ENTRY_POINTS = [
@@ -89,3 +90,93 @@ def test_where_lists_directories(runner, tmp_path, monkeypatch):
 def test_unknown_subcommand_is_reported(runner):
     result = runner.invoke(toolbox, ["nonsense"])
     assert result.exit_code != 0
+
+
+# --- shell completion ------------------------------------------------------
+
+
+def test_console_scripts_match_the_installed_entry_points():
+    from importlib.metadata import distribution
+
+    installed = {
+        entry.name
+        for entry in distribution("pytoolbox").entry_points
+        if entry.group == "console_scripts"
+    }
+    assert set(console_scripts()) == installed
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_completion_emits_a_script_for_every_console_script(runner, shell):
+    result = runner.invoke(toolbox, ["completion", shell])
+    assert result.exit_code == 0, result.output
+    for prog_name in console_scripts():
+        assert f"_{prog_name.upper()}_COMPLETE" in result.stdout
+
+
+def test_completion_detects_the_shell_from_the_environment(runner, monkeypatch):
+    monkeypatch.setenv("SHELL", "/usr/bin/zsh")
+    result = runner.invoke(toolbox, ["completion"])
+    assert result.exit_code == 0, result.output
+    assert "completion for zsh" in result.stdout
+
+
+def test_completion_asks_for_a_shell_when_it_cannot_tell(runner, monkeypatch):
+    monkeypatch.setenv("SHELL", "/usr/bin/nushell")
+    result = runner.invoke(toolbox, ["completion"])
+    assert result.exit_code != 0
+    assert "Pass one explicitly" in result.output
+
+
+def test_completion_rejects_an_unsupported_shell(runner):
+    result = runner.invoke(toolbox, ["completion", "csh"])
+    assert result.exit_code != 0
+
+
+def _complete(args, incomplete=""):
+    """Return the completion candidates Click offers for ``toolbox <args>``."""
+    completer = ShellComplete(toolbox, {}, "toolbox", "_TOOLBOX_COMPLETE")
+    return [item.value for item in completer.get_completions(args, incomplete)]
+
+
+def test_completion_lists_subcommands_and_their_subcommands():
+    top_level = _complete([])
+    for name in SUBCOMMANDS:
+        assert name in top_level
+    assert "completion" in top_level
+    assert "ping" in _complete(["net"])
+
+
+def test_completion_survives_a_missing_optional_dependency(monkeypatch):
+    """A broken module must not take completion down for the whole umbrella."""
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pytoolbox.pymd2pdf":
+            raise ImportError("No module named 'fpdf'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("pytoolbox.cli.importlib.import_module", fake_import)
+
+    top_level = _complete([])
+    for name in SUBCOMMANDS:
+        assert name in top_level, "completion dropped commands because one import failed"
+
+
+def test_missing_optional_dependency_fails_only_when_invoked(runner, monkeypatch):
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "pytoolbox.pymd2pdf":
+            raise ImportError("No module named 'fpdf'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("pytoolbox.cli.importlib.import_module", fake_import)
+
+    listed = runner.invoke(toolbox, ["--help"])
+    assert listed.exit_code == 0, listed.output
+    assert "md2pdf" in listed.stdout
+
+    result = runner.invoke(toolbox, ["md2pdf", "notes.md"])
+    assert result.exit_code != 0
+    assert "pip install 'pytoolbox[all]'" in result.output
