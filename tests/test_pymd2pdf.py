@@ -164,7 +164,7 @@ def test_cli_rejects_output_with_multiple_inputs(runner, tmp_path):
     second.write_text("# b\n", encoding="utf-8")
     result = runner.invoke(pymd2pdf_cli, [str(first), str(second), "-o", str(tmp_path / "x.pdf")])
     assert result.exit_code != 0
-    assert "single input file" in result.output
+    assert "single input file" in result.stderr
 
 
 def test_cli_rejects_output_and_output_dir_together(runner, tmp_path):
