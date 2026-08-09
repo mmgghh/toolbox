@@ -131,7 +131,7 @@ def test_convert_persian_script(runner):
 def test_convert_requires_exactly_one_calendar(runner):
     result = runner.invoke(jdate_cli, ["convert", "-g", "-j", "2026-01-04"])
     assert result.exit_code != 0
-    assert "exactly one" in result.output.lower()
+    assert "exactly one" in result.stderr.lower()
 
 
 def test_convert_rejects_invalid_date(runner):
@@ -167,4 +167,4 @@ def test_command_prefix_is_accepted(runner):
 def test_unknown_command_suggests_alternatives(runner):
     result = runner.invoke(jdate_cli, ["converrt", "-g", "2026-01-04"])
     assert result.exit_code != 0
-    assert "did you mean" in result.output.lower()
+    assert "did you mean" in result.stderr.lower()

@@ -2,17 +2,25 @@
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 from click.testing import CliRunner
+
+# Click 8.2 always keeps the two streams apart. Older releases (the newest
+# Click available on Python 3.9) fold stderr into stdout unless asked not to.
+_MIXES_STDERR = "mix_stderr" in inspect.signature(CliRunner.__init__).parameters
 
 
 @pytest.fixture
 def runner() -> CliRunner:
-    """A Click test runner.
+    """A Click test runner that keeps stdout and stderr apart.
 
-    ``result.stdout`` holds only real output; ``result.output`` also includes
-    the progress and warning text pytoolbox sends to stderr.
+    ``result.stdout`` holds only real output, so JSON payloads stay parseable
+    even when a command writes progress notes to stderr.
     """
+    if _MIXES_STDERR:
+        return CliRunner(mix_stderr=False)
     return CliRunner()
 
 

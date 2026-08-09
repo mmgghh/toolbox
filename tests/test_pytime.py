@@ -59,7 +59,7 @@ def test_start_closes_the_previous_entry(runner, db):
 def test_end_without_a_running_entry_fails(runner, db):
     result = runner.invoke(time_cli, ["end"])
     assert result.exit_code != 0
-    assert "no unfinished entry" in result.output.lower()
+    assert "no unfinished entry" in result.stderr.lower()
 
 
 def test_resume_reuses_project_and_task(runner, db):
@@ -74,7 +74,7 @@ def test_resume_reuses_project_and_task(runner, db):
 def test_resume_without_history_fails(runner, db):
     result = runner.invoke(time_cli, ["resume"])
     assert result.exit_code != 0
-    assert "no entry to resume" in result.output.lower()
+    assert "no entry to resume" in result.stderr.lower()
 
 
 def test_add_with_duration(runner, db):
@@ -107,7 +107,7 @@ def test_add_rejects_end_before_start(runner, db):
         ["add", "-c", "g", "--end", "2026-04-24 08:00", "oops", "2026-04-24 09:00"],
     )
     assert result.exit_code != 0
-    assert "cannot be before" in result.output.lower()
+    assert "cannot be before" in result.stderr.lower()
 
 
 def test_add_requires_end_or_duration(runner, db):
@@ -159,7 +159,7 @@ def test_report_group_by_day_requires_month_and_year(runner, db):
     _seed(runner)
     result = runner.invoke(time_cli, ["report", "-g", "day"])
     assert result.exit_code != 0
-    assert "requires" in result.output.lower()
+    assert "requires" in result.stderr.lower()
 
 
 def test_report_project_filter(runner, db):

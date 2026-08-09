@@ -188,7 +188,7 @@ def test_stop_requires_a_target(runner):
     pyssh.save_state("mine", {"kind": "tunnel", "pids": [os.getpid()], "socks_port": 9998})
     result = runner.invoke(ssh_management, ["stop"])
     assert result.exit_code != 0
-    assert "name" in result.output.lower()
+    assert "name" in result.stderr.lower()
 
 
 def test_stop_unknown_name(runner):
@@ -242,7 +242,7 @@ def test_rsync_dir_reports_failure(runner, monkeypatch):
         ssh_management, ["rsync-dir", "-s", "a", "-d", "b", "-p", "22"]
     )
     assert result.exit_code != 0
-    assert "23" in result.output
+    assert "23" in result.stderr
 
 
 def test_tunnel_refuses_a_busy_port(runner, monkeypatch):
@@ -258,4 +258,4 @@ def test_tunnel_refuses_a_busy_port(runner, monkeypatch):
             ssh_management, ["tunnel", "-s", "me@host", "-p", str(port)]
         )
     assert result.exit_code != 0
-    assert "already in use" in result.output
+    assert "already in use" in result.stderr

@@ -119,7 +119,7 @@ def test_search_text_only_matches(runner):
 def test_search_requires_a_query(runner, tree):
     result = runner.invoke(str_cli, ["search", str(tree)])
     assert result.exit_code != 0
-    assert "required" in result.output.lower()
+    assert "required" in result.stderr.lower()
 
 
 def test_replace_dry_run_leaves_files_alone(runner, tree):
@@ -159,7 +159,7 @@ def test_encode_and_decode_commands(runner):
 def test_decode_reports_bad_input(runner):
     result = runner.invoke(str_cli, ["decode", "--text", "zz!!", "--as", "hex"])
     assert result.exit_code != 0
-    assert "could not decode" in result.output.lower()
+    assert "could not decode" in result.stderr.lower()
 
 
 def test_count_command_json(runner):

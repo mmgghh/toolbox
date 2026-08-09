@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from pytoolbox.pyfm import file_management
 
@@ -42,7 +43,7 @@ def test_partition_requires_exactly_one_mode(runner, tmp_path):
     source.mkdir()
     result = runner.invoke(file_management, ["partition", "-s", str(source)])
     assert result.exit_code != 0
-    assert "exactly one" in result.output.lower()
+    assert "exactly one" in result.stderr.lower()
 
 
 def test_partition_by_split_count(runner, tmp_path):
@@ -155,7 +156,7 @@ def test_batch_find_replace_rejects_bad_regex(runner, tmp_path):
         ["batch-find-replace", "-d", str(tmp_path), "-f", "([", "-r", "x"],
     )
     assert result.exit_code != 0
-    assert "not a valid regex" in result.output
+    assert "not a valid regex" in result.stderr
 
 
 def test_batch_rename(runner, tmp_path):
@@ -183,7 +184,8 @@ def test_duplicates_finds_identical_files(runner, tree):
     assert result.exit_code == 0, result.output
     groups = json.loads(result.output)
     assert len(groups) == 1
-    assert sorted(p.rsplit("/", 1)[-1] for p in groups[0]["files"]) == ["one.txt", "three.txt"]
+    # The reported paths use the platform separator, so split with os.path.
+    assert sorted(os.path.basename(p) for p in groups[0]["files"]) == ["one.txt", "three.txt"]
 
 
 def test_duplicates_delete_keeps_one(runner, tree):
