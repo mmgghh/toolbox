@@ -14,6 +14,7 @@ setup(
         'openpyxl',
         'requests[socks]',
         'fpdf2',
+        'Pillow',
     ],
     extras_require={
         # Needed by pymd2pdf to shape and reorder Persian/Arabic text correctly.

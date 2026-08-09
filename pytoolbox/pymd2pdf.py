@@ -4,16 +4,25 @@
 Exposes the ``pymd2pdf`` console script (see ``pymd2pdf --help``).
 
 Supports: headings, bold, inline code, code blocks, tables, bullets,
-numbered lists, horizontal rules, and nested lists. Persian/Arabic text is
-shaped and rendered right-to-left when Vazir and the RTL extras are present.
+numbered lists, horizontal rules, nested lists, images, and Mermaid
+diagrams. Persian/Arabic text is shaped and rendered right-to-left when
+Vazir and the RTL extras are present.
 """
 
+import base64
+import io
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import click
+import requests
 from fpdf import FPDF
+from fpdf.svg import Percent, SVGObject
+from PIL import Image as PILImage
 
 try:
     import arabic_reshaper
@@ -21,6 +30,12 @@ try:
     _HAS_SHAPER = True
 except ImportError:
     _HAS_SHAPER = False
+
+# mermaid-cli (`mmdc`), if installed, renders Mermaid diagrams locally and
+# offline. Otherwise diagrams fall back to the mermaid.ink web API, and
+# finally to showing the raw source as a code block.
+_HAS_MMDC = shutil.which("mmdc") is not None
+_mermaid_net_warned = False
 
 # ── Font paths (DejaVu ships with most Linux distros) ───────────────
 FONT_DIRS = [
@@ -46,6 +61,9 @@ FONT_FA   = "Vazir"
 # Characters in the Arabic/Persian Unicode blocks (including presentation forms).
 _RTL_RE = re.compile(r'[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]')
 
+# A standalone Markdown image line: ![alt](src "optional title")
+_IMG_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+["\'][^"\']*["\'])?\s*\)\s*$')
+
 
 def _is_rtl(text):
     return bool(text) and bool(_RTL_RE.search(text))
@@ -58,6 +76,16 @@ _VAZIR_GLYPH_FALLBACK = {
     '←': '<-',   # ←
     '×': 'x',    # ×
     '÷': '/',    # ÷
+    '☐': '[ ]',  # ☐ BALLOT BOX
+    '☑': '[x]',  # ☑ BALLOT BOX WITH CHECK
+    'ˏ': '/',  # ˏ MODIFIER LETTER LOW ACUTE ACCENT, seen as a numeral separator
+    # Substitutes for the nested-bullet markers below must stay in the Unicode
+    # "neutral" bidi classes (punctuation/symbols), not letters: a marker is
+    # folded into RTL text as its first logical word, and unlike a neutral
+    # character, a strong-direction letter (e.g. 'o') doesn't take on the
+    # surrounding RTL run's position -- it renders on the wrong (left) side.
+    '◦': '·',    # ◦ WHITE BULLET (nested list marker)
+    '▪': '*',    # ▪ BLACK SMALL SQUARE (nested list marker)
 }
 
 # Populated by _find_persian_font when the chosen Persian face needs glyph
@@ -65,14 +93,82 @@ _VAZIR_GLYPH_FALLBACK = {
 _persian_glyph_fallback: dict = {}
 
 
+def _bidi_display(s):
+    """get_display, but only when ``s`` actually has RTL characters.
+
+    Forcing ``base_dir='R'`` (see ``_shape_rtl``'s docstring) is necessary
+    for correct ordering whenever RTL text is present, but doing it to a
+    string with *no* RTL characters at all backfires: with nothing to anchor
+    the forced RTL paragraph level, python-bidi's mirroring pass swaps
+    parentheses it shouldn't (`"(SRS)"` -> `"(SRS ("`). Such strings need no
+    reordering anyway -- right-alignment at the page-layout level already
+    positions them correctly.
+    """
+    return str(get_display(s, base_dir='R')) if _HAS_SHAPER and _is_rtl(s) else s
+
+
 def _shape_rtl(text):
-    """Reshape Arabic/Persian letters and apply the bidi algorithm."""
+    """Reshape Arabic/Persian letters and apply the bidi algorithm.
+
+    ``base_dir='R'`` is required: without it, ``get_display`` auto-detects
+    paragraph direction from the first strong-direction character it finds
+    (Unicode's P2/P3 rules), so a string that happens to *start* with a run
+    of Latin text (e.g. a heading or bold term before any Persian) would get
+    treated as an LTR paragraph and come out reordered backwards, even
+    though we already know -- the caller checked -- that this text belongs
+    in an RTL context. See ``_bidi_display`` for why that's still gated on
+    the text actually containing RTL characters.
+    """
     if not _HAS_SHAPER or not text:
         return text
     if _persian_glyph_fallback:
         for src, dst in _persian_glyph_fallback.items():
             text = text.replace(src, dst)
-    return get_display(arabic_reshaper.reshape(text))
+    return _bidi_display(arabic_reshaper.reshape(text))
+
+
+def _shape_rtl_lines(pdf, text, max_width, marker=""):
+    """Reshape RTL text and wrap it to max_width, one bidi-reordered line each.
+
+    Reshaping needs the full logical string so Arabic-script letters join
+    correctly, but bidi reordering (``get_display``) must happen per rendered
+    line: fpdf always draws left-to-right, and ``get_display`` reverses a
+    right-to-left string into visual order, so its first characters are
+    actually the *end* of the sentence. Reordering the whole paragraph before
+    handing it to a greedy left-to-right wrapper (fpdf's multi_cell) puts the
+    tail of the paragraph on the first physical line instead of the start.
+    Wrapping first (in logical order) and reordering each resulting line
+    keeps lines in the right order and each line's glyphs in the right
+    direction.
+
+    ``marker``, if given (e.g. a list-item's "1." or "-"), is treated as the
+    first logical word rather than appended to the output afterward: bidi
+    reordering resolves neutral characters (like a marker's period) based on
+    the strong-direction text around them, so splicing a pre-built marker
+    string onto already-reordered text puts punctuation on the wrong side.
+    Running marker and body through reshape/reorder together as one unit
+    gets that resolution right, and naturally budgets the marker's width
+    against the first line during wrapping.
+    """
+    full_text = f"{marker} {text}" if marker else text
+    if not _HAS_SHAPER or not text:
+        return [full_text]
+    if _persian_glyph_fallback:
+        for src, dst in _persian_glyph_fallback.items():
+            full_text = full_text.replace(src, dst)
+    words = arabic_reshaper.reshape(full_text).split(' ')
+    lines, current = [], []
+    for word in words:
+        candidate = ' '.join(current + [word])
+        if current and pdf.get_string_width(candidate) > max_width:
+            lines.append(_bidi_display(' '.join(current)))
+            current = [word]
+        else:
+            current.append(word)
+    if current:
+        lines.append(_bidi_display(' '.join(current)))
+    return lines
+
 
 # ── Colour palette ──────────────────────────────────────────────────
 CLR_HEADING       = (20, 60, 120)
@@ -157,6 +253,9 @@ class PDF(FPDF):
         self.add_font(FONT_SANS, "I", str(fdir / "DejaVuSerif.ttf"))
         self.add_font(FONT_MONO, "",  str(fdir / "DejaVuSansMono.ttf"))
         self.add_font(FONT_MONO, "B", str(fdir / "DejaVuSansMono-Bold.ttf"))
+
+        # Set by convert() once the document's text is known; see _use_rtl_layout.
+        self.doc_is_rtl = False
 
         fa_reg, fa_bold = _find_persian_font()
         self.has_persian = fa_reg is not None
@@ -253,7 +352,7 @@ def _add_heading(pdf, level, text):
     pdf.ln(4 if level > 1 else 6)
     pdf.set_text_color(*CLR_HEADING)
     stripped = _strip_md(text)
-    if _is_rtl(stripped) and getattr(pdf, "has_persian", False):
+    if _use_rtl_layout(pdf, stripped):
         pdf.set_font(FONT_FA, "B", sz)
         pdf.multi_cell(
             0, sz * 0.6, _shape_rtl(stripped),
@@ -287,6 +386,143 @@ def _add_code_block(pdf, lines):
     pdf.ln(2)
 
 
+def _looks_like_svg(data):
+    head = data[:512].lstrip(b'\xef\xbb\xbf').lstrip()
+    return head[:5].lower() == b'<?xml' or head[:4].lower() == b'<svg'
+
+
+def _svg_size(data):
+    """Return an SVG's intrinsic (width, height), falling back to a default aspect.
+
+    ``width``/``height`` attributes given as a percentage (e.g. ``width="100%"``)
+    are relative to the embedding container, not an absolute size -- the viewBox
+    is the only reliable source of aspect ratio in that case.
+    """
+    svg = SVGObject(data)
+    w = h = 0.0
+    if svg.viewbox:
+        _, _, w, h = svg.viewbox
+    if svg.width and not isinstance(svg.width, Percent):
+        w = svg.width
+    if svg.height and not isinstance(svg.height, Percent):
+        h = svg.height
+    return (w, h) if w and h else (800.0, 600.0)
+
+
+def _place_image(pdf, data, alt=""):
+    """Embed image bytes, scaled to fit within the page, with an optional caption.
+
+    fpdf2 renders SVGs natively as vector graphics (crisp at any size), but only
+    Pillow can report a raster image's pixel size -- so dimension lookup has to
+    branch on format, even though the final ``pdf.image()`` call doesn't.
+    """
+    if _looks_like_svg(data):
+        px_w, px_h = _svg_size(data)
+    else:
+        px_w, px_h = PILImage.open(io.BytesIO(data)).size
+    max_w, max_h = pdf.epw, pdf.eph - 10
+    w_mm, h_mm = max_w, max_w * px_h / px_w
+    if h_mm > max_h:
+        w_mm, h_mm = max_h * px_w / px_h, max_h
+    _ensure_space(pdf, h_mm + 8)
+    x = pdf.l_margin + (max_w - w_mm) / 2
+    pdf.image(data, x=x, w=w_mm, h=h_mm)
+    pdf.ln(2)
+    if alt:
+        pdf.set_font(FONT_FA if _is_rtl(alt) and getattr(pdf, "has_persian", False) else FONT_SANS, "I", 8)
+        pdf.set_text_color(120, 120, 120)
+        caption = _shape_rtl(alt) if _is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
+        pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(*CLR_BODY)
+        pdf.set_font(FONT_SANS, "", BODY_SIZE)
+    pdf.ln(3)
+
+
+def _add_image(pdf, src, alt, base_dir):
+    try:
+        if re.match(r'^https?://', src):
+            resp = requests.get(src, timeout=15)
+            resp.raise_for_status()
+            data = resp.content
+        else:
+            path = Path(src)
+            if not path.is_absolute():
+                path = base_dir / path
+            data = path.read_bytes()
+        _place_image(pdf, data, alt)
+    except Exception as exc:
+        print(f"WARN: could not load image '{src}': {exc}", file=sys.stderr)
+        _add_paragraph(pdf, f"[image: {alt or src}]")
+
+
+def _render_mermaid_mmdc(source):
+    """Render via a local mermaid-cli install. Returns PNG bytes or None."""
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = Path(tmp) / "diagram.mmd"
+        out_path = Path(tmp) / "diagram.png"
+        in_path.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "white", "-s", "2"],
+            capture_output=True, timeout=30, check=False,
+        )
+        if result.returncode == 0 and out_path.is_file():
+            return out_path.read_bytes()
+    return None
+
+
+def _render_mermaid_ink(source):
+    """Render via the mermaid.ink web API. Returns PNG bytes; raises on failure."""
+    b64 = base64.urlsafe_b64encode(source.encode("utf-8")).decode("ascii")
+    resp = requests.get(f"https://mermaid.ink/img/{b64}?bgColor=white", timeout=15)
+    resp.raise_for_status()
+    return resp.content
+
+
+def _render_mermaid(source):
+    """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
+    global _mermaid_net_warned
+    if _HAS_MMDC:
+        try:
+            data = _render_mermaid_mmdc(source)
+            if data:
+                return data
+        except Exception:
+            pass
+    try:
+        try:
+            return _render_mermaid_ink(source)
+        except requests.exceptions.RequestException:
+            # Transient failures (dropped connections, timeouts) are common
+            # enough on this public endpoint to warrant one retry before
+            # falling back to showing the raw source.
+            return _render_mermaid_ink(source)
+    except Exception as exc:
+        if not _mermaid_net_warned:
+            print(
+                "WARN: could not render Mermaid diagram "
+                f"({'mmdc failed and ' if _HAS_MMDC else ''}mermaid.ink request "
+                f"failed: {exc}); showing raw source instead. Install mermaid-cli "
+                "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
+                file=sys.stderr,
+            )
+            _mermaid_net_warned = True
+        return None
+
+
+def _add_mermaid(pdf, lines):
+    source = '\n'.join(lines).strip()
+    if not source:
+        return
+    data = _render_mermaid(source)
+    if data:
+        try:
+            _place_image(pdf, data)
+            return
+        except Exception as exc:
+            print(f"WARN: could not embed rendered Mermaid diagram: {exc}", file=sys.stderr)
+    _add_code_block(pdf, lines)
+
+
 def _parse_table_row(line):
     cells = [c.strip() for c in line.split('|')]
     if cells and cells[0] == '':
@@ -301,6 +537,9 @@ def _strip_code_ticks(text):
     return re.sub(r'`(.+?)`', r'\1', text)
 
 
+_CELL_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
+
+
 def _add_table(pdf, headers, rows):
     from fpdf.enums import TableCellFillMode
     from fpdf.fonts import FontFace
@@ -310,14 +549,36 @@ def _add_table(pdf, headers, rows):
     page_w = pdf.w - pdf.l_margin - pdf.r_margin
 
     has_persian = getattr(pdf, "has_persian", False) and (
-        any(_is_rtl(h) for h in headers)
+        getattr(pdf, "doc_is_rtl", False)
+        or any(_is_rtl(h) for h in headers)
         or any(_is_rtl(c) for row in rows for c in row)
     )
     table_font  = FONT_FA if has_persian else FONT_SANS
     text_align  = "RIGHT" if has_persian else "LEFT"
 
-    def _prep(cell):
-        return _shape_rtl(_strip_code_ticks(cell)) if has_persian else _strip_code_ticks(cell)
+    if has_persian:
+        # Mirror column order: markdown's first (e.g. label) column should
+        # land on the right, matching RTL reading order, since fpdf2 always
+        # lays table columns out left-to-right regardless of text_align.
+        headers = list(reversed(headers))
+        rows = [list(reversed(row)) for row in rows]
+
+    def _prep_cell(cell):
+        """Cell payload for table.row(): a dict for RTL cells (to carry a
+        bold FontFace when the whole cell is **wrapped**, since shaped/
+        reordered RTL text can't rely on fpdf2's own markdown bold parsing),
+        plain text otherwise (fpdf2's native `markdown=True` handles bold).
+        """
+        if not has_persian:
+            return _strip_code_ticks(cell)
+        text = _strip_code_ticks(cell).strip()
+        bold_m = _CELL_BOLD_RE.match(text)
+        if bold_m:
+            text = bold_m.group(1)
+        return {
+            "text": _shape_rtl(text),
+            "style": FontFace(emphasis="BOLD") if bold_m else None,
+        }
 
     # Natural widths (with backticks/markdown stripped, since they don't render).
     pdf.set_font(table_font, "B", TABLE_SIZE)
@@ -376,22 +637,47 @@ def _add_table(pdf, headers, rows):
         markdown=not has_persian,
         padding=1,
     ) as table:
-        table.row([_prep(h) for h in headers])
+        table.row([_prep_cell(h) for h in headers])
         for row in rows:
-            cells = [_prep(row[i]) if i < len(row) else "" for i in range(n)]
+            cells = [_prep_cell(row[i]) if i < len(row) else "" for i in range(n)]
             table.row(cells)
 
     pdf.ln(2)
 
 
+# Cycled by nesting depth, like most markdown editors/viewers, instead of a
+# single hyphen at every level.
+_BULLET_CHARS = ["•", "◦", "▪"]
+
+
+def _bullet_char(indent):
+    return _BULLET_CHARS[min(indent // 2, len(_BULLET_CHARS) - 1)]
+
+
+def _use_rtl_layout(pdf, text):
+    """Whether a block should use RTL shaping/alignment.
+
+    A document-wide RTL flag (``pdf.doc_is_rtl``) is consulted alongside this
+    specific text's own script, so a block with no Persian/Arabic characters
+    at all (e.g. an English-only list item inside an otherwise-Persian list)
+    still follows the document's base direction instead of snapping to LTR
+    and breaking the list's alignment.
+    """
+    return (getattr(pdf, "doc_is_rtl", False) or _is_rtl(text)) and getattr(pdf, "has_persian", False)
+
+
 def _add_paragraph(pdf, text):
     pdf.set_text_color(*CLR_BODY)
-    if _is_rtl(text) and getattr(pdf, "has_persian", False):
+    if _use_rtl_layout(pdf, text):
         pdf.set_font(FONT_FA, "", BODY_SIZE)
-        pdf.multi_cell(
-            0, _body_lh(pdf), _shape_rtl(_strip_md(text)),
-            align="R", new_x="LMARGIN", new_y="NEXT",
-        )
+        # multi_cell reserves its own internal c_margin padding on each side,
+        # on top of the cell width we pass it -- our wrap width must match
+        # that actual usable text width or lines we judge to "just fit" wrap
+        # again inside multi_cell.
+        width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
+        lh = _body_lh(pdf)
+        for line in _shape_rtl_lines(pdf, _strip_md(text), width):
+            pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(FONT_SANS, "", BODY_SIZE)
         _render_rich(pdf, text)
@@ -401,16 +687,18 @@ def _add_paragraph(pdf, text):
 def _add_list_item(pdf, prefix, text, indent):
     pdf.set_text_color(*CLR_BODY)
     body = text.strip()
-    if _is_rtl(body) and getattr(pdf, "has_persian", False):
+    if _use_rtl_layout(pdf, body):
         pdf.set_font(FONT_FA, "", BODY_SIZE)
-        # In RTL, bullet/number marker belongs on the right edge.
-        line = _shape_rtl(_strip_md(body)) + "  " + prefix.strip()
-        pdf.set_x(pdf.l_margin)
-        pdf.multi_cell(
-            pdf.w - pdf.l_margin - pdf.r_margin - indent * 2,
-            _body_lh(pdf), line,
-            align="R", new_x="LMARGIN", new_y="NEXT",
-        )
+        width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
+        lh = _body_lh(pdf)
+        # multi_cell reserves its own internal c_margin padding on each side,
+        # on top of the cell width we pass it -- wrap using the actual usable
+        # text width or lines we judge to "just fit" wrap again inside multi_cell.
+        usable_width = width - 2 * pdf.c_margin
+        lines = _shape_rtl_lines(pdf, _strip_md(body), usable_width, marker=prefix.strip())
+        for line in lines:
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_x(pdf.l_margin + indent * 2)
         pdf.set_font(FONT_SANS, "", BODY_SIZE)
@@ -441,13 +729,20 @@ def _extract_title(lines):
 
 
 def convert(md_path, pdf_path):
-    md_text = Path(md_path).read_text(encoding="utf-8")
+    md_path = Path(md_path)
+    md_text = md_path.read_text(encoding="utf-8")
     lines = md_text.split('\n')
     title = _extract_title(lines)
 
     pdf = PDF(title=title, orientation="P", unit="mm", format="A4")
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=20)
+    # Document-wide base direction: a block with no RTL characters of its own
+    # (e.g. an English-only list item in an otherwise-Persian list) still
+    # follows this instead of snapping to LTR mid-list. See _use_rtl_layout.
+    rtl_chars = len(_RTL_RE.findall(md_text))
+    latin_chars = len(re.findall(r'[A-Za-z]', md_text))
+    pdf.doc_is_rtl = rtl_chars > latin_chars
 
     # ── Title page ──────────────────────────────────────────────
     if title:
@@ -485,6 +780,7 @@ def convert(md_path, pdf_path):
     i = 0
     in_code = False
     code_buf = []
+    code_lang = ""
     in_table = False
     tbl_hdr = []
     tbl_rows = []
@@ -499,13 +795,18 @@ def convert(md_path, pdf_path):
         line = lines[i]
 
         # ── code fence ──────────────────────────────────────────
-        if line.strip().startswith('```'):
+        fence_m = re.match(r'^```\s*(\S*)', line.strip())
+        if fence_m:
             if in_code:
-                _add_code_block(pdf, code_buf)
-                code_buf, in_code = [], False
+                if code_lang == 'mermaid':
+                    _add_mermaid(pdf, code_buf)
+                else:
+                    _add_code_block(pdf, code_buf)
+                code_buf, in_code, code_lang = [], False, ""
             else:
                 _flush_table()
                 in_code = True
+                code_lang = fence_m.group(1).lower()
             i += 1
             continue
         if in_code:
@@ -555,7 +856,15 @@ def convert(md_path, pdf_path):
         # ── bullet list ─────────────────────────────────────────
         m = re.match(r'^(\s*)[-*]\s+(.*)', line)
         if m:
-            _add_list_item(pdf, "  - ", m.group(2), len(m.group(1)))
+            indent = len(m.group(1))
+            _add_list_item(pdf, f"  {_bullet_char(indent)} ", m.group(2), indent)
+            i += 1
+            continue
+
+        # ── image ───────────────────────────────────────────────
+        m = _IMG_RE.match(line.strip())
+        if m:
+            _add_image(pdf, m.group(2), m.group(1), md_path.parent)
             i += 1
             continue
 
@@ -597,9 +906,9 @@ def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
 
     \b
     Supports headings, bold, inline code, code blocks, tables, bullets,
-    numbered lists, horizontal rules, and nested lists. Persian/Arabic
-    text is shaped and rendered right-to-left when the optional deps and
-    Vazir font are available.
+    numbered lists, horizontal rules, nested lists, images, and Mermaid
+    diagrams. Persian/Arabic text is shaped and rendered right-to-left
+    when the optional deps and Vazir font are available.
 
     \b
     Examples:
@@ -625,8 +934,22 @@ def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
     Run `fc-cache -f` afterwards on Linux.
 
     \b
+    ── Images ─────────────────────────────────────────────────────────
+    Standalone ``![alt](path)`` lines are embedded, scaled to fit the
+    page. ``path`` may be a local file (relative to the Markdown file)
+    or an http(s) URL.
+
+    \b
+    ── Mermaid diagrams ────────────────────────────────────────────────
+    ```` ```mermaid ```` fenced blocks are rendered to an image using, in
+    order: a local mermaid-cli (`mmdc`) install, then the mermaid.ink web
+    API. If neither is available the raw diagram source is shown as a
+    code block instead. For offline rendering:
+      npm install -g @mermaid-js/mermaid-cli
+
+    \b
     ── Python dependencies ────────────────────────────────────────────
-    Required : fpdf2
+    Required : fpdf2, requests, Pillow
     Persian  : arabic-reshaper, python-bidi
                  pip install 'pytoolbox[rtl]'
                  # or: pip install arabic-reshaper python-bidi
