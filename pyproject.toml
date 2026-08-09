@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytoolbox"
+version = "0.2.0"
+description = "Small command-line tools for files, text, dates, time tracking, networking and Markdown-to-PDF."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [{ name = "MG" }]
+keywords = ["cli", "jalali", "persian", "time-tracking", "markdown", "pdf", "termux"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: English",
+    "Natural Language :: Persian",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Utilities",
+]
+
+# Deliberately minimal: everything heavier is an extra, so a bare install
+# stays installable on Termux without a compiler.
+dependencies = [
+    "click>=8.0",
+    "requests>=2.25",
+]
+
+[project.optional-dependencies]
+# Markdown to PDF.
+pdf = ["fpdf2>=2.7", "Pillow>=9.0"]
+# Persian/Arabic shaping and bidi reordering for pymd2pdf.
+rtl = ["arabic-reshaper>=3.0", "python-bidi>=0.4"]
+# Excel export for pytime reports.
+excel = ["openpyxl>=3.0"]
+# SOCKS support so pyssh can verify a tunnel really works.
+socks = ["requests[socks]>=2.25"]
+all = [
+    "fpdf2>=2.7",
+    "Pillow>=9.0",
+    "arabic-reshaper>=3.0",
+    "python-bidi>=0.4",
+    "openpyxl>=3.0",
+    "requests[socks]>=2.25",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/mmgghh/toolbox"
+Repository = "https://github.com/mmgghh/toolbox"
+Issues = "https://github.com/mmgghh/toolbox/issues"
+
+[project.scripts]
+toolbox = "pytoolbox.cli:toolbox"
+pyfm = "pytoolbox.pyfm:file_management"
+pystr = "pytoolbox.pystr:str_cli"
+pyjdate = "pytoolbox.pyjdate:jdate_cli"
+pytime = "pytoolbox.pytime:time_cli"
+pyssh = "pytoolbox.pyssh:ssh_management"
+pynet = "pytoolbox.pynet:net_cli"
+pymd2pdf = "pytoolbox.pymd2pdf:pymd2pdf_cli"
+
+[tool.setuptools.packages.find]
+include = ["pytoolbox*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = [
+    "ignore::UserWarning:fpdf.*",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4"]
+ignore = [
+    "E501",   # long lines are handled by the formatter, not enforced here
+    "B008",   # Click decorators legitimately call functions in defaults
+    # Optional[X]/Union[X, Y] are kept: they read the same on every supported
+    # version, including 3.9 where `X | None` needs a __future__ import.
+    "UP007",
+    "UP045",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]

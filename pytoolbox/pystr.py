@@ -1,23 +1,39 @@
-"""Text processing utilities and CLI commands."""
+"""Text processing: search, replace, clipboard, case, encoding, translation.
+
+The heavy lifting for walking files and talking to the clipboard lives in
+``pytoolbox.core`` so that ``pyfm`` and ``pystr`` behave identically where
+they overlap.
+"""
 
 # pylint: disable=line-too-long
 
 from __future__ import annotations
 
-import fnmatch
-import os
+import base64
+import binascii
 import re
-import shutil
-import subprocess
 import sys
 import unicodedata
+import urllib.parse
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable, Optional, Pattern, Sequence
+from re import Pattern
+from typing import Optional
 
 import click
 
+from pytoolbox.core import clipboard, console
+from pytoolbox.core.fs import is_probably_text as _is_probably_text
+from pytoolbox.core.fs import iter_files as _iter_files
+from pytoolbox.core.fs import normalize_extensions as _normalize_extensions
+from pytoolbox.core.options import (
+    CONTEXT_SETTINGS,
+    AliasedGroup,
+    json_option,
+    version_option,
+)
 from pytoolbox.normalize_data import NORMALIZE_RULES
 
 ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
@@ -189,19 +205,6 @@ def to_kebab_case(text: str) -> str:
     return value.lower()
 
 
-def _normalize_extensions(values: Sequence[str]) -> set[str]:
-    normalized: set[str] = set()
-    for value in values:
-        for item in value.split(","):
-            item = item.strip()
-            if not item:
-                continue
-            if not item.startswith("."):
-                item = f".{item}"
-            normalized.add(item.lower())
-    return normalized
-
-
 def _compile_filename_pattern(pattern: Optional[str]) -> Optional[Pattern[str]]:
     if not pattern:
         return None
@@ -298,7 +301,7 @@ def normalize_text(text: str) -> str:
 
 
 def _digit_map(source: str, target: str) -> dict[str, str]:
-    return {src: dst for src, dst in zip(source, target)}
+    return dict(zip(source, target))
 
 
 @lru_cache(maxsize=2)
@@ -309,7 +312,7 @@ def _translation_table(language: str) -> dict[int, str]:
         mapping.update(_digit_map(PERSIAN_DIGITS, EN_DIGITS))
         mapping.update(_digit_map(ARABIC_DIGITS, EN_DIGITS))
         mapping.update(ARABIC_PUNCT_TO_EN)
-        mapping.update({dash: "-" for dash in EN_DASHES})
+        mapping.update(dict.fromkeys(EN_DASHES, "-"))
         mapping[FA_KASHIDA] = "_"
         return {ord(key): value for key, value in mapping.items()}
     if lang == "fa":
@@ -318,7 +321,7 @@ def _translation_table(language: str) -> dict[int, str]:
         mapping.update(_digit_map(ARABIC_DIGITS, PERSIAN_DIGITS))
         mapping.update(ARABIC_TO_PERSIAN_LETTERS)
         mapping.update(EN_PUNCT_TO_FA)
-        mapping.update({dash: FA_KASHIDA for dash in f"-_{EN_DASHES}"})
+        mapping.update(dict.fromkeys(f"-_{EN_DASHES}", FA_KASHIDA))
         return {ord(key): value for key, value in mapping.items()}
     raise click.ClickException("Invalid destination language. Use 'en' or 'fa'.")
 
@@ -326,93 +329,6 @@ def _translation_table(language: str) -> dict[int, str]:
 def translate_text(text: str, language: str) -> str:
     """Translate digits/letters/punctuation into English or Persian forms."""
     return text.translate(_translation_table(language))
-
-
-def _is_hidden_name(name: str) -> bool:
-    return name.startswith(".") and name not in (".", "..")
-
-
-def _matches_any_glob(path: Path, patterns: Sequence[str]) -> bool:
-    if not patterns:
-        return False
-    path_posix = path.as_posix()
-    return any(fnmatch.fnmatch(path.name, pat) or fnmatch.fnmatch(path_posix, pat) for pat in patterns)
-
-
-def _iter_files(
-    root: Path,
-    depth: Optional[int],
-    include_hidden: bool,
-    follow_symlinks: bool,
-    extensions: Optional[set[str]],
-    filename_pattern: Optional[Pattern[str]],
-    exclude: Sequence[str],
-    exclude_dir: Sequence[str],
-    max_bytes: Optional[int],
-) -> Iterable[Path]:
-    if root.is_file():
-        if extensions and root.suffix.lower() not in extensions:
-            return
-        if filename_pattern and not filename_pattern.search(root.name):
-            return
-        if not include_hidden and _is_hidden_name(root.name):
-            return
-        if _matches_any_glob(root, exclude):
-            return
-        if max_bytes is not None:
-            try:
-                if root.stat().st_size > max_bytes:
-                    return
-            except OSError:
-                return
-        yield root
-        return
-
-    if not root.is_dir():
-        return
-
-    for current_root, dirnames, filenames in os.walk(root, followlinks=follow_symlinks):
-        rel_depth = len(Path(current_root).relative_to(root).parts)
-        if depth is not None and rel_depth >= depth:
-            dirnames[:] = []
-        if not include_hidden:
-            dirnames[:] = [d for d in dirnames if not _is_hidden_name(d)]
-        if exclude_dir:
-            dirnames[:] = [
-                d for d in dirnames
-                if not _matches_any_glob(Path(current_root) / d, exclude_dir)
-            ]
-        for filename in filenames:
-            if not include_hidden and _is_hidden_name(filename):
-                continue
-            file_path = Path(current_root) / filename
-            if _matches_any_glob(file_path, exclude):
-                continue
-            if extensions and file_path.suffix.lower() not in extensions:
-                continue
-            if filename_pattern and not filename_pattern.search(filename):
-                continue
-            if max_bytes is not None:
-                try:
-                    if file_path.stat().st_size > max_bytes:
-                        continue
-                except OSError:
-                    continue
-            yield file_path
-
-
-def _is_probably_text(path: Path, max_bytes: int = 2048) -> bool:
-    try:
-        with open(path, "rb") as handle:
-            sample = handle.read(max_bytes)
-    except OSError:
-        return False
-    if not sample:
-        return True
-    if b"\x00" in sample:
-        return False
-    non_text = sum(byte < 9 or (13 < byte < 32) for byte in sample)
-    return (non_text / len(sample)) < 0.3
 
 
 def _collect_line_hits(
@@ -448,14 +364,25 @@ def _emit_text_search_results(
     count: bool,
     stats: bool,
     only_matches: bool,
+    as_json: bool = False,
 ) -> None:
     lines = text.splitlines()
     total, matches, values = _collect_line_hits(
         lines,
         pattern,
-        capture_lines=verbose > 0 and not only_matches,
-        capture_values=only_matches,
+        capture_lines=as_json or (verbose > 0 and not only_matches),
+        capture_values=as_json or only_matches,
     )
+    if as_json:
+        console.emit_json(
+            {
+                "label": label,
+                "matches": total,
+                "lines": [{"line": m.line_no, "text": m.line, "count": m.count} for m in matches],
+                "values": values,
+            }
+        )
+        return
     if total == 0:
         if stats:
             click.echo("Scanned: 1 input, Matched: 0 input, Matches: 0")
@@ -528,111 +455,40 @@ def _apply_replacement(
     return pattern.subn(lambda _: replacement, text)
 
 
-def _run_clipboard_command(cmd: Sequence[str], input_text: Optional[str] = None) -> str:
-    result = subprocess.run(
-        list(cmd),
-        input=input_text,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip() or "Unknown clipboard error."
-        raise click.ClickException(stderr)
-    return result.stdout
-
-
-def _run_clipboard_command_detached(cmd: Sequence[str], input_text: Optional[str] = None) -> None:
-    try:
-        process = subprocess.Popen(
-            list(cmd),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    if process.stdin is None:
-        raise click.ClickException("Clipboard command stdin is unavailable.")
-    try:
-        process.stdin.write(input_text or "")
-        process.stdin.close()
-    except OSError as exc:
-        raise click.ClickException(str(exc)) from exc
-
-    try:
-        process.wait(timeout=0.2)
-    except subprocess.TimeoutExpired:
-        return
-    if process.returncode != 0:
-        raise click.ClickException(f"Clipboard command failed with code {process.returncode}.")
-
-
-def _clipboard_backend() -> tuple[Sequence[str], Sequence[str]]:
-    if shutil.which("termux-clipboard-get") and shutil.which("termux-clipboard-set"):
-        return (["termux-clipboard-get"], ["termux-clipboard-set"])
-    if sys.platform == "darwin":
-        return (["pbpaste"], ["pbcopy"])
-    if sys.platform == "win32":
-        shell = "powershell"
-        if shutil.which("pwsh"):
-            shell = "pwsh"
-        get_cmd = [shell, "-NoProfile", "-Command", "Get-Clipboard"]
-        set_cmd = [shell, "-NoProfile", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"]
-        return (get_cmd, set_cmd)
-    if shutil.which("wl-paste") and shutil.which("wl-copy"):
-        return (["wl-paste", "--no-newline"], ["wl-copy"])
-    if shutil.which("xclip"):
-        return (["xclip", "-selection", "clipboard", "-o"], ["xclip", "-selection", "clipboard"])
-    if shutil.which("xsel"):
-        return (["xsel", "--clipboard", "--output"], ["xsel", "--clipboard", "--input"])
-    raise click.ClickException(
-        "Clipboard helper not found. Install wl-clipboard, xclip, xsel, or use Termux/Windows/macOS clipboard tools."
-    )
-
-
 def get_clipboard_text() -> str:
-    """Read clipboard text for major platforms (Termux/Windows/Linux/macOS)."""
-    get_cmd, _ = _clipboard_backend()
-    return _run_clipboard_command(get_cmd)
+    """Read clipboard text (Termux/Linux/macOS/Windows)."""
+    return clipboard.get_text()
 
 
 def set_clipboard_text(text: str) -> None:
-    """Write text to the clipboard for major platforms (Termux/Windows/Linux/macOS)."""
-    _, set_cmd = _clipboard_backend()
-    if set_cmd and set_cmd[0] in ("wl-copy", "xclip", "xsel"):
-        _run_clipboard_command_detached(set_cmd, input_text=text)
-    else:
-        _run_clipboard_command(set_cmd, input_text=text)
+    """Write text to the clipboard (Termux/Linux/macOS/Windows)."""
+    clipboard.set_text(text)
 
 
-@click.group()
+@click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
+@version_option
 def str_cli():
-    """Text processing helpers.
+    """Text: search, replace, clipboard, case, encoding, normalization.
 
+    \b
     Examples:
-        pystr search ./src "TODO"
-        pystr search . "error" -i -e log --stats
-        pystr search . --tag email --tag ip
-        pystr replace ./src "foo" "bar" -e py --yes
-        pystr replace . "(\\d+)" "[\\1]" --regex --dry-run
-        pystr search "token" --text "token=abcd"
-        echo "hello world" | pystr search "world" --stdin
-        pystr normalize --text "Résumé — ١٢٣"
-        pystr translate --to en --text "شماره ۱۲۳؟"
-        pystr clip-search "token" --ignore-case
-        pystr clip-replace "foo" "bar" --yes
-        pystr getclip
-        pystr setclip "hello"
-        echo "hello" | pystr setclip --stdin
+      pystr search ./src "TODO" -v
+      pystr search . --tag email --only-matches
+      pystr replace ./src "foo" "bar" -e py --dry-run
+      pystr case "Hello World" --to snake
+      pystr encode "hello" --as base64
+      pystr count ./README.md
+      pystr normalize --text "Résumé — ١٢٣"
+      pystr translate --to en --text "شماره ۱۲۳؟"
+      pystr clip-search --tag url
+      echo "hello" | pystr setclip --stdin
     """
 
 
 @str_cli.command("search")
-@click.argument("path_or_query", type=str)
+# Optional so that `--text`/`--stdin` searches need no PATH at all, which is
+# what the help has always promised.
+@click.argument("path_or_query", required=False, type=str)
 @click.argument("query", required=False, type=str)
 @click.option("-v", "--verbose", count=True, help="Print matching lines with file name and line number.")
 @click.option("-d", "--depth", type=int, default=None, help="Max directory depth to search (0 = only the root).")
@@ -662,6 +518,7 @@ def str_cli():
 @click.option("--text", "input_text", default=None, help="Search within provided text instead of files (PATH can be omitted).")
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read text to search from stdin (PATH can be omitted).")
 @click.option("--label", default=None, help="Label for input text results (default: input/stdin).")
+@json_option
 def search(
     path_or_query: str,
     query: Optional[str],
@@ -688,6 +545,7 @@ def search(
     input_text: Optional[str],
     from_stdin: bool,
     label: Optional[str],
+    as_json: bool,
 ):
     """Search for a query in text files under PATH or within provided text.
 
@@ -712,9 +570,13 @@ def search(
         pattern = _build_search_pattern(effective_query, tags, regex, ignore_case, whole_word)
         text_value = input_text if input_text is not None else sys.stdin.read()
         label_value = label or ("stdin" if from_stdin else "input")
-        _emit_text_search_results(label_value, text_value, pattern, verbose, count, stats, only_matches)
+        _emit_text_search_results(
+            label_value, text_value, pattern, verbose, count, stats, only_matches, as_json
+        )
         return
 
+    if path_or_query is None:
+        raise click.ClickException("PATH is required (or use --text/--stdin).")
     if query is None and not tags:
         raise click.ClickException("QUERY or --tag is required.")
     path = Path(path_or_query)
@@ -725,6 +587,7 @@ def search(
     max_bytes = int(max_size * 1024 * 1024) if max_size is not None else None
     pattern = _build_search_pattern(query, tags, regex, ignore_case, whole_word)
     stats_acc = SearchStats()
+    json_results: list[dict] = []
 
     for file_path in _iter_files(
         path,
@@ -745,12 +608,12 @@ def search(
         if not binary and not _is_probably_text(file_path):
             continue
         try:
-            with open(file_path, "r", encoding=encoding, errors=errors) as handle:
+            with open(file_path, encoding=encoding, errors=errors) as handle:
                 total, matches, values = _collect_line_hits(
                     handle,
                     pattern,
-                    capture_lines=verbose > 0 and not only_matches,
-                    capture_values=only_matches,
+                    capture_lines=as_json or (verbose > 0 and not only_matches),
+                    capture_values=as_json or only_matches,
                 )
         except OSError as exc:
             click.echo(f"Could not read {file_path}: {exc}", err=True)
@@ -766,7 +629,18 @@ def search(
         )
 
         formatted_path = _format_path(file_path, absolute)
-        if only_matches:
+        if as_json:
+            json_results.append(
+                {
+                    "path": formatted_path,
+                    "matches": total,
+                    "lines": [
+                        {"line": m.line_no, "text": m.line, "count": m.count} for m in matches
+                    ],
+                    "values": values,
+                }
+            )
+        elif only_matches:
             for value in values:
                 click.echo(value)
         elif verbose > 0:
@@ -776,6 +650,17 @@ def search(
             click.echo(f"{formatted_path}:{total}")
         else:
             click.echo(formatted_path)
+
+    if as_json:
+        console.emit_json(
+            {
+                "files_scanned": stats_acc.files_scanned,
+                "files_matched": stats_acc.files_matched,
+                "matches": stats_acc.matches,
+                "results": json_results,
+            }
+        )
+        return
 
     if stats:
         click.echo(
@@ -1126,5 +1011,236 @@ def setclip(text: Optional[str], from_stdin: bool, strip_ansi_input: bool, trim:
     set_clipboard_text(value)
 
 
-if __name__ == "__main__":
+# ═══════════════════════════════════════════════════════════════════
+# Case conversion, encoding, statistics
+# ═══════════════════════════════════════════════════════════════════
+
+def to_camel_case(text: str) -> str:
+    """Convert a string to camelCase."""
+    words = re.split(r"[\s_\-]+", text.strip())
+    words = [w for w in words if w]
+    if not words:
+        return ""
+    head, *tail = words
+    return head.lower() + "".join(word[:1].upper() + word[1:].lower() for word in tail)
+
+
+def to_pascal_case(text: str) -> str:
+    """Convert a string to PascalCase."""
+    words = [w for w in re.split(r"[\s_\-]+", text.strip()) if w]
+    return "".join(word[:1].upper() + word[1:].lower() for word in words)
+
+
+def to_title_case(text: str) -> str:
+    """Capitalize the first letter of each word, leaving separators alone."""
+    return re.sub(r"\b[\w']+", lambda m: m.group(0)[:1].upper() + m.group(0)[1:].lower(), text)
+
+
+#: ``--to`` values accepted by ``pystr case``.
+CASE_CONVERTERS = {
+    "lower": str.lower,
+    "upper": str.upper,
+    "title": to_title_case,
+    "snake": to_snake_case,
+    "kebab": to_kebab_case,
+    "camel": to_camel_case,
+    "pascal": to_pascal_case,
+    "slug": slugify,
+    "slug-unicode": lambda text: slugify(text, allow_unicode=True),
+}
+
+
+@str_cli.command("case")
+@click.argument("path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--to",
+    "target",
+    required=True,
+    type=click.Choice(sorted(CASE_CONVERTERS), case_sensitive=False),
+    help="Case style to convert to.",
+)
+@click.option("--text", "input_text", default=None, help="Convert this text instead of a file.")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
+@click.option("--inplace", is_flag=True, help="Overwrite the input file.")
+@click.option("--per-line", is_flag=True, help="Convert each line separately (keeps line structure).")
+@click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
+@click.option(
+    "--errors",
+    default="replace",
+    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
+    help="Encoding error handler.",
+)
+def case(
+    path: Optional[Path],
+    target: str,
+    input_text: Optional[str],
+    from_stdin: bool,
+    inplace: bool,
+    per_line: bool,
+    encoding: str,
+    errors: str,
+):
+    """Convert text between naming conventions.
+
+    \b
+    Styles: lower, upper, title, snake, kebab, camel, pascal, slug, slug-unicode.
+
+    \b
+    Examples:
+      pystr case --to snake --text "Hello World"
+      pystr case --to slug --text "Résumé of 2026!"
+      echo "someValue" | pystr case --to kebab --stdin
+      pystr case ./headings.txt --to title --per-line --inplace
+    """
+    text, source_path = _read_text_source(path, input_text, from_stdin, encoding, errors)
+    convert = CASE_CONVERTERS[target.lower()]
+    if per_line:
+        converted = "\n".join(convert(line) for line in text.splitlines())
+    else:
+        converted = convert(text.strip() if target.lower() in ("slug", "slug-unicode") else text)
+    _emit_text_output(converted, source_path, inplace, encoding, errors)
+
+
+#: Encodings understood by ``pystr encode`` / ``pystr decode``.
+ENCODINGS = ("base64", "base64url", "hex", "url", "url-plus", "rot13")
+
+
+def _apply_encoding(text: str, scheme: str, decode: bool) -> str:
+    scheme = scheme.lower()
+    try:
+        if scheme == "base64":
+            return (
+                base64.b64decode(text.strip() + "=" * (-len(text.strip()) % 4)).decode("utf-8", "replace")
+                if decode
+                else base64.b64encode(text.encode("utf-8")).decode("ascii")
+            )
+        if scheme == "base64url":
+            return (
+                base64.urlsafe_b64decode(text.strip() + "=" * (-len(text.strip()) % 4)).decode("utf-8", "replace")
+                if decode
+                else base64.urlsafe_b64encode(text.encode("utf-8")).decode("ascii")
+            )
+        if scheme == "hex":
+            return (
+                bytes.fromhex(re.sub(r"\s+", "", text)).decode("utf-8", "replace")
+                if decode
+                else text.encode("utf-8").hex()
+            )
+        if scheme == "url":
+            return urllib.parse.unquote(text) if decode else urllib.parse.quote(text, safe="")
+        if scheme == "url-plus":
+            return urllib.parse.unquote_plus(text) if decode else urllib.parse.quote_plus(text)
+        if scheme == "rot13":
+            # Symmetric: encoding and decoding are the same operation.
+            return __import__("codecs").encode(text, "rot13")
+    except (binascii.Error, ValueError) as exc:
+        raise click.ClickException(f"Could not {'decode' if decode else 'encode'} as {scheme}: {exc}") from exc
+    raise click.ClickException(f"Unknown encoding: {scheme}")
+
+
+def _encoding_command(name: str, decode: bool):
+    """Build the shared body of the encode/decode commands."""
+
+    @str_cli.command(name)
+    @click.argument("path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+    @click.option(
+        "--as",
+        "scheme",
+        default="base64",
+        show_default=True,
+        type=click.Choice(ENCODINGS, case_sensitive=False),
+        help="Encoding scheme.",
+    )
+    @click.option("--text", "input_text", default=None, help="Use this text instead of a file.")
+    @click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
+    @click.option("--inplace", is_flag=True, help="Overwrite the input file.")
+    @click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
+    @click.option(
+        "--errors",
+        default="replace",
+        type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
+        help="Encoding error handler.",
+    )
+    def command(path, scheme, input_text, from_stdin, inplace, encoding, errors):
+        text, source_path = _read_text_source(path, input_text, from_stdin, encoding, errors)
+        _emit_text_output(_apply_encoding(text, scheme, decode), source_path, inplace, encoding, errors)
+
+    verb = "Decode" if decode else "Encode"
+    command.__doc__ = f"""{verb} text as base64, hex, URL escapes or rot13.
+
+    \b
+    Schemes: {', '.join(ENCODINGS)}.
+
+    \b
+    Examples:
+      pystr {name} --text "hello" --as base64
+      echo "hello" | pystr {name} --stdin --as hex
+      pystr {name} ./token.txt --as base64url
+    """
+    command.help = command.__doc__
+    command.short_help = f"{verb} text (base64, hex, url, rot13)."
+    return command
+
+
+encode = _encoding_command("encode", decode=False)
+decode = _encoding_command("decode", decode=True)
+
+
+@str_cli.command("count")
+@click.argument("path", required=False, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--text", "input_text", default=None, help="Count this text instead of a file.")
+@click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
+@click.option("--top", type=int, default=0, help="Also list the N most frequent words.")
+@click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
+@click.option(
+    "--errors",
+    default="replace",
+    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
+    help="Encoding error handler.",
+)
+@json_option
+def count_command(
+    path: Optional[Path],
+    input_text: Optional[str],
+    from_stdin: bool,
+    top: int,
+    encoding: str,
+    errors: str,
+    as_json: bool,
+):
+    """Report line, word and character counts for text.
+
+    \b
+    Examples:
+      pystr count ./README.md
+      pystr count ./notes.txt --top 10
+      echo "a b c" | pystr count --stdin --json
+    """
+    from collections import Counter
+
+    text, _ = _read_text_source(path, input_text, from_stdin, encoding, errors)
+    words = re.findall(r"\b[\w'-]+\b", text, flags=re.UNICODE)
+    payload: dict = {
+        "lines": len(text.splitlines()),
+        "words": len(words),
+        "characters": len(text),
+        "characters_no_spaces": len(re.sub(r"\s", "", text)),
+        "bytes": len(text.encode(encoding, errors="replace")),
+    }
+    if top > 0:
+        payload["top_words"] = [
+            {"word": word, "count": n}
+            for word, n in Counter(word.lower() for word in words).most_common(top)
+        ]
+
+    if as_json:
+        console.emit_json(payload)
+        return
+    for key in ("lines", "words", "characters", "characters_no_spaces", "bytes"):
+        click.echo(f"{key.replace('_', ' '):<22} {payload[key]}")
+    for entry in payload.get("top_words", []):
+        click.echo(f"{entry['count']:>6}  {entry['word']}")
+
+
+if __name__ == "__main__":  # pragma: no cover
     str_cli()

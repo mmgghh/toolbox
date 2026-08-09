@@ -1,4 +1,4 @@
-"""Jalali/Gregorian date utilities and CLI commands."""
+"""Jalali/Gregorian date conversion, intervals and distances (``pyjdate``)."""
 
 # pylint: disable=line-too-long,missing-function-docstring
 
@@ -6,10 +6,37 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-import re
 from typing import Optional
 
 import click
+
+from pytoolbox.core import console
+from pytoolbox.core.intervals import (
+    TOKEN_RE,
+    UNIT_ALIASES,
+    IntervalDelta,
+    apply_interval,
+    format_duration,
+    format_total_value,
+    parse_pg_interval,
+    shift_months,
+)
+from pytoolbox.core.options import (
+    CONTEXT_SETTINGS,
+    AliasedGroup,
+    json_option,
+    version_option,
+)
+
+__all__ = [
+    "TOKEN_RE",
+    "UNIT_ALIASES",
+    "IntervalDelta",
+    "apply_interval",
+    "format_total_value",
+    "parse_pg_interval",
+    "shift_months",
+]
 
 GREGORIAN_MONTHS = [
     None,
@@ -96,6 +123,48 @@ JALALI_MONTH_ALIASES = {
 }
 
 
+#: Indexed by ``datetime.date.weekday()`` (Monday == 0).
+GREGORIAN_WEEKDAYS = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+#: The Jalali week starts on Saturday, so the Python weekday index is rotated
+#: by two to line the two sequences up.
+JALALI_WEEKDAYS = [
+    "Shanbeh",
+    "Yekshanbeh",
+    "Doshanbeh",
+    "Seshanbeh",
+    "Chaharshanbeh",
+    "Panjshanbeh",
+    "Jomeh",
+]
+
+JALALI_MONTHS_FA = [
+    None,
+    "فروردین",
+    "اردیبهشت",
+    "خرداد",
+    "تیر",
+    "مرداد",
+    "شهریور",
+    "مهر",
+    "آبان",
+    "آذر",
+    "دی",
+    "بهمن",
+    "اسفند",
+]
+
+JALALI_WEEKDAYS_FA = ["شنبه", "یکشنبه", "دوشنبه", "سه‌شنبه", "چهارشنبه", "پنجشنبه", "جمعه"]
+
+
 @dataclass(frozen=True)
 class DateParts:
     year: int
@@ -135,53 +204,6 @@ class IntervalOptions:
     month: Optional[str]
     day: Optional[int]
 
-
-@dataclass(frozen=True)
-class IntervalDelta:
-    years: int = 0
-    months: int = 0
-    days: float = 0.0
-    seconds: float = 0.0
-
-
-UNIT_ALIASES = {
-    "year": "years",
-    "years": "years",
-    "yr": "years",
-    "yrs": "years",
-    "y": "years",
-    "month": "months",
-    "months": "months",
-    "mon": "months",
-    "mons": "months",
-    "week": "weeks",
-    "weeks": "weeks",
-    "w": "weeks",
-    "day": "days",
-    "days": "days",
-    "d": "days",
-    "hour": "hours",
-    "hours": "hours",
-    "hr": "hours",
-    "hrs": "hours",
-    "h": "hours",
-    "minute": "minutes",
-    "minutes": "minutes",
-    "min": "minutes",
-    "mins": "minutes",
-    "m": "minutes",
-    "second": "seconds",
-    "seconds": "seconds",
-    "sec": "seconds",
-    "secs": "seconds",
-    "s": "seconds",
-}
-
-
-TOKEN_RE = re.compile(
-    r"(?P<time>[+-]?\d+:\d{2}(?::\d{2}(?:\.\d+)?)?)|"
-    r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z]+)",
-)
 
 
 def date_parts_from_tuple(parts: tuple[int, int, int]) -> DateParts:
@@ -305,8 +327,26 @@ def parse_month(month: str | int, calendar: str) -> int:
     return m
 
 
-def month_name(calendar: str, month: int) -> str:
-    return (GREGORIAN_MONTHS if calendar == "gregorian" else JALALI_MONTHS)[month]
+def month_name(calendar: str, month: int, persian_script: bool = False) -> str:
+    if calendar == "gregorian":
+        return GREGORIAN_MONTHS[month]
+    return (JALALI_MONTHS_FA if persian_script else JALALI_MONTHS)[month]
+
+
+def weekday_name(calendar: str, g_date: date, persian_script: bool = False) -> str:
+    """Weekday name for a Gregorian date, in the requested calendar's naming."""
+    index = g_date.weekday()
+    if calendar == "gregorian":
+        return GREGORIAN_WEEKDAYS[index]
+    names = JALALI_WEEKDAYS_FA if persian_script else JALALI_WEEKDAYS
+    return names[(index + 2) % 7]
+
+
+def gregorian_date_of(calendar: str, parts: DateParts) -> date:
+    """Return the Gregorian ``date`` for date parts in either calendar."""
+    if calendar == "gregorian":
+        return date(parts.year, parts.month, parts.day)
+    return date(*jalali_to_gregorian(parts.year, parts.month, parts.day))
 
 
 def validate_date(calendar: str, year: int, month: int, day: int) -> None:
@@ -328,14 +368,29 @@ def format_date(calendar: str, year: int, month: int, day: int) -> str:
     return f"{year:04d}-{month:02d}-{day:02d} ({month_name(calendar, month)})"
 
 
-def format_datetime(calendar: str, date_parts: DateParts, time_parts: TimeParts, show_time: bool) -> str:
+def format_datetime(
+    calendar: str,
+    date_parts: DateParts,
+    time_parts: TimeParts,
+    show_time: bool,
+    show_weekday: bool = False,
+    persian_script: bool = False,
+) -> str:
     base = f"{date_parts.year:04d}-{date_parts.month:02d}-{date_parts.day:02d}"
+    labels = [month_name(calendar, date_parts.month, persian_script)]
+    if show_weekday:
+        try:
+            labels.append(weekday_name(calendar, gregorian_date_of(calendar, date_parts), persian_script))
+        except ValueError:
+            # Out-of-range dates still deserve a readable month label.
+            pass
+    suffix = f"({', '.join(labels)})"
     if show_time or time_parts.has_time():
         time_part = f"{time_parts.hour:02d}:{time_parts.minute:02d}:{time_parts.second:02d}"
         if time_parts.microsecond:
             time_part = f"{time_part}.{time_parts.microsecond:06d}"
-        return f"{base} {time_part} ({month_name(calendar, date_parts.month)})"
-    return f"{base} ({month_name(calendar, date_parts.month)})"
+        return f"{base} {time_part} {suffix}"
+    return f"{base} {suffix}"
 
 
 def local_timezone() -> timezone:
@@ -483,132 +538,6 @@ def parse_epoch(value: str) -> datetime:
     return datetime.fromtimestamp(ts, tz=local_timezone())
 
 
-def parse_pg_interval(value: str) -> IntervalDelta:
-    raw = value.strip()
-    if not raw:
-        raise click.ClickException("Interval cannot be empty.")
-
-    delta = IntervalDelta()
-    pos = 0
-    matched = False
-
-    for match in TOKEN_RE.finditer(raw):
-        if raw[pos:match.start()].strip(" ,"):
-            raise click.ClickException(f"Invalid interval segment: {raw[pos:match.start()].strip()}")
-        pos = match.end()
-        matched = True
-
-        if match.group("time"):
-            delta = _add_time_literal(delta, match.group("time"))
-            continue
-
-        value_str = match.group("value") or "0"
-        unit_str = match.group("unit") or ""
-        unit_key = UNIT_ALIASES.get(unit_str.lower())
-        if unit_key is None:
-            raise click.ClickException(f"Unknown interval unit: {unit_str}")
-
-        numeric = float(value_str)
-        if unit_key in ("years", "months") and not numeric.is_integer():
-            raise click.ClickException(f"{unit_key} must be whole numbers in interval values.")
-
-        delta = _apply_interval_token(delta, unit_key, numeric)
-
-    if raw[pos:].strip(" ,"):
-        raise click.ClickException(f"Invalid interval segment: {raw[pos:].strip()}")
-
-    if not matched:
-        raise click.ClickException("Interval format not recognized.")
-
-    return delta
-
-
-def _add_time_literal(delta: IntervalDelta, value: str) -> IntervalDelta:
-    sign = -1 if value.startswith("-") else 1
-    payload = value[1:] if value[0] in "+-" else value
-    parts = payload.split(":")
-    if len(parts) < 2 or len(parts) > 3:
-        raise click.ClickException(f"Invalid interval time segment: {value}")
-    hours = int(parts[0])
-    minutes = int(parts[1])
-    seconds = float(parts[2]) if len(parts) == 3 else 0.0
-    total_seconds = sign * (hours * 3600 + minutes * 60 + seconds)
-    return IntervalDelta(
-        years=delta.years,
-        months=delta.months,
-        days=delta.days,
-        seconds=delta.seconds + total_seconds,
-    )
-
-
-def _apply_interval_token(delta: IntervalDelta, unit: str, value: float) -> IntervalDelta:
-    if unit == "years":
-        return IntervalDelta(
-            years=delta.years + int(value),
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds,
-        )
-    if unit == "months":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months + int(value),
-            days=delta.days,
-            seconds=delta.seconds,
-        )
-    if unit == "weeks":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days + value * 7,
-            seconds=delta.seconds,
-        )
-    if unit == "days":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days + value,
-            seconds=delta.seconds,
-        )
-    if unit == "hours":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value * 3600,
-        )
-    if unit == "minutes":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value * 60,
-        )
-    if unit == "seconds":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value,
-        )
-    raise click.ClickException(f"Unsupported interval unit: {unit}")
-
-
-def shift_months(dt: datetime, months: int) -> datetime:
-    if months == 0:
-        return dt
-    year = dt.year + (dt.month - 1 + months) // 12
-    month = (dt.month - 1 + months) % 12 + 1
-    max_day = days_in_month("gregorian", year, month)
-    day = min(dt.day, max_day)
-    return dt.replace(year=year, month=month, day=day)
-
-
-def apply_interval(dt: datetime, delta: IntervalDelta) -> datetime:
-    month_delta = delta.years * 12 + delta.months
-    shifted = shift_months(dt, month_delta)
-    return shifted + timedelta(days=delta.days, seconds=delta.seconds)
-
 
 def is_epoch_candidate(value: str) -> bool:
     raw = value.strip()
@@ -661,12 +590,6 @@ def format_unix_timestamp(dt: datetime) -> str:
     if dt.microsecond:
         return f"{timestamp:.6f}".rstrip("0").rstrip(".")
     return str(int(timestamp))
-
-
-def format_total_value(value: float) -> str:
-    if value.is_integer():
-        return str(int(value))
-    return f"{value:.6f}".rstrip("0").rstrip(".")
 
 
 def days_in_month(calendar: str, year: int, month: int) -> int:
@@ -831,7 +754,7 @@ def _resolve_conversion_inputs(
     return DateParts(options.year, m, options.day), time_parts, tzinfo, time_provided
 
 
-def print_distance(start_dt: datetime, end_dt: datetime) -> None:
+def print_distance(start_dt: datetime, end_dt: datetime, as_json: bool = False) -> None:
     start_utc = start_dt.astimezone(timezone.utc)
     end_utc = end_dt.astimezone(timezone.utc)
     if end_utc < start_utc:
@@ -844,6 +767,22 @@ def print_distance(start_dt: datetime, end_dt: datetime) -> None:
 
     g_parts = diff_calendar_components("gregorian", start_dt, end_dt)
     j_parts = diff_calendar_components("jalali", start_dt, end_dt)
+
+    if as_json:
+        keys = ("years", "months", "days", "hours", "minutes", "seconds")
+        console.emit_json(
+            {
+                "start": start_dt.isoformat(),
+                "end": end_dt.isoformat(),
+                "gregorian": dict(zip(keys, g_parts)),
+                "jalali": dict(zip(keys, j_parts)),
+                "total_days": total_days,
+                "total_hours": total_hours,
+                "total_seconds": total_seconds,
+                "human": format_duration(total_seconds),
+            }
+        )
+        return
 
     click.echo(
         "Gregorian: "
@@ -858,6 +797,7 @@ def print_distance(start_dt: datetime, end_dt: datetime) -> None:
     click.echo(f"Total days:    {format_total_value(total_days)}")
     click.echo(f"Total hours:   {format_total_value(total_hours)}")
     click.echo(f"Total seconds: {format_total_value(total_seconds)}")
+    click.echo(f"Human:         {format_duration(total_seconds)}")
 
 
 def convert_from(calendar: str, year: int, month: int, day: int) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
@@ -868,7 +808,43 @@ def convert_from(calendar: str, year: int, month: int, day: int) -> tuple[tuple[
     return g, (year, month, day)
 
 
-def _emit_datetime_block(label: Optional[str], dt: datetime) -> None:
+def datetime_payload(dt: datetime, persian_script: bool = False) -> dict:
+    """Both calendars plus the epoch value for one datetime, as plain data."""
+    g_parts = DateParts(dt.year, dt.month, dt.day)
+    j_parts = date_parts_from_tuple(gregorian_to_jalali(g_parts.year, g_parts.month, g_parts.day))
+    time_parts = time_parts_from_datetime(dt)
+    g_date = date(dt.year, dt.month, dt.day)
+    return {
+        "gregorian": {
+            "date": f"{g_parts.year:04d}-{g_parts.month:02d}-{g_parts.day:02d}",
+            "year": g_parts.year,
+            "month": g_parts.month,
+            "day": g_parts.day,
+            "month_name": month_name("gregorian", g_parts.month),
+            "weekday": weekday_name("gregorian", g_date),
+            "formatted": format_datetime("gregorian", g_parts, time_parts, True, True),
+        },
+        "jalali": {
+            "date": f"{j_parts.year:04d}-{j_parts.month:02d}-{j_parts.day:02d}",
+            "year": j_parts.year,
+            "month": j_parts.month,
+            "day": j_parts.day,
+            "month_name": month_name("jalali", j_parts.month, persian_script),
+            "weekday": weekday_name("jalali", g_date, persian_script),
+            "formatted": format_datetime("jalali", j_parts, time_parts, True, True, persian_script),
+        },
+        "time": f"{time_parts.hour:02d}:{time_parts.minute:02d}:{time_parts.second:02d}",
+        "unix": format_unix_timestamp(dt),
+        "iso": dt.isoformat(),
+    }
+
+
+def _emit_datetime_block(
+    label: Optional[str],
+    dt: datetime,
+    show_weekday: bool = True,
+    persian_script: bool = False,
+) -> None:
     g_parts = DateParts(dt.year, dt.month, dt.day)
     j_parts = date_parts_from_tuple(gregorian_to_jalali(g_parts.year, g_parts.month, g_parts.day))
     time_parts = time_parts_from_datetime(dt)
@@ -876,8 +852,14 @@ def _emit_datetime_block(label: Optional[str], dt: datetime) -> None:
     if label:
         click.echo(label)
         prefix = "  "
-    click.echo(f"{prefix}Gregorian: {format_datetime('gregorian', g_parts, time_parts, True)}")
-    click.echo(f"{prefix}Jalali:    {format_datetime('jalali', j_parts, time_parts, True)}")
+    click.echo(
+        f"{prefix}Gregorian: "
+        f"{format_datetime('gregorian', g_parts, time_parts, True, show_weekday)}"
+    )
+    click.echo(
+        f"{prefix}Jalali:    "
+        f"{format_datetime('jalali', j_parts, time_parts, True, show_weekday, persian_script)}"
+    )
     click.echo(f"{prefix}Unix:      {format_unix_timestamp(dt)}")
 
 
@@ -987,25 +969,49 @@ def _date_options_from_cli(
     )
 
 
-@click.group()
+@click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
+@version_option
 def jdate_cli():
-    return None
+    """Jalali (Persian) and Gregorian dates: convert, compare, measure.
+
+    \b
+    Examples:
+      pyjdate now
+      pyjdate convert -g "2026-01-04 10:43"
+      pyjdate convert -j 1404/10/14 --fa
+      pyjdate convert -i "1 y 2 mon"
+      pyjdate interval -j -y 1404 -m mehr
+      pyjdate distance -g "2026-03-21"
+      pyjdate distance-between -g -s "-3 days" --end "6 hours"
+    """
+
+
+def _persian_option(func):
+    return click.option(
+        "--fa",
+        "persian_script",
+        is_flag=True,
+        help="Print Jalali month and weekday names in Persian script.",
+    )(func)
 
 
 @click.command()
-def current():
-    """Print current date in both calendars."""
+@_persian_option
+@json_option
+def current(persian_script: bool, as_json: bool):
+    """Print the current date and time in both calendars.
+
+    \b
+    Examples:
+      pyjdate current
+      pyjdate now --fa
+      pyjdate now --json
+    """
     now = datetime.now().astimezone().replace(microsecond=0)
-    g = DateParts(now.year, now.month, now.day)
-    j = date_parts_from_tuple(gregorian_to_jalali(g.year, g.month, g.day))
-    time_parts = TimeParts(now.hour, now.minute, now.second, 0)
-    click.echo(
-        f"Gregorian: {format_datetime('gregorian', g, time_parts, True)}"
-    )
-    click.echo(
-        f"Jalali:    {format_datetime('jalali', j, time_parts, True)}"
-    )
-    click.echo(f"Unix:      {format_unix_timestamp(now)}")
+    if as_json:
+        console.emit_json(datetime_payload(now, persian_script))
+        return
+    _emit_datetime_block(None, now, show_weekday=True, persian_script=persian_script)
 
 
 @click.command()
@@ -1026,6 +1032,8 @@ def current():
 @click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
 @click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
 @click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
+@_persian_option
+@json_option
 def convert(
     value: Optional[str],
     jalali: bool,
@@ -1038,10 +1046,23 @@ def convert(
     hour: Optional[int],
     minute: Optional[int],
     second: Optional[int],
+    persian_script: bool,
+    as_json: bool,
 ):
-    """Convert a date between Jalali and Gregorian.
+    """Convert a date between the Jalali and Gregorian calendars.
 
-    For concrete inputs, use exactly one of -j, -g, or -e.
+    \b
+    For a concrete date use exactly one of -j, -g or -e. Dates may be written
+    as 2026-01-04, 2026/01/04, 20260104 or 'Jan 04 2026', with an optional
+    time and UTC offset.
+
+    \b
+    Examples:
+      pyjdate convert -g "2026-01-04 10:43"
+      pyjdate convert -j "1404/10/14 10:44:46" --fa
+      pyjdate convert -e 1700000000 --json
+      pyjdate convert -i "-3.4 hours"
+      pyjdate convert -g -y 2026 -m feb -d 20
     """
     calendar, options = _date_options_from_cli(
         value=value,
@@ -1057,13 +1078,15 @@ def convert(
         second=second,
     )
     mode = detect_date_input_mode(options)
-    if mode == "epoch":
-        dt = parse_epoch(options.epoch or "")
-        _emit_datetime_block(None, dt)
-        return
-    if mode == "interval":
-        dt = apply_interval(datetime.now().astimezone(), parse_pg_interval(options.interval or ""))
-        _emit_datetime_block(None, dt)
+    if mode in ("epoch", "interval"):
+        if mode == "epoch":
+            dt = parse_epoch(options.epoch or "")
+        else:
+            dt = apply_interval(datetime.now().astimezone(), parse_pg_interval(options.interval or ""))
+        if as_json:
+            console.emit_json(datetime_payload(dt, persian_script))
+        else:
+            _emit_datetime_block(None, dt, persian_script=persian_script)
         return
 
     if calendar is None:
@@ -1074,9 +1097,16 @@ def convert(
     g = date_parts_from_tuple(g_tuple)
     j = date_parts_from_tuple(j_tuple)
     show_time = time_provided or time_parts.has_time()
-    click.echo(f"Gregorian: {format_datetime('gregorian', g, time_parts, show_time)}")
-    click.echo(f"Jalali:    {format_datetime('jalali', j, time_parts, show_time)}")
     ts = build_datetime(cal, date_parts, time_parts, tzinfo)
+
+    if as_json:
+        payload = datetime_payload(ts, persian_script)
+        payload["time_provided"] = show_time
+        console.emit_json(payload)
+        return
+
+    click.echo(f"Gregorian: {format_datetime('gregorian', g, time_parts, show_time, True)}")
+    click.echo(f"Jalali:    {format_datetime('jalali', j, time_parts, show_time, True, persian_script)}")
     click.echo(f"Unix:      {format_unix_timestamp(ts)}")
 
 
@@ -1106,6 +1136,7 @@ def convert(
 @click.option("-y", "--year", type=int, required=False, help="Year number.")
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
 @click.option("-d", "--day", type=int, required=False, help="Day of month.")
+@_persian_option
 def interval(
     jalali: bool,
     gregorian: bool,
@@ -1115,10 +1146,19 @@ def interval(
     year: Optional[int],
     month: Optional[str],
     day: Optional[int],
+    persian_script: bool,
 ):
-    """Show period start/end in both calendars.
+    """Show the first and last moment of a year, month, day or explicit range.
 
-    Use exactly one of -j, -g, or -e.
+    \b
+    Use exactly one of -j, -g or -e.
+
+    \b
+    Examples:
+      pyjdate interval -j -y 1404
+      pyjdate interval -g -y 2026 -m 02
+      pyjdate interval -j -y 1404 -m mehr -d 12 --fa
+      pyjdate interval -g -s "2026-01-01" --end "2026-01-31"
     """
     kind = _selected_date_kind(jalali, gregorian, epoch_mode)
     options = IntervalOptions(start=start, end=end, year=year, month=month, day=day)
@@ -1132,16 +1172,16 @@ def interval(
             raise click.ClickException("--start and --end are required with -e/--epoch.")
         start_dt = parse_epoch(options.start)
         end_dt = parse_epoch(options.end or "")
-        _emit_datetime_block("Start:", start_dt)
-        _emit_datetime_block("End:", end_dt)
+        _emit_datetime_block("Start:", start_dt, persian_script=persian_script)
+        _emit_datetime_block("End:", end_dt, persian_script=persian_script)
         return
 
     cal = kind
     if options.start is not None:
         start_dt, _start_time_provided = parse_calendar_endpoint(cal, options.start)
         end_dt, _end_time_provided = parse_calendar_endpoint(cal, options.end)  # type: ignore[arg-type]
-        _emit_datetime_block("Start:", start_dt)
-        _emit_datetime_block("End:", end_dt)
+        _emit_datetime_block("Start:", start_dt, persian_script=persian_script)
+        _emit_datetime_block("End:", end_dt, persian_script=persian_script)
         return
 
     if options.year is None:
@@ -1152,8 +1192,8 @@ def interval(
     start_date, end_date = _resolve_interval_dates(cal, options.year, options.month, options.day)
     start_ts = build_datetime(cal, start_date, TimeParts(0, 0, 0, 0), local_timezone())
     end_ts = build_datetime(cal, end_date, TimeParts(23, 59, 59, 0), local_timezone())
-    _emit_datetime_block("Start:", start_ts)
-    _emit_datetime_block("End:", end_ts)
+    _emit_datetime_block("Start:", start_ts, persian_script=persian_script)
+    _emit_datetime_block("End:", end_ts, persian_script=persian_script)
 
 
 @click.command()
@@ -1174,6 +1214,7 @@ def interval(
 @click.option("-H", "--hour", type=int, required=False, default=None, help="Hour (0-23).")
 @click.option("--minute", type=int, required=False, default=None, help="Minute (0-59).")
 @click.option("--second", type=int, required=False, default=None, help="Second (0-59).")
+@json_option
 def distance(
     value: Optional[str],
     jalali: bool,
@@ -1186,10 +1227,18 @@ def distance(
     hour: Optional[int],
     minute: Optional[int],
     second: Optional[int],
+    as_json: bool,
 ):
-    """Show time difference between now and the input date.
+    """Show how far the given date is from now.
 
-    For concrete inputs, use exactly one of -j, -g, or -e.
+    \b
+    For a concrete date use exactly one of -j, -g or -e.
+
+    \b
+    Examples:
+      pyjdate distance -g "2026-03-21 08:00"
+      pyjdate distance -j 1405/01/01
+      pyjdate distance -i "2 days 4 hours" --json
     """
     calendar, options = _date_options_from_cli(
         value=value,
@@ -1206,7 +1255,7 @@ def distance(
     )
     now = datetime.now().astimezone()
     input_dt = parse_input_datetime(calendar, options, now=now)
-    print_distance(now, input_dt)
+    print_distance(now, input_dt, as_json)
 
 
 @click.command(name="distance-between")
@@ -1232,10 +1281,21 @@ def distance(
         "Examples: '2026-02-01 08:00', '2026-02-01', '1404/11/12 12:00:00', '2 days'."
     ),
 )
-def distance_between(jalali: bool, gregorian: bool, epoch_mode: bool, start: str, end: str):
-    """Show time difference between two dates.
+@json_option
+def distance_between(
+    jalali: bool, gregorian: bool, epoch_mode: bool, start: str, end: str, as_json: bool
+):
+    """Show the time difference between two dates.
 
-    Use exactly one of -j, -g, or -e.
+    \b
+    Use exactly one of -j, -g or -e. Each endpoint may also be a relative
+    interval, which is resolved against the current time.
+
+    \b
+    Examples:
+      pyjdate distance-between -g -s "2026-01-01" --end "2026-01-02 12:00"
+      pyjdate distance-between -j -s 1404/01/01 --end 1405/01/01
+      pyjdate distance-between -g -s "-3 days" --end "6 hours" --json
     """
     kind = _selected_date_kind(jalali, gregorian, epoch_mode)
     now = datetime.now().astimezone()
@@ -1247,12 +1307,15 @@ def distance_between(jalali: bool, gregorian: bool, epoch_mode: bool, start: str
             raise click.ClickException("Use -e/--epoch for Unix timestamp inputs.")
         start_dt = parse_distance_between_endpoint(start, kind, now, "start")
         end_dt = parse_distance_between_endpoint(end, kind, now, "end")
-    print_distance(start_dt, end_dt)
+    print_distance(start_dt, end_dt, as_json)
 
 
 for cmd in (current, convert, interval, distance, distance_between):
     jdate_cli.add_command(cmd)
 
+# `now` reads better than `current` for the most-used command; both work.
+jdate_cli.add_command(current, name="now")
 
-if __name__ == "__main__":
+
+if __name__ == "__main__":  # pragma: no cover
     jdate_cli()

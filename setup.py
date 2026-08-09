@@ -1,36 +1,10 @@
-"""Package setup for pytoolbox."""
+"""Compatibility shim.
 
-from setuptools import find_packages, setup
+All packaging metadata now lives in ``pyproject.toml``. This file only exists
+so that ``python setup.py``-style invocations and very old pip versions keep
+working.
+"""
 
-setup(
-    name='pytoolbox',
-    version='0.1.0',
-    author='MG',
-    python_requires='>=3.9',
-    packages=find_packages(),
-    include_package_data=True,
-    install_requires=[
-        'Click',
-        'openpyxl',
-        'requests[socks]',
-        'fpdf2',
-        'Pillow',
-    ],
-    extras_require={
-        # Needed by pymd2pdf to shape and reorder Persian/Arabic text correctly.
-        # The DejaVu and Vazir TTFs are system-installed separately; see
-        # `pymd2pdf --help` for instructions.
-        'rtl': ['arabic-reshaper', 'python-bidi'],
-    },
-    entry_points={
-        'console_scripts': [
-            'pyfm = pytoolbox.pyfm:file_management',
-            'pyssh = pytoolbox.pyssh:ssh_management',
-            'pynet = pytoolbox.pynet:net_cli',
-            'pyjdate = pytoolbox.pyjdate:jdate_cli',
-            'pystr = pytoolbox.pystr:str_cli',
-            'pytime = pytoolbox.pytime:time_cli',
-            'pymd2pdf = pytoolbox.pymd2pdf:pymd2pdf_cli',
-        ],
-    },
-)
+from setuptools import setup
+
+setup()

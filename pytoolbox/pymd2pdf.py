@@ -3,11 +3,14 @@
 
 Exposes the ``pymd2pdf`` console script (see ``pymd2pdf --help``).
 
-Supports: headings, bold, inline code, code blocks, tables, bullets,
-numbered lists, horizontal rules, nested lists, images, and Mermaid
-diagrams. Persian/Arabic text is shaped and rendered right-to-left when
-Vazir and the RTL extras are present.
+Supports: headings, bold, italic, strikethrough, links, inline code, code
+blocks, tables, bullet/numbered/task lists, blockquotes, horizontal rules,
+nested lists, images and Mermaid diagrams. Persian/Arabic text is shaped and
+rendered right-to-left when a Vazir/Vazirmatn face and the RTL extras are
+present.
 """
+
+from __future__ import annotations
 
 import base64
 import io
@@ -24,6 +27,9 @@ from fpdf import FPDF
 from fpdf.svg import Percent, SVGObject
 from PIL import Image as PILImage
 
+from pytoolbox.core import paths
+from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
+
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -37,22 +43,23 @@ except ImportError:
 _HAS_MMDC = shutil.which("mmdc") is not None
 _mermaid_net_warned = False
 
-# ── Font paths (DejaVu ships with most Linux distros) ───────────────
-FONT_DIRS = [
-    Path("/usr/share/fonts/truetype/dejavu"),
-    Path("/usr/share/fonts/TTF"),                 # Arch
-    Path("/usr/local/share/fonts"),
-    Path.home() / ".local/share/fonts",
-]
+#: Set by the CLI: when true, nothing reaches out to the network (no remote
+#: images, no mermaid.ink). Sensible default for offline/metered devices.
+_offline = False
 
-# ── Persian/Arabic font paths (Vazir) ───────────────────────────────
+# ── Font search paths ───────────────────────────────────────────────
+# paths.font_dirs() covers Linux, macOS, Windows and Termux ($PREFIX/share/fonts
+# and ~/.termux/fonts, which have no /usr/share equivalent on Android).
+FONT_DIRS = paths.font_dirs()
+
 FONT_PERSIAN_DIRS = [
-    Path.home() / ".local/share/fonts",
     Path.home() / ".config/Typora/themes/middle-east",
     Path("/usr/share/fonts/truetype/vazir"),
-    Path("/usr/share/fonts/TTF"),
-    Path("/usr/local/share/fonts"),
+    *FONT_DIRS,
 ]
+
+#: Page geometry presets accepted by ``--page-size``.
+PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
 
 FONT_SANS = "DejaVu"
 FONT_MONO = "DejaVuMono"
@@ -182,6 +189,10 @@ CLR_TABLE_BORDER  = (180, 180, 180)
 CLR_INLINE_CODE   = (230, 230, 230)
 CLR_HR            = (180, 180, 180)
 CLR_BOLD          = (0, 0, 0)
+CLR_LINK          = (20, 80, 180)
+CLR_STRIKE        = (140, 140, 140)
+CLR_QUOTE_BAR     = (170, 190, 220)
+CLR_QUOTE_FG      = (90, 90, 90)
 
 # ── Layout constants ────────────────────────────────────────────────
 BODY_SIZE   = 10
@@ -197,19 +208,44 @@ MAX_CODE_COLS = 220    # truncate code lines beyond this
 # Font resolution
 # ═══════════════════════════════════════════════════════════════════
 
-def _find_font_dir():
-    for d in FONT_DIRS:
-        if (d / "DejaVuSans.ttf").is_file():
-            return d
-    print(
-        "ERROR: DejaVu fonts not found. Install them:\n"
-        "  Debian/Ubuntu : sudo apt-get install fonts-dejavu-core\n"
-        "  Fedora/RHEL   : sudo dnf install dejavu-sans-fonts dejavu-sans-mono-fonts\n"
-        "  Arch          : sudo pacman -S ttf-dejavu\n"
-        "  macOS (brew)  : brew install font-dejavu",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+#: The five faces the renderer needs, and the DejaVu file that provides each.
+_REQUIRED_FACES = (
+    "DejaVuSans.ttf",
+    "DejaVuSans-Bold.ttf",
+    "DejaVuSerif.ttf",
+    "DejaVuSansMono.ttf",
+    "DejaVuSansMono-Bold.ttf",
+)
+
+
+def _find_dejavu_faces() -> dict[str, Path]:
+    """Locate the DejaVu faces, searching each font directory one level deep.
+
+    Returns a name -> path map. Faces may legitimately come from different
+    directories (Termux, for instance, splits the mono and sans packages).
+    """
+    found: dict[str, Path] = {}
+    for name in _REQUIRED_FACES:
+        match = paths.find_font(name)
+        if match is not None:
+            found[name] = match
+    if "DejaVuSans.ttf" not in found:
+        print(
+            "ERROR: DejaVu fonts not found. Install them:\n"
+            "  Debian/Ubuntu : sudo apt-get install fonts-dejavu-core\n"
+            "  Fedora/RHEL   : sudo dnf install dejavu-sans-fonts dejavu-sans-mono-fonts\n"
+            "  Arch          : sudo pacman -S ttf-dejavu\n"
+            "  Termux        : pkg install fontconfig-utils ttf-dejavu\n"
+            "  macOS (brew)  : brew install --cask font-dejavu\n"
+            "Or point pymd2pdf at a font directory with --font-dir.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    # Fall back to the regular face for any variant that is missing, so a
+    # partial install degrades to plain text instead of crashing.
+    for name in _REQUIRED_FACES:
+        found.setdefault(name, found["DejaVuSans.ttf"])
+    return found
 
 
 def _find_persian_font():
@@ -225,17 +261,25 @@ def _find_persian_font():
     candidates = (
         ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf", False),
         ("Vazirmatn.ttf",         "Vazirmatn-Bold.ttf", False),
-        ("Vazir.ttf",              "Vazir-Bold.ttf",     True),
+        ("Vazir.ttf",             "Vazir-Bold.ttf",     True),
+        # Noto ships in most distro font packages and on Termux, so it is a
+        # reasonable last resort when no Vazir family is installed.
+        ("NotoNaskhArabic-Regular.ttf", "NotoNaskhArabic-Bold.ttf", True),
     )
     for d in FONT_PERSIAN_DIRS:
         for reg_name, bold_name, needs_fallback in candidates:
             reg = d / reg_name
             if reg.is_file():
                 bold = d / bold_name
-                _persian_glyph_fallback = (
-                    dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
-                )
+                _persian_glyph_fallback = dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
                 return reg, (bold if bold.is_file() else reg)
+
+    for reg_name, bold_name, needs_fallback in candidates:
+        reg = paths.find_font(reg_name)
+        if reg is not None:
+            bold = paths.find_font(bold_name)
+            _persian_glyph_fallback = dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
+            return reg, (bold if bold is not None else reg)
     return None, None
 
 
@@ -247,12 +291,12 @@ class PDF(FPDF):
     def __init__(self, title="", **kw):
         super().__init__(**kw)
         self._doc_title = title
-        fdir = _find_font_dir()
-        self.add_font(FONT_SANS, "",  str(fdir / "DejaVuSans.ttf"))
-        self.add_font(FONT_SANS, "B", str(fdir / "DejaVuSans-Bold.ttf"))
-        self.add_font(FONT_SANS, "I", str(fdir / "DejaVuSerif.ttf"))
-        self.add_font(FONT_MONO, "",  str(fdir / "DejaVuSansMono.ttf"))
-        self.add_font(FONT_MONO, "B", str(fdir / "DejaVuSansMono-Bold.ttf"))
+        faces = _find_dejavu_faces()
+        self.add_font(FONT_SANS, "",  str(faces["DejaVuSans.ttf"]))
+        self.add_font(FONT_SANS, "B", str(faces["DejaVuSans-Bold.ttf"]))
+        self.add_font(FONT_SANS, "I", str(faces["DejaVuSerif.ttf"]))
+        self.add_font(FONT_MONO, "",  str(faces["DejaVuSansMono.ttf"]))
+        self.add_font(FONT_MONO, "B", str(faces["DejaVuSansMono-Bold.ttf"]))
 
         # Set by convert() once the document's text is known; see _use_rtl_layout.
         self.doc_is_rtl = False
@@ -301,8 +345,11 @@ class PDF(FPDF):
 # ═══════════════════════════════════════════════════════════════════
 
 def _strip_md(text):
-    """Remove markdown bold/italic markers for width calculations."""
+    """Remove inline markdown markers, leaving the text that will be drawn."""
+    text = re.sub(r'!?\[([^\]]*)\]\(([^)]*)\)', r'\1', text)  # links and images
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'~~(.+?)~~', r'\1', text)
     text = re.sub(r'\*(.+?)\*', r'\1', text)
     text = re.sub(r'`(.+?)`', r'\1', text)
     return text
@@ -317,28 +364,67 @@ def _ensure_space(pdf, needed_mm):
         pdf.add_page()
 
 
+# Inline spans, longest markers first so ``**`` wins over ``*`` and ``__``
+# over ``_``. Links come first because their label may itself contain markers.
+_INLINE_RE = re.compile(
+    r'(\[[^\]]+\]\([^)\s]+\)'
+    r'|`[^`]+`'
+    r'|\*\*[^*]+\*\*'
+    r'|__[^_]+__'
+    r'|~~[^~]+~~'
+    r'|\*[^*\s][^*]*\*'
+    r')'
+)
+
+_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
+
+
 def _render_rich(pdf, text, base_size=BODY_SIZE, base_style=""):
-    """Write a line honouring inline `code` and **bold**.
+    """Write a line honouring inline code, bold, italic, strikethrough and links.
 
     Uses pdf.write() throughout so segments wrap at the right margin instead of
-    overflowing. Inline code is distinguished by the mono font.
+    overflowing. Inline code is distinguished by the mono font; links are drawn
+    underlined and carry a real PDF link annotation.
     """
-    parts = re.split(r'(`[^`]+`|\*\*[^*]+\*\*)', text)
     lh = _body_lh(pdf)
-    for part in parts:
-        if part.startswith('`') and part.endswith('`'):
+
+    def reset():
+        pdf.set_font(FONT_SANS, base_style, base_size)
+        pdf.set_text_color(*CLR_BODY)
+
+    for part in _INLINE_RE.split(text):
+        if not part:
+            continue
+        link_match = _LINK_RE.match(part)
+        if link_match:
+            label, url = link_match.groups()
+            pdf.set_font(FONT_SANS, base_style + "U" if "U" not in base_style else base_style, base_size)
+            pdf.set_text_color(*CLR_LINK)
+            pdf.write(lh, _strip_md(label), link=url)
+            reset()
+        elif part.startswith('`') and part.endswith('`'):
             pdf.set_font(FONT_MONO, "", base_size - 1)
             pdf.set_text_color(*CLR_CODE_FG)
             pdf.write(lh, part[1:-1])
-            pdf.set_font(FONT_SANS, base_style, base_size)
-            pdf.set_text_color(*CLR_BODY)
-        elif part.startswith('**') and part.endswith('**'):
+            reset()
+        elif (part.startswith('**') and part.endswith('**')) or (
+            part.startswith('__') and part.endswith('__')
+        ):
             pdf.set_font(FONT_SANS, "B", base_size)
             pdf.set_text_color(*CLR_BOLD)
             pdf.write(lh, part[2:-2])
-            pdf.set_font(FONT_SANS, base_style, base_size)
-            pdf.set_text_color(*CLR_BODY)
-        elif part:
+            reset()
+        elif part.startswith('~~') and part.endswith('~~'):
+            # fpdf2 has no strikethrough style; grey text reads as "struck out"
+            # well enough without drawing manual lines under wrapped runs.
+            pdf.set_text_color(*CLR_STRIKE)
+            pdf.write(lh, part[2:-2])
+            reset()
+        elif part.startswith('*') and part.endswith('*'):
+            pdf.set_font(FONT_SANS, "I", base_size)
+            pdf.write(lh, part[1:-1])
+            reset()
+        else:
             pdf.write(lh, part)
 
 
@@ -441,6 +527,8 @@ def _place_image(pdf, data, alt=""):
 def _add_image(pdf, src, alt, base_dir):
     try:
         if re.match(r'^https?://', src):
+            if _offline:
+                raise RuntimeError("remote images are disabled by --offline")
             resp = requests.get(src, timeout=15)
             resp.raise_for_status()
             data = resp.content
@@ -488,6 +576,15 @@ def _render_mermaid(source):
                 return data
         except Exception:
             pass
+    if _offline:
+        if not _mermaid_net_warned:
+            print(
+                "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
+                "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
+                file=sys.stderr,
+            )
+            _mermaid_net_warned = True
+        return None
     try:
         try:
             return _render_mermaid_ink(source)
@@ -707,6 +804,48 @@ def _add_list_item(pdf, prefix, text, indent):
         pdf.ln(_body_lh(pdf))
 
 
+def _add_blockquote(pdf, lines):
+    """Render consecutive ``> `` lines as an indented, bar-marked quote."""
+    if not lines:
+        return
+    text = " ".join(line.strip() for line in lines if line.strip())
+    if not text:
+        return
+    pdf.ln(1)
+    indent = 6
+    start_y = pdf.get_y()
+    pdf.set_text_color(*CLR_QUOTE_FG)
+
+    if _use_rtl_layout(pdf, text):
+        pdf.set_font(FONT_FA, "", BODY_SIZE)
+        width = pdf.w - pdf.l_margin - pdf.r_margin - indent - 2 * pdf.c_margin
+        for line in _shape_rtl_lines(pdf, _strip_md(text), width):
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
+    else:
+        pdf.set_font(FONT_SANS, "I", BODY_SIZE)
+        pdf.set_left_margin(pdf.l_margin + indent)
+        pdf.set_x(pdf.l_margin)
+        _render_rich(pdf, text, base_style="I")
+        pdf.ln(_body_lh(pdf))
+        pdf.set_left_margin(pdf.l_margin - indent)
+
+    # Draw the bar last, once the quote's height is known.
+    end_y = pdf.get_y()
+    pdf.set_draw_color(*CLR_QUOTE_BAR)
+    pdf.set_line_width(0.8)
+    bar_x = pdf.w - pdf.r_margin - 1 if _use_rtl_layout(pdf, text) else pdf.l_margin + 1
+    pdf.line(bar_x, start_y, bar_x, end_y - 1)
+    pdf.set_line_width(0.2)
+    pdf.set_font(FONT_SANS, "", BODY_SIZE)
+    pdf.set_text_color(*CLR_BODY)
+    pdf.ln(2)
+
+
+#: ``- [ ] todo`` / ``- [x] done`` list items.
+_TASK_RE = re.compile(r'^\[([ xX])\]\s+(.*)$')
+
+
 def _add_hr(pdf):
     pdf.ln(2)
     pdf.set_draw_color(*CLR_HR)
@@ -728,15 +867,38 @@ def _extract_title(lines):
     return ""
 
 
-def convert(md_path, pdf_path):
+def convert(
+    md_path,
+    pdf_path,
+    page_size="A4",
+    orientation="P",
+    margin=20,
+    font_size=None,
+    title_page=True,
+    quiet=False,
+):
+    """Render one Markdown file to a PDF.
+
+    ``font_size`` scales body text by rebinding the module-level ``BODY_SIZE``;
+    the block renderers read that constant directly, and threading an explicit
+    size through every one of them would add a parameter to a dozen functions
+    for one rarely-changed knob.
+    """
+    global BODY_SIZE
+    original_body_size = BODY_SIZE
+    if font_size:
+        BODY_SIZE = font_size
+
     md_path = Path(md_path)
     md_text = md_path.read_text(encoding="utf-8")
     lines = md_text.split('\n')
-    title = _extract_title(lines)
+    title = _extract_title(lines) if title_page else ""
 
-    pdf = PDF(title=title, orientation="P", unit="mm", format="A4")
+    pdf = PDF(title=title, orientation=orientation, unit="mm", format=page_size)
     pdf.alias_nb_pages()
-    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_auto_page_break(auto=True, margin=margin)
+    pdf.set_margins(margin, margin, margin)
+    pdf.set_title(title or md_path.stem)
     # Document-wide base direction: a block with no RTL characters of its own
     # (e.g. an English-only list item in an otherwise-Persian list) still
     # follows this instead of snapping to LTR mid-list. See _use_rtl_layout.
@@ -853,11 +1015,26 @@ def convert(md_path, pdf_path):
             i += 1
             continue
 
-        # ── bullet list ─────────────────────────────────────────
-        m = re.match(r'^(\s*)[-*]\s+(.*)', line)
+        # ── blockquote ──────────────────────────────────────────
+        if line.lstrip().startswith('>'):
+            quote_lines = []
+            while i < len(lines) and lines[i].lstrip().startswith('>'):
+                quote_lines.append(re.sub(r'^\s*>\s?', '', lines[i]))
+                i += 1
+            _add_blockquote(pdf, quote_lines)
+            continue
+
+        # ── bullet list (including task lists) ──────────────────
+        m = re.match(r'^(\s*)[-*+]\s+(.*)', line)
         if m:
             indent = len(m.group(1))
-            _add_list_item(pdf, f"  {_bullet_char(indent)} ", m.group(2), indent)
+            body = m.group(2)
+            task = _TASK_RE.match(body)
+            if task:
+                marker = "  [x] " if task.group(1).lower() == "x" else "  [ ] "
+                _add_list_item(pdf, marker, task.group(2), indent)
+            else:
+                _add_list_item(pdf, f"  {_bullet_char(indent)} ", body, indent)
             i += 1
             continue
 
@@ -880,15 +1057,19 @@ def convert(md_path, pdf_path):
 
     _flush_table()
 
-    pdf.output(str(pdf_path))
-    print(f"  {md_path} -> {pdf_path}")
+    try:
+        pdf.output(str(pdf_path))
+    finally:
+        BODY_SIZE = original_body_size
+    if not quiet:
+        print(f"  {md_path} -> {pdf_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════
 
-@click.command(context_settings={"help_option_names": ["-h", "--help"]})
+@click.command(context_settings=CONTEXT_SETTINGS)
 @click.argument(
     "files",
     nargs=-1,
@@ -901,20 +1082,70 @@ def convert(md_path, pdf_path):
     help="Output PDF path. Only valid with a single input file; "
          "otherwise each <input>.md is written as <input>.pdf.",
 )
-def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
+@click.option(
+    "-d", "--output-dir",
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Write the PDFs into this directory instead of beside the inputs.",
+)
+@click.option(
+    "--page-size",
+    type=click.Choice(PAGE_SIZES, case_sensitive=False),
+    default="a4",
+    show_default=True,
+    help="Paper size.",
+)
+@click.option(
+    "--landscape", is_flag=True, help="Use landscape orientation instead of portrait."
+)
+@click.option(
+    "--margin",
+    type=click.FloatRange(5, 60),
+    default=20,
+    show_default=True,
+    help="Page margin in millimetres.",
+)
+@click.option(
+    "--font-size",
+    type=click.FloatRange(4, 24),
+    default=None,
+    help=f"Body text size in points (default: {BODY_SIZE}).",
+)
+@click.option("--no-title-page", is_flag=True, help="Skip the generated cover page.")
+@click.option(
+    "--offline",
+    is_flag=True,
+    help="Never use the network: skip remote images and the mermaid.ink fallback.",
+)
+@click.option("-q", "--quiet", is_flag=True, help="Do not print the output paths.")
+@version_option
+def pymd2pdf_cli(
+    files: tuple[Path, ...],
+    output: Path | None,
+    output_dir: Path | None,
+    page_size: str,
+    landscape: bool,
+    margin: float,
+    font_size: float | None,
+    no_title_page: bool,
+    offline: bool,
+    quiet: bool,
+):
     """Convert Markdown file(s) to PDF.
 
     \b
-    Supports headings, bold, inline code, code blocks, tables, bullets,
-    numbered lists, horizontal rules, nested lists, images, and Mermaid
-    diagrams. Persian/Arabic text is shaped and rendered right-to-left
-    when the optional deps and Vazir font are available.
+    Supports headings, bold, italic, strikethrough, links, inline code, code
+    blocks, tables, bullet and numbered lists, task lists, blockquotes,
+    horizontal rules, nested lists, images and Mermaid diagrams.
+    Persian/Arabic text is shaped and rendered right-to-left when the optional
+    deps and a Vazir/Vazirmatn font are available.
 
     \b
     Examples:
       pymd2pdf README.md                     # writes README.pdf
       pymd2pdf doc.md -o report.pdf          # writes report.pdf
       pymd2pdf a.md b.md c.md                # writes a.pdf, b.pdf, c.pdf
+      pymd2pdf *.md -d ./pdfs --page-size a5
+      pymd2pdf notes.md --no-title-page --font-size 11 --offline
 
     \b
     ── Fonts ──────────────────────────────────────────────────────────
@@ -922,15 +1153,16 @@ def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
       Debian/Ubuntu : sudo apt-get install fonts-dejavu-core
       Fedora/RHEL   : sudo dnf install dejavu-sans-fonts dejavu-sans-mono-fonts
       Arch          : sudo pacman -S ttf-dejavu
+      Termux        : pkg install fontconfig-utils ttf-dejavu
       macOS (brew)  : brew install --cask font-dejavu
 
     \b
-    Vazir (OPTIONAL, for Persian/Arabic) — download Vazir.ttf and
-    Vazir-Bold.ttf from https://github.com/rastikerdar/vazir-font and
-    drop them in one of:
+    Vazirmatn or Vazir (OPTIONAL, for Persian/Arabic) — download from
+    https://github.com/rastikerdar/vazirmatn and drop the TTFs in one of:
       ~/.local/share/fonts
+      ~/.termux/fonts          (Termux)
+      $PREFIX/share/fonts      (Termux)
       /usr/share/fonts/truetype/vazir
-      /usr/share/fonts/TTF
     Run `fc-cache -f` afterwards on Linux.
 
     \b
@@ -954,13 +1186,35 @@ def pymd2pdf_cli(files: tuple[Path, ...], output: Path | None):
                  pip install 'pytoolbox[rtl]'
                  # or: pip install arabic-reshaper python-bidi
     """
+    global _offline
+
     if output and len(files) > 1:
-        raise click.UsageError("-o/--output can only be used with a single input file")
+        raise click.UsageError("-o/--output can only be used with a single input file.")
+    if output and output_dir:
+        raise click.UsageError("Use either -o/--output or -d/--output-dir, not both.")
+
+    _offline = offline
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     for md_path in files:
-        out = output if output else md_path.with_suffix(".pdf")
-        convert(md_path, out)
+        if output:
+            out = output
+        elif output_dir:
+            out = output_dir / md_path.with_suffix(".pdf").name
+        else:
+            out = md_path.with_suffix(".pdf")
+        convert(
+            md_path,
+            out,
+            page_size=page_size.upper(),
+            orientation="L" if landscape else "P",
+            margin=margin,
+            font_size=font_size,
+            title_page=not no_title_page,
+            quiet=quiet,
+        )
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     pymd2pdf_cli()

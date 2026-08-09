@@ -131,3 +131,12 @@ dmypy.json
 # pycharm
 .idea
 .tmp/
+
+# vscode
+.vscode/
+
+# local agent / tooling artifacts
+.codex
+
+# ruff
+.ruff_cache/

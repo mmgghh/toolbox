@@ -1,38 +1,63 @@
-"""Time tracking utilities and CLI commands."""
+"""Time tracking backed by SQLite (``pytime``).
+
+Entries live in a single-table SQLite database, so the data stays readable
+with any SQLite client and syncs as one file. Both calendars are recorded on
+output; internally everything is a UTC-based epoch timestamp.
+"""
 
 from __future__ import annotations
 
-import csv
+import os
 import re
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import click
 
+from pytoolbox.core import console
+from pytoolbox.core.intervals import (
+    apply_interval,
+    format_duration,
+    format_hours_minutes,
+    parse_pg_interval,
+)
+from pytoolbox.core.options import (
+    CONTEXT_SETTINGS,
+    AliasedGroup,
+    format_option,
+    version_option,
+)
+from pytoolbox.core.tables import emit as emit_rows
+from pytoolbox.core.tables import render_table, write_excel
 from pytoolbox.pyjdate import (
     DateParts,
     TimeParts,
     build_datetime,
-    days_in_month,
     format_datetime,
     format_total_value,
     format_unix_timestamp,
     gregorian_to_jalali,
     local_timezone,
     normalize_calendar,
-    parse_interval_endpoint,
     parse_full_date,
+    parse_interval_endpoint,
     split_datetime_parts,
     validate_date,
     validate_time,
 )
 
-
 DEFAULT_DB_PATH = Path.home() / ".pytime" / "pytime.db"
 DEFAULT_OUTPUT_PREFIX = "pytime"
+
+#: Overrides the database location without passing --db every time.
+DB_ENV_VAR = "PYTIME_DB"
+
+#: Entries longer than this are flagged as probably-forgotten timers.
+LONG_ENTRY_HOURS = 5
 
 
 @dataclass(frozen=True)
@@ -47,59 +72,17 @@ class TimeRecord:
     duration_hours: float
 
 
-@dataclass(frozen=True)
-class IntervalDelta:
-    """Parsed interval components."""
-
-    years: int = 0
-    months: int = 0
-    days: float = 0.0
-    seconds: float = 0.0
-
-
-UNIT_ALIASES = {
-    "year": "years",
-    "years": "years",
-    "yr": "years",
-    "yrs": "years",
-    "y": "years",
-    "month": "months",
-    "months": "months",
-    "mon": "months",
-    "mons": "months",
-    "week": "weeks",
-    "weeks": "weeks",
-    "w": "weeks",
-    "day": "days",
-    "days": "days",
-    "d": "days",
-    "hour": "hours",
-    "hours": "hours",
-    "hr": "hours",
-    "hrs": "hours",
-    "h": "hours",
-    "minute": "minutes",
-    "minutes": "minutes",
-    "min": "minutes",
-    "mins": "minutes",
-    "m": "minutes",
-    "second": "seconds",
-    "seconds": "seconds",
-    "sec": "seconds",
-    "secs": "seconds",
-    "s": "seconds",
-}
-
-TOKEN_RE = re.compile(
-    r"(?P<time>[+-]?\d+:\d{2}(?::\d{2}(?:\.\d+)?)?)|"
-    r"(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?P<unit>[A-Za-z]+)",
-)
-
-
 def resolve_db_path(db_path: Optional[Path]) -> Path:
-    """Return database path, creating its parent directory when needed."""
-    path = db_path or DEFAULT_DB_PATH
-    path = path.expanduser()
+    """Return the database path, creating its parent directory when needed.
+
+    Precedence: explicit ``--db``, then ``$PYTIME_DB``, then the default under
+    the home directory (kept at ``~/.pytime`` so existing databases keep
+    working after an upgrade).
+    """
+    if db_path is None:
+        env_value = os.environ.get(DB_ENV_VAR)
+        db_path = Path(env_value) if env_value else DEFAULT_DB_PATH
+    path = db_path.expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -170,136 +153,6 @@ def emit_datetime_block(label: str, dt: datetime) -> None:
     click.echo(f"  Unix:      {triplet['epoch']}")
 
 
-def parse_pg_interval(value: str) -> IntervalDelta:
-    """Parse a PostgreSQL-like interval string into components."""
-    raw = value.strip()
-    if not raw:
-        raise click.ClickException("Interval cannot be empty.")
-
-    delta = IntervalDelta()
-    pos = 0
-    matched = False
-
-    for match in TOKEN_RE.finditer(raw):
-        if raw[pos:match.start()].strip(" ,"):
-            raise click.ClickException(f"Invalid interval segment: {raw[pos:match.start()].strip()}")
-        pos = match.end()
-        matched = True
-
-        if match.group("time"):
-            delta = _add_time_literal(delta, match.group("time"))
-            continue
-
-        value_str = match.group("value") or "0"
-        unit_str = match.group("unit") or ""
-        unit_key = UNIT_ALIASES.get(unit_str.lower())
-        if unit_key is None:
-            raise click.ClickException(f"Unknown interval unit: {unit_str}")
-
-        numeric = float(value_str)
-        if unit_key in ("years", "months") and not numeric.is_integer():
-            raise click.ClickException(f"{unit_key} must be whole numbers in interval values.")
-
-        delta = _apply_interval_token(delta, unit_key, numeric)
-
-    if raw[pos:].strip(" ,"):
-        raise click.ClickException(f"Invalid interval segment: {raw[pos:].strip()}")
-
-    if not matched:
-        raise click.ClickException("Interval format not recognized.")
-
-    return delta
-
-
-def _add_time_literal(delta: IntervalDelta, value: str) -> IntervalDelta:
-    sign = -1 if value.startswith("-") else 1
-    payload = value[1:] if value[0] in "+-" else value
-    parts = payload.split(":")
-    if len(parts) < 2 or len(parts) > 3:
-        raise click.ClickException(f"Invalid interval time segment: {value}")
-    hours = int(parts[0])
-    minutes = int(parts[1])
-    seconds = float(parts[2]) if len(parts) == 3 else 0.0
-    total_seconds = sign * (hours * 3600 + minutes * 60 + seconds)
-    return IntervalDelta(
-        years=delta.years,
-        months=delta.months,
-        days=delta.days,
-        seconds=delta.seconds + total_seconds,
-    )
-
-
-def _apply_interval_token(delta: IntervalDelta, unit: str, value: float) -> IntervalDelta:
-    if unit == "years":
-        return IntervalDelta(
-            years=delta.years + int(value),
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds,
-        )
-    if unit == "months":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months + int(value),
-            days=delta.days,
-            seconds=delta.seconds,
-        )
-    if unit == "weeks":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days + value * 7,
-            seconds=delta.seconds,
-        )
-    if unit == "days":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days + value,
-            seconds=delta.seconds,
-        )
-    if unit == "hours":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value * 3600,
-        )
-    if unit == "minutes":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value * 60,
-        )
-    if unit == "seconds":
-        return IntervalDelta(
-            years=delta.years,
-            months=delta.months,
-            days=delta.days,
-            seconds=delta.seconds + value,
-        )
-    raise click.ClickException(f"Unsupported interval unit: {unit}")
-
-
-def apply_interval(dt: datetime, delta: IntervalDelta, direction: int = 1) -> datetime:
-    """Apply an interval delta to a datetime."""
-    month_delta = direction * (delta.years * 12 + delta.months)
-    shifted = shift_months(dt, month_delta)
-    shifted = shifted + timedelta(days=direction * delta.days, seconds=direction * delta.seconds)
-    return shifted
-
-
-def shift_months(dt: datetime, months: int) -> datetime:
-    """Shift a datetime by a number of months while clamping the day."""
-    if months == 0:
-        return dt
-    year = dt.year + (dt.month - 1 + months) // 12
-    month = (dt.month - 1 + months) % 12 + 1
-    max_day = days_in_month("gregorian", year, month)
-    day = min(dt.day, max_day)
-    return dt.replace(year=year, month=month, day=day)
-
 
 def parse_calendar(value: Optional[str], required: bool = False) -> tuple[str, bool]:
     """Return normalized calendar value and whether fallback detection is allowed."""
@@ -331,67 +184,6 @@ def build_output_path(output: Optional[str], suffix: str) -> Path:
     return Path(f"{DEFAULT_OUTPUT_PREFIX}-{timestamp}{suffix}")
 
 
-def render_table(rows: list[dict[str, object]], headers: list[str]) -> str:
-    """Render rows as an aligned text table."""
-    if not rows:
-        return ""
-    widths = {header: len(header) for header in headers}
-    for row in rows:
-        for header in headers:
-            widths[header] = max(widths[header], len(str(row.get(header, ""))))
-    header_line = " | ".join(header.ljust(widths[header]) for header in headers)
-    separator = "-+-".join("-" * widths[header] for header in headers)
-    lines = [header_line, separator]
-    for row in rows:
-        line = " | ".join(str(row.get(header, "")).ljust(widths[header]) for header in headers)
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def render_markdown(rows: list[dict[str, object]], headers: list[str]) -> str:
-    """Render rows as a Markdown table."""
-    if not rows:
-        return ""
-    header_line = "| " + " | ".join(headers) + " |"
-    separator = "| " + " | ".join("---" for _ in headers) + " |"
-    lines = [header_line, separator]
-    for row in rows:
-        line = "| " + " | ".join(str(row.get(header, "")) for header in headers) + " |"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def write_csv(path: Path, rows: list[dict[str, object]], headers: list[str]) -> None:
-    """Write rows to a CSV file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(headers)
-        for row in rows:
-            writer.writerow([row.get(header, "") for header in headers])
-
-
-def write_markdown(path: Path, rows: list[dict[str, object]], headers: list[str]) -> None:
-    """Write rows to a Markdown file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_markdown(rows, headers), encoding="utf-8")
-
-
-def write_excel(path: Path, rows: list[dict[str, object]], headers: list[str]) -> None:
-    """Write rows to an Excel file."""
-    try:
-        from openpyxl import Workbook
-    except ImportError as exc:
-        raise click.ClickException("openpyxl is required for Excel output. Install it and try again.") from exc
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    workbook = Workbook()
-    sheet = workbook.active
-    sheet.append(headers)
-    for row in rows:
-        sheet.append([row.get(header, "") for header in headers])
-    workbook.save(path)
-
 
 def fetch_records(
     conn: sqlite3.Connection,
@@ -405,7 +197,7 @@ def fetch_records(
         query += " WHERE " + " AND ".join(clause_list)
     query += " ORDER BY start_ts ASC, id ASC"
 
-    now = datetime.now().astimezone()
+    now = datetime.now().astimezone().replace(microsecond=0)
     records = []
     for row in conn.execute(query, params).fetchall():
         start_dt = datetime.fromtimestamp(row["start_ts"], tz=local_timezone())
@@ -534,16 +326,27 @@ def group_records(
     return rows, headers
 
 
-@click.group()
+@click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
 @click.option(
     "--db",
     "db_path",
     type=click.Path(dir_okay=False, path_type=Path),
-    help="SQLite database path (defaults to ~/.pytime/pytime.db).",
+    help="SQLite database path (default: $PYTIME_DB or ~/.pytime/pytime.db).",
 )
+@version_option
 @click.pass_context
 def time_cli(ctx: click.Context, db_path: Optional[Path]) -> None:
-    """Track time entries with SQLite-backed storage."""
+    """Track where your time goes, stored in a single SQLite file.
+
+    \b
+    Examples:
+      pytime start -p toolbox "write docs"
+      pytime status
+      pytime end
+      pytime resume
+      pytime report --interval "7 days" --group-by project
+      pytime report --format markdown -o week.md
+    """
     ctx.ensure_object(dict)
     ctx.obj["db_path"] = resolve_db_path(db_path)
 
@@ -552,9 +355,15 @@ def time_cli(ctx: click.Context, db_path: Optional[Path]) -> None:
 @click.option("-p", "--project", type=str, help="Project name (optional).")
 @click.argument("task", type=str)
 def start(project: Optional[str], task: str) -> None:
-    """Start a new time entry and close any unfinished entries."""
+    """Start timing a task, closing any entry still running.
+
+    \b
+    Examples:
+      pytime start "review PR"
+      pytime start -p toolbox "write docs"
+    """
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
-    now = datetime.now().astimezone()
+    now = datetime.now().astimezone().replace(microsecond=0)
     _end_entries(db_path, entry_id=None, project=None, task=None, emit=True, allow_empty=True)
     with connect(db_path) as conn:
         cursor = conn.execute(
@@ -575,9 +384,162 @@ def start(project: Optional[str], task: str) -> None:
 @click.option("-t", "--task", "task", type=str, help="Task name filter (optional).")
 @click.option("--name", "task", type=str, help="Alias for --task.")
 def end(entry_id: Optional[int], project: Optional[str], task: Optional[str]) -> None:
-    """Stop an active time entry."""
+    """Stop the running entry.
+
+    \b
+    Examples:
+      pytime end
+      pytime end --task "write docs"
+      pytime end -i 12
+    """
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
     _end_entries(db_path, entry_id=entry_id, project=project, task=task, emit=True, allow_empty=False)
+
+
+@time_cli.command()
+@click.option("--json", "as_json", is_flag=True, help="Print status as JSON.")
+def status(as_json: bool) -> None:
+    """Show what is currently being timed, if anything.
+
+    \b
+    Examples:
+      pytime status
+      pytime status --json
+    """
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_records(conn, ["end_ts IS NULL"], [])
+
+    if not records:
+        if as_json:
+            console.emit_json({"running": False})
+            return
+        console.result("Nothing is being timed. Start with: pytime start \"task name\"")
+        return
+
+    payload = []
+    for record in records:
+        elapsed = record.duration_hours * 3600
+        payload.append(
+            {
+                "id": record.entry_id,
+                "project": record.project or "",
+                "task": record.task,
+                "started": record.start_dt.isoformat(),
+                "elapsed": format_duration(elapsed),
+                "elapsed_hours": round(record.duration_hours, 4),
+            }
+        )
+    if as_json:
+        console.emit_json({"running": True, "entries": payload})
+        return
+    for entry, record in zip(payload, records):
+        console.result(f"Id: {entry['id']}")
+        console.result(f"Project: {entry['project']}")
+        console.result(f"Task: {entry['task']}")
+        emit_datetime_block("Start:", record.start_dt)
+        console.result(f"Elapsed: {entry['elapsed']} ({format_hours_minutes(record.duration_hours)})")
+
+
+@time_cli.command()
+@click.option("-i", "--id", "entry_id", type=int, help="Entry to copy (default: the most recent one).")
+def resume(entry_id: Optional[int]) -> None:
+    """Start a new entry with the same project and task as a previous one.
+
+    \b
+    Examples:
+      pytime resume
+      pytime resume -i 12
+    """
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        if entry_id is None:
+            row = conn.execute(
+                "SELECT id, project, task FROM time_entries ORDER BY start_ts DESC, id DESC LIMIT 1"
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT id, project, task FROM time_entries WHERE id = ?", (entry_id,)
+            ).fetchone()
+    if row is None:
+        raise click.ClickException("No entry to resume.")
+
+    now = datetime.now().astimezone().replace(microsecond=0)
+    _end_entries(db_path, entry_id=None, project=None, task=None, emit=True, allow_empty=True)
+    with connect(db_path) as conn:
+        cursor = conn.execute(
+            "INSERT INTO time_entries (project, task, start_ts) VALUES (?, ?, ?)",
+            (row["project"], row["task"], now.timestamp()),
+        )
+        new_id = cursor.lastrowid
+
+    click.echo(f"Id: {new_id}")
+    click.echo(f"Project: {row['project'] or ''}")
+    click.echo(f"Task: {row['task']}")
+    emit_datetime_block("Start:", now)
+
+
+@time_cli.command("projects")
+@click.option("--json", "as_json", is_flag=True, help="Print as JSON.")
+def projects_command(as_json: bool) -> None:
+    """List known projects with their entry counts and total hours.
+
+    \b
+    Examples:
+      pytime projects
+      pytime projects --json
+    """
+    _list_dimension("project", as_json)
+
+
+@time_cli.command("tasks")
+@click.option("-p", "--project", type=str, help="Only tasks in this project.")
+@click.option("--json", "as_json", is_flag=True, help="Print as JSON.")
+def tasks_command(project: Optional[str], as_json: bool) -> None:
+    """List known tasks with their entry counts and total hours.
+
+    \b
+    Examples:
+      pytime tasks
+      pytime tasks -p toolbox
+    """
+    _list_dimension("task", as_json, project=project)
+
+
+def _list_dimension(field: str, as_json: bool, project: Optional[str] = None) -> None:
+    """Summarise entries grouped by ``project`` or ``task``."""
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    clauses: list[str] = []
+    params: list[object] = []
+    if project:
+        clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
+        params.append(f"%{escape_like(project)}%")
+
+    with connect(db_path) as conn:
+        records = fetch_records(conn, clauses, params)
+
+    if not records:
+        console.result("No records found.")
+        return
+
+    totals: dict[str, dict[str, float]] = {}
+    for record in records:
+        key = (record.project or "") if field == "project" else record.task
+        bucket = totals.setdefault(key, {"entries": 0, "hours": 0.0, "last": 0.0})
+        bucket["entries"] += 1
+        bucket["hours"] += record.duration_hours
+        bucket["last"] = max(bucket["last"], record.start_dt.timestamp())
+
+    rows = [
+        {
+            field: key or "(none)",
+            "entries": int(value["entries"]),
+            "hours": format_total_value(round(value["hours"], 3)),
+            "last_used": datetime.fromtimestamp(value["last"], tz=local_timezone()).strftime("%Y-%m-%d"),
+        }
+        for key, value in sorted(totals.items(), key=lambda item: item[1]["hours"], reverse=True)
+    ]
+    emit_rows(rows, [field, "entries", "hours", "last_used"], "json" if as_json else "table")
 
 
 @time_cli.command()
@@ -610,15 +572,9 @@ def end(entry_id: Optional[int], project: Optional[str], task: Optional[str]) ->
     type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
     help="Calendar for date inputs/grouping (jalali/gregorian).",
 )
-@click.option(
-    "--format",
-    "output_format",
-    type=click.Choice(["table", "excel", "csv", "markdown"], case_sensitive=False),
-    default="table",
-    show_default=True,
-    help="Output format.",
-)
-@click.option("-o", "--output", type=str, help="Output file path.")
+@format_option()
+@click.option("-o", "--output", type=str, help="Write the report to this file instead of stdout.")
+@click.option("--no-total", is_flag=True, help="Omit the totals line under table output.")
 def report(
     entry_id: Optional[int],
     project: Optional[str],
@@ -631,8 +587,17 @@ def report(
     calendar: Optional[str],
     output_format: str,
     output: Optional[str],
+    no_total: bool,
 ) -> None:
-    """Generate time tracking reports."""
+    """Report on tracked time, optionally grouped and exported.
+
+    \b
+    Examples:
+      pytime report --interval "7 days"
+      pytime report -p toolbox -g project -g year,month,day -c g
+      pytime report --format json
+      pytime report --format excel -o ./report.xlsx
+    """
     group_items = _normalize_group_by(group_by)
     if interval_value and (start_value or end_value):
         raise click.ClickException("Interval is incompatible with start/end filters.")
@@ -716,35 +681,34 @@ def report(
         ]
 
     output_format = output_format.lower()
+    total_hours = sum(record.duration_hours for record in records)
+
     if output_format == "table":
         table = render_table(rows, headers)
+        footer = (
+            ""
+            if no_total
+            else (
+                f"\nTotal: {format_total_value(round(total_hours, 3))} hours "
+                f"({format_hours_minutes(total_hours)}) "
+                f"across {len(records)} entr{'y' if len(records) == 1 else 'ies'}"
+            )
+        )
         if output:
             path = Path(output).expanduser()
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(table, encoding="utf-8")
+            path.write_text(table + footer + "\n", encoding="utf-8")
+            click.echo(f"Report written to {path}", err=True)
         else:
-            click.echo(table)
+            click.echo(table + footer)
         return
 
-    if output_format == "csv":
-        path = build_output_path(output, ".csv")
-        write_csv(path, rows, headers)
-        click.echo(f"CSV report written to {path}")
+    suffixes = {"csv": ".csv", "markdown": ".md", "json": ".json", "excel": ".xlsx"}
+    if output_format == "json" and not output:
+        emit_rows(rows, headers, "json")
         return
-
-    if output_format == "markdown":
-        path = build_output_path(output, ".md")
-        write_markdown(path, rows, headers)
-        click.echo(f"Markdown report written to {path}")
-        return
-
-    if output_format == "excel":
-        path = build_output_path(output, ".xlsx")
-        write_excel(path, rows, headers)
-        click.echo(f"Excel report written to {path}")
-        return
-
-    raise click.ClickException(f"Unknown format: {output_format}")
+    path = build_output_path(output, suffixes[output_format])
+    emit_rows(rows, headers, output_format, path)
 
 
 @time_cli.command()
@@ -924,8 +888,8 @@ def add(
     emit_datetime_block("Start:", start_dt)
     emit_datetime_block("End:", end_dt)
     click.echo(f"Duration (hours): {format_total_value(duration_hours)}")
-    if duration_hours > 5:
-        click.echo("Warning: duration exceeds 5 hours. You can edit this row afterwards if needed.")
+    if duration_hours > LONG_ENTRY_HOURS:
+        console.warn(f"duration exceeds {LONG_ENTRY_HOURS} hours -- did a timer stay running? Use `pytime edit` to fix it.")
 
 
 @time_cli.command()
@@ -1116,7 +1080,7 @@ def _parse_datetime_fallback(
     full_date: bool = False,
     label: str = "date",
 ) -> datetime:
-    now = datetime.now().astimezone()
+    now = datetime.now().astimezone().replace(microsecond=0)
     threshold = now - timedelta(days=365)
     if primary_dt is None:
         try:
@@ -1157,7 +1121,7 @@ def _end_entries(
     emit: bool,
     allow_empty: bool,
 ) -> None:
-    now = datetime.now().astimezone()
+    now = datetime.now().astimezone().replace(microsecond=0)
     clauses = ["end_ts IS NULL"]
     params: list[object] = []
 
@@ -1203,8 +1167,8 @@ def _end_entries(
         emit_datetime_block("Start:", start_dt)
         emit_datetime_block("End:", now)
         click.echo(f"Duration (hours): {format_total_value(duration_hours)}")
-        if duration_hours > 5:
-            click.echo("Warning: duration exceeds 5 hours. You can edit this row afterwards if needed.")
+        if duration_hours > LONG_ENTRY_HOURS:
+            console.warn(f"duration exceeds {LONG_ENTRY_HOURS} hours -- did a timer stay running? Use `pytime edit` to fix it.")
         click.echo("")
 
 
