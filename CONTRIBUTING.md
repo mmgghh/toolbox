@@ -32,7 +32,11 @@ pytoolbox/
     clipboard.py  per-platform clipboard backends
     tables.py     table/markdown/csv/json/excel rendering and export
     options.py    reusable Click options, AliasedGroup, context settings
+    markdown.py   Markdown escaping and emphasis, shared by both writers
+  docx/           the .docx reader and its Markdown writer
+  pdf/            the PDF reader, layout and structure inference
   pyfm.py pystr.py pyjdate.py pytime.py pyssh.py pynet.py pymd2pdf.py
+  pydocx2md.py pypdf2md.py
   data.py normalize_data.py
 tests/
 docs/

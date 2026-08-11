@@ -7,6 +7,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **New `pypdf2md` command** (`toolbox pdf2md`) — converts a digital PDF to
+  Markdown, working the structure out from the page. A PDF stores placed
+  glyphs, not structure, so headings come from the outline where the author
+  left bookmarks and from font size where they did not; paragraphs are
+  reflowed and words split by a hyphen at a line break are rejoined; bullet
+  and numbered lists keep their nesting; links come from annotations and from
+  bare URLs; embedded images are extracted to `<name>.assets/`.
+
+  Running headers, footers and page numbers are dropped once they have
+  repeated on three pages, with digits normalised on short lines so `Page 3`
+  and `Page 4` count as one footer while `Chapter 3: Methods` stays a heading.
+  Two-column pages are detected from the whitespace gutter and read one column
+  at a time — necessarily before lines are assembled, since both columns share
+  their baselines. `--single-column` overrides it.
+
+  Tables are deliberately **not** inferred: guessing one from column-aligned
+  text destroys content that otherwise survives as plain lines. Scanned files
+  are reported with a pointer to `ocrmypdf` rather than converted to nothing.
+  Needs the new `pdf2md` extra (`pypdf`), which is pure Python and installs on
+  Termux without a compiler.
+
 - **New `pydocx2md` command** (`toolbox docx2md`) — converts Word `.docx` to
   Markdown and keeps the comments, which is the part every other converter
   drops. Each comment gets a numbered marker at the text it annotates and its

@@ -2,7 +2,7 @@
 
 A set of small, dependency-light command-line tools for everyday local work —
 files, text, Jalali/Gregorian dates, time tracking, SSH tunnels, network
-checks and Markdown-to-PDF.
+checks and conversion between Markdown, Word and PDF.
 
 Runs on Linux, macOS, Windows and **Termux**. Anything that needs a system
 tool degrades to a pure-Python fallback when that tool is missing, so the same
@@ -15,6 +15,7 @@ toolbox net port example.com 443
 toolbox time start "write docs"
 toolbox md2pdf notes.md
 toolbox docx2md reviewed.docx  # Word to Markdown, comments and all
+toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 ```
 
 ## The commands
@@ -29,6 +30,7 @@ toolbox docx2md reviewed.docx  # Word to Markdown, comments and all
 | `pynet`    | `toolbox net`    | IP, DNS, ports, ping, HTTP, WHOIS, quick file server             | [docs/pynet.md](docs/pynet.md) |
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |
+| `pypdf2md` | `toolbox pdf2md` | PDF to Markdown, structure inferred from the page               | [docs/pypdf2md.md](docs/pypdf2md.md) |
 
 Every command supports `-h/--help` and `-V/--version`, accepts unambiguous
 subcommand prefixes (`pyfm part` == `pyfm partition`), suggests alternatives
@@ -55,6 +57,7 @@ installs anywhere without a compiler. Add what you need:
 | Extra   | Adds                              | Needed for                              |
 | ------- | --------------------------------- | --------------------------------------- |
 | `pdf`   | `fpdf2`, `Pillow`                 | `pymd2pdf`                              |
+| `pdf2md`| `pypdf`                           | `pypdf2md`                              |
 | `rtl`   | `arabic-reshaper`, `python-bidi`  | Persian/Arabic shaping in `pymd2pdf`    |
 | `excel` | `openpyxl`                        | `pytime report --format excel`          |
 | `socks` | `requests[socks]`                 | `pyssh --reconnect` proxy health checks |
@@ -138,7 +141,7 @@ instead of the XDG ones.
 
 ```shell
 pip install -e ".[all,dev]"
-pytest              # 290 tests
+pytest              # 517 tests
 ruff check .
 ```
 
