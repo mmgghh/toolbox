@@ -95,3 +95,16 @@ def test_an_empty_paragraph_is_dropped():
 
 def test_an_empty_document_renders_to_nothing():
     assert render([]) == ""
+
+
+def test_a_heading_is_not_bolded_twice():
+    # PDF headings are set bold; "# **Title**" would carry the weight twice.
+    blocks = [Heading(level=1, runs=[Run("Quarterly Report", bold=True)])]
+
+    assert render(blocks) == "# Quarterly Report\n"
+
+
+def test_a_heading_keeps_its_italics():
+    blocks = [Heading(level=2, runs=[Run("Nota bene", bold=True, italic=True)])]
+
+    assert render(blocks) == "## *Nota bene*\n"

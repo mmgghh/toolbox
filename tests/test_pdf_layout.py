@@ -1,6 +1,6 @@
 """Grouping positioned runs into lines, and reading columns in order."""
 
-from pytoolbox.pdf.layout import Line, drop_furniture, order_by_columns, to_lines
+from pytoolbox.pdf.layout import Line, drop_furniture, page_lines, to_lines
 from pytoolbox.pdf.reader import Page, TextRun
 
 
@@ -57,20 +57,24 @@ def test_a_line_is_bold_only_when_every_run_is():
     assert whole.bold
 
 
-def _two_column_lines():
-    left = [Line(runs=[run(f"left{i}", 72, 700 - i * 12)], page=0) for i in range(6)]
-    right = [Line(runs=[run(f"right{i}", 330, 700 - i * 12)], page=0) for i in range(6)]
-    # Interleaved, as ordering by y alone would produce.
-    merged = []
-    for pair in zip(left, right):
-        merged.extend(pair)
-    return merged
+def _page_of(runs, width=612.0):
+    return Page(number=0, width=width, height=792.0, runs=list(runs))
+
+
+def _two_column_runs():
+    # Both columns share their baselines, as a real paper's do. This is why
+    # columns have to be found before runs are grouped into lines.
+    runs = []
+    for i in range(6):
+        runs.append(run(f"left{i}", 72, 700 - i * 12))
+        runs.append(run(f"right{i}", 330, 700 - i * 12))
+    return runs
 
 
 def test_two_columns_are_read_one_after_the_other():
-    ordered = order_by_columns(_two_column_lines(), width=612)
+    lines = page_lines(_page_of(_two_column_runs()))
 
-    assert [line.text for line in ordered] == [
+    assert [line.text for line in lines] == [
         "left0",
         "left1",
         "left2",
@@ -86,45 +90,59 @@ def test_two_columns_are_read_one_after_the_other():
     ]
 
 
+def test_single_column_mode_reads_straight_down_the_page():
+    lines = page_lines(_page_of(_two_column_runs()), single_column=True)
+
+    assert lines[0].text == "left0 right0"
+
+
 def test_a_single_column_page_is_left_alone():
-    lines = [Line(runs=[run(f"line{i}", 72, 700 - i * 12)], page=0) for i in range(6)]
+    runs = [run(f"line{i}", 72, 700 - i * 12) for i in range(6)]
 
-    ordered = order_by_columns(lines, width=612)
+    lines = page_lines(_page_of(runs))
 
-    assert [line.text for line in ordered] == [f"line{i}" for i in range(6)]
+    assert [line.text for line in lines] == [f"line{i}" for i in range(6)]
 
 
 def test_a_full_width_heading_does_not_defeat_column_detection():
     # A title spanning both columns is common; it must stay first.
-    lines = [Line(runs=[run("A Title Right Across The Whole Page Here", 72, 740)], page=0)]
-    lines += _two_column_lines()
+    runs = [run("A Title Right Across The Whole Of This Page", 72, 740, size=18)]
+    runs += _two_column_runs()
 
-    ordered = order_by_columns(lines, width=612)
+    lines = page_lines(_page_of(runs))
 
-    assert ordered[0].text == "A Title Right Across The Whole Page Here"
-    assert [line.text for line in ordered[1:7]] == [f"left{i}" for i in range(6)]
+    assert lines[0].text == "A Title Right Across The Whole Of This Page"
+    assert [line.text for line in lines[1:7]] == [f"left{i}" for i in range(6)]
 
 
 def test_a_page_whose_lines_all_cross_the_middle_is_not_split():
     # No gutter exists, so guessing one would interleave real sentences.
-    lines = [
-        Line(runs=[run("a line of text that reaches across the middle", 72, 700 - i * 12)], page=0)
-        for i in range(6)
-    ]
+    runs = [run("a line of text that reaches across the middle", 72, 700 - i * 12) for i in range(6)]
 
-    ordered = order_by_columns(lines, width=612)
+    lines = page_lines(_page_of(runs))
 
-    assert [line.text for line in ordered] == [line.text for line in lines]
+    assert [line.text for line in lines] == [line.runs[0].text for line in lines]
+    assert len(lines) == 6
 
 
 def test_columns_need_a_real_gutter():
-    # Two blocks of text that touch in the middle are one column, not two.
-    lines = [Line(runs=[run("x" * 40, 72, 700 - i * 12)], page=0) for i in range(6)]
-    lines += [Line(runs=[run("y" * 40, 306, 700 - i * 12)], page=0) for i in range(6)]
+    # Two blocks of text that nearly touch are one column, not two.
+    runs = [run("x" * 40, 72, 700 - i * 12) for i in range(6)]
+    runs += [run("y" * 40, 280, 700 - i * 12) for i in range(6)]
 
-    ordered = order_by_columns(lines, width=612)
+    lines = page_lines(_page_of(runs))
 
-    assert len(ordered) == len(lines)
+    # Same baselines, so each pair joins into one line rather than splitting.
+    assert len(lines) == 6
+
+
+def test_a_heading_beside_a_logo_is_not_two_columns():
+    # One line on each side of the middle is not evidence of a column layout.
+    runs = [run("Annual Report", 72, 740), run("ACME", 400, 740)]
+
+    lines = page_lines(_page_of(runs))
+
+    assert [line.text for line in lines] == ["Annual Report ACME"]
 
 
 # ── Running headers, footers and page numbers ────────────────────────

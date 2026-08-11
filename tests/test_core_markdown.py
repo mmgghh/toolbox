@@ -48,3 +48,16 @@ def test_emphasis_of_blank_text_adds_no_markers():
 
 def test_emphasis_of_empty_text_is_empty():
     assert emphasis("", bold=True) == ""
+
+
+def test_a_link_containing_parentheses_cannot_break_out():
+    # Bare, this would end the link target early and spill markup into the page.
+    out = emphasis("wiki", link="https://e.com/A_(disambiguation)")
+
+    assert out == "[wiki](<https://e.com/A_(disambiguation)>)"
+
+
+def test_a_link_containing_angle_brackets_is_encoded():
+    out = emphasis("x", link="https://e.com/<script>")
+
+    assert out == "[x](<https://e.com/%3Cscript%3E>)"

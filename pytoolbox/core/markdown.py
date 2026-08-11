@@ -55,5 +55,15 @@ def emphasis(
         rendered = f"{lead}{body}{trail}"
 
     if link:
-        return f"[{rendered.strip()}]({link})"
+        return f"[{rendered.strip()}]({_target(link)})"
     return rendered
+
+
+def _target(link: str) -> str:
+    """A link target that cannot break out of its own parentheses."""
+    if any(char in link for char in " ()<>"):
+        # The pointy-bracket form is what Markdown provides for this; the
+        # remaining brackets are percent-encoded, as a browser would send them.
+        inner = link.replace("<", "%3C").replace(">", "%3E")
+        return f"<{inner}>"
+    return link

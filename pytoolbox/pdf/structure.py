@@ -42,6 +42,12 @@ _BULLET = re.compile(r"^[•◦▪·⁃–‐-]\s+")
 _ORDERED = re.compile(r"^(\d{1,3}|[a-zA-Z]|[ivxIVX]{1,5})[.)]\s+")
 _URL = re.compile(r"https?://[^\s<>()\[\]]+")
 
+#: Schemes a link annotation may use. A PDF's annotations are attacker-supplied
+#: like the rest of the file, and "javascript:" or "data:text/html" targets stay
+#: live once the Markdown is rendered, so anything else keeps its text and loses
+#: its link.
+SAFE_SCHEMES = ("http://", "https://", "mailto:", "ftp://", "ftps://")
+
 
 @dataclass
 class Run:
@@ -347,8 +353,13 @@ def _texts(line: Line) -> list[tuple[TextRun, str]]:
 def _link_at(run: TextRun, links: list[LinkBox]) -> Optional[str]:
     for link in links:
         if link.x0 <= run.x <= link.x1 and link.y0 <= run.y <= link.y1:
-            return link.uri
+            return link.uri if _is_safe(link.uri) else None
     return None
+
+
+def _is_safe(uri: str) -> bool:
+    """True for a scheme that cannot execute when the Markdown is rendered."""
+    return uri.strip().lower().startswith(SAFE_SCHEMES)
 
 
 def _link_runs(runs: list[Run]) -> list[Run]:

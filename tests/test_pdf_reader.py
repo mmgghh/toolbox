@@ -1,5 +1,6 @@
 """Reading a PDF into positioned runs."""
 
+import click
 import pytest
 
 pytest.importorskip("pypdf")
@@ -150,7 +151,7 @@ def test_a_file_that_is_not_a_pdf_is_rejected(tmp_path):
     path = tmp_path / "a.pdf"
     path.write_text("this is not a pdf at all")
 
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(click.ClickException) as excinfo:
         reader.read(path)
 
     assert "not a PDF" in str(excinfo.value)

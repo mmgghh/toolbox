@@ -38,7 +38,9 @@ def render(blocks: list[Block], *, assets_dir: Optional[str] = None) -> str:
 
         if isinstance(block, Heading):
             level = max(1, min(block.level, MAX_HEADING))
-            pieces.append((f"{'#' * level} {_inline(block.runs)}", False))
+            # Headings are set bold in the PDF almost by definition, and a
+            # "# **Title**" would carry that weight twice over.
+            pieces.append((f"{'#' * level} {_inline(block.runs, bold=False)}", False))
         elif isinstance(block, Paragraph):
             text = _inline(block.runs)
             if text:
@@ -84,9 +86,9 @@ def _list_item(block: ListItem, counters: dict[int, int], widths: dict[int, int]
     return f"{indent}{marker} {_inline(block.runs)}"
 
 
-def _inline(runs: list[Run]) -> str:
-    return "".join(_run(run) for run in runs).strip()
+def _inline(runs: list[Run], *, bold: bool = True) -> str:
+    return "".join(_run(run, bold=bold) for run in runs).strip()
 
 
-def _run(run: Run) -> str:
-    return emphasis(run.text, bold=run.bold, italic=run.italic, link=run.link)
+def _run(run: Run, *, bold: bool = True) -> str:
+    return emphasis(run.text, bold=run.bold and bold, italic=run.italic, link=run.link)

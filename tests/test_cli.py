@@ -191,3 +191,10 @@ def test_missing_optional_dependency_fails_only_when_invoked(runner, monkeypatch
     result = runner.invoke(toolbox, ["md2pdf", "notes.md"])
     assert result.exit_code != 0
     assert "pip install 'pytoolbox[all]'" in result.output
+
+
+def test_pdf2md_is_registered():
+    from pytoolbox.cli import SUBCOMMANDS, console_scripts
+
+    assert "pdf2md" in SUBCOMMANDS
+    assert "pypdf2md" in console_scripts()

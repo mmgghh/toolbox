@@ -124,56 +124,67 @@ def to_lines(runs: list[TextRun], page: int = 0) -> list[Line]:
     return lines
 
 
-def order_by_columns(lines: list[Line], width: float) -> list[Line]:
-    """Reorder ``lines`` column by column, or return them unchanged."""
-    split = _gutter(lines, width)
+def _end(run: TextRun) -> float:
+    """Where a run stops, estimated from its glyph count."""
+    return run.x + GLYPH_WIDTH * run.size * len(run.text)
+
+
+def split_columns(runs: list[TextRun], width: float) -> list[list[TextRun]]:
+    """Group ``runs`` into columns, in reading order.
+
+    Splitting happens before lines are formed, not after: the two columns of a
+    real paper share their baselines, so grouping first would weld "left one"
+    and "right one" into a single line and leave no gutter to find.
+    """
+    split = _gutter(runs, width)
     if split is None:
-        return list(lines)
+        return [list(runs)]
 
     left, right, spanning = [], [], []
-    for line in lines:
-        if line.x1 <= split:
-            left.append(line)
-        elif line.x0 >= split:
-            right.append(line)
+    for run in runs:
+        if _end(run) <= split:
+            left.append(run)
+        elif run.x >= split:
+            right.append(run)
         else:
-            spanning.append(line)
+            spanning.append(run)
 
-    # A title or figure crossing the gutter keeps its place above the columns.
-    ordered = sorted(spanning, key=lambda item: -item.y)
-    ordered.extend(sorted(left, key=lambda item: -item.y))
-    ordered.extend(sorted(right, key=lambda item: -item.y))
-    return ordered
+    # A title or figure crossing the gutter belongs above both columns.
+    groups = [spanning] if spanning else []
+    groups.extend([left, right])
+    return groups
 
 
-def _gutter(lines: list[Line], width: float) -> Optional[float]:
+def _gutter(runs: list[TextRun], width: float) -> Optional[float]:
     """The x of a vertical whitespace gutter, if the page has a clean one."""
-    body = [line for line in lines if line.runs]
-    if len(body) < 4 or width <= 0:
+    if len(runs) < 4 or width <= 0:
         return None
 
     # Only the middle is considered: multi-column layouts are symmetric in
     # practice, and searching every x finds "gutters" inside indented text.
     candidate = width / 2
-    left = [line for line in body if line.x1 <= candidate]
-    right = [line for line in body if line.x0 >= candidate]
+    left = [run for run in runs if _end(run) <= candidate]
+    right = [run for run in runs if run.x >= candidate]
     if not left or not right:
         return None
-    if (len(left) + len(right)) / len(body) < MIN_COLUMN_SHARE:
+    if (len(left) + len(right)) / len(runs) < MIN_COLUMN_SHARE:
         return None
-
-    gap = min(line.x0 for line in right) - max(line.x1 for line in left)
-    if gap < MIN_GUTTER * width:
+    if min(run.x for run in right) - max(_end(run) for run in left) < MIN_GUTTER * width:
+        return None
+    # Both sides must span several lines, or this is a heading beside a logo.
+    if len({round(run.y) for run in left}) < 2 or len({round(run.y) for run in right}) < 2:
         return None
     return candidate
 
 
 def page_lines(page: Page, single_column: bool = False) -> list[Line]:
     """Every line on ``page``, in reading order."""
-    lines = to_lines(page.runs, page.number)
     if single_column:
-        return lines
-    return order_by_columns(lines, page.width)
+        return to_lines(page.runs, page.number)
+    lines: list[Line] = []
+    for column in split_columns(page.runs, page.width):
+        lines.extend(to_lines(column, page.number))
+    return lines
 
 
 def leading(lines: list[Line]) -> float:

@@ -29,6 +29,7 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "net": ("pytoolbox.pynet", "net_cli", "Network diagnostics (pynet)"),
     "md2pdf": ("pytoolbox.pymd2pdf", "pymd2pdf_cli", "Markdown to PDF (pymd2pdf)"),
     "docx2md": ("pytoolbox.pydocx2md", "docx2md_cli", "Word to Markdown (pydocx2md)"),
+    "pdf2md": ("pytoolbox.pypdf2md", "pdf2md_cli", "PDF to Markdown (pypdf2md)"),
 }
 
 
@@ -122,6 +123,7 @@ def toolbox() -> None:
       toolbox net ...     ==  pynet ...
       toolbox md2pdf ...  ==  pymd2pdf ...
       toolbox docx2md ... ==  pydocx2md ...
+      toolbox pdf2md ...  ==  pypdf2md ...
 
     \b
     Examples:
@@ -155,6 +157,7 @@ def doctor() -> None:
         ("requests", "pynet, pyfm extract-links, pymd2pdf", ""),
         ("fpdf", "pymd2pdf", "pdf"),
         ("PIL", "pymd2pdf images", "pdf"),
+        ("pypdf", "pypdf2md", "pdf2md"),
         ("openpyxl", "pytime --format excel", "excel"),
         ("arabic_reshaper", "Persian shaping in pymd2pdf", "rtl"),
         ("bidi", "Persian shaping in pymd2pdf", "rtl"),

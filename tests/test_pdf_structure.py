@@ -215,3 +215,30 @@ def test_page_breaks_are_optional():
 
 def test_an_empty_page_produces_nothing():
     assert build(document(one_page()), [[]]) == []
+
+
+def test_a_javascript_link_keeps_its_text_but_loses_the_link():
+    # A PDF's annotations are attacker-supplied; a live javascript: target
+    # would survive into whatever renders the Markdown.
+    page = one_page(links=[LinkBox("javascript:alert(1)", 70, 695, 140, 712)])
+
+    blocks = build(document(page), [[line("click me", 700)]])
+
+    assert blocks[0].runs[0].text == "click me"
+    assert blocks[0].runs[0].link is None
+
+
+def test_a_data_uri_link_is_dropped_too():
+    page = one_page(links=[LinkBox("data:text/html;base64,PHNjcmlwdD4=", 70, 695, 140, 712)])
+
+    blocks = build(document(page), [[line("click me", 700)]])
+
+    assert blocks[0].runs[0].link is None
+
+
+def test_a_mailto_link_is_kept():
+    page = one_page(links=[LinkBox("mailto:someone@example.com", 70, 695, 140, 712)])
+
+    blocks = build(document(page), [[line("email us", 700)]])
+
+    assert blocks[0].runs[0].link == "mailto:someone@example.com"
