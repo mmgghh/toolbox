@@ -136,7 +136,7 @@ def test_completion_asks_for_a_shell_when_it_cannot_tell(runner, monkeypatch):
     monkeypatch.setenv("SHELL", "/usr/bin/nushell")
     result = runner.invoke(toolbox, ["completion"])
     assert result.exit_code != 0
-    assert "Pass one explicitly" in result.output
+    assert "Pass one explicitly" in result.stderr
 
 
 def test_completion_rejects_an_unsupported_shell(runner):
@@ -190,7 +190,7 @@ def test_missing_optional_dependency_fails_only_when_invoked(runner, monkeypatch
 
     result = runner.invoke(toolbox, ["md2pdf", "notes.md"])
     assert result.exit_code != 0
-    assert "pip install 'pytoolbox[all]'" in result.output
+    assert "pip install 'pytoolbox[all]'" in result.stderr
 
 
 def test_pdf2md_is_registered():

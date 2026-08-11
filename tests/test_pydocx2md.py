@@ -138,7 +138,7 @@ def test_naming_an_output_for_several_inputs_is_refused(runner, tmp_path):
     b = build_docx(tmp_path / "b.docx", para("b"))
     result = runner.invoke(docx2md_cli, [str(a), str(b), "-o", str(tmp_path / "out.md")])
     assert result.exit_code != 0
-    assert "single input" in result.output
+    assert "single input" in result.stderr
 
 
 def test_several_inputs_write_one_file_each(runner, tmp_path):
@@ -168,7 +168,7 @@ def test_a_file_that_is_not_a_docx_reports_why(runner, tmp_path):
     bogus.write_text("plain text", encoding="utf-8")
     result = runner.invoke(docx2md_cli, [str(bogus)])
     assert result.exit_code != 0
-    assert "not a Word" in result.output
+    assert "not a Word" in result.stderr
 
 
 def test_a_legacy_doc_suggests_converting(runner, tmp_path):
@@ -176,7 +176,7 @@ def test_a_legacy_doc_suggests_converting(runner, tmp_path):
     old.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
     result = runner.invoke(docx2md_cli, [str(old)])
     assert result.exit_code != 0
-    assert "Word 97" in result.output
+    assert "Word 97" in result.stderr
 
 
 def test_one_bad_file_does_not_stop_the_others(runner, tmp_path):
@@ -243,4 +243,4 @@ def test_an_encrypted_document_says_so(runner, tmp_path):
         z.writestr("EncryptedPackage", b"\x00")
     result = runner.invoke(docx2md_cli, [str(path)])
     assert result.exit_code != 0
-    assert "password" in result.output
+    assert "password" in result.stderr

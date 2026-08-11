@@ -68,7 +68,7 @@ def test_output_path_rejects_several_inputs(runner, tmp_path):
     result = runner.invoke(pdf2md_cli, [str(first), str(second), "-o", str(tmp_path / "x.md")])
 
     assert result.exit_code != 0
-    assert "single input" in result.output
+    assert "single input" in result.stderr
 
 
 def test_several_inputs_each_get_their_own_file(runner, tmp_path):
@@ -91,7 +91,7 @@ def test_one_bad_file_does_not_stop_the_others(runner, tmp_path):
 
     assert result.exit_code == 1
     assert (tmp_path / "good.md").exists()
-    assert "not a PDF" in result.output
+    assert "not a PDF" in result.stderr
 
 
 def test_images_are_extracted_beside_the_markdown(runner, tmp_path):
@@ -137,8 +137,8 @@ def test_a_scanned_pdf_says_what_to_do(runner, tmp_path):
     result = runner.invoke(pdf2md_cli, [str(source)])
 
     assert result.exit_code != 0
-    assert "scanned" in result.output
-    assert "ocrmypdf" in result.output
+    assert "scanned" in result.stderr
+    assert "ocrmypdf" in result.stderr
 
 
 def test_quiet_prints_nothing_on_success(runner, tmp_path):
