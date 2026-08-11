@@ -11,12 +11,11 @@ import posixpath
 from dataclasses import dataclass
 from typing import Optional
 
+from pytoolbox.core.markdown import emphasis
+from pytoolbox.core.markdown import escape as _escape
 from pytoolbox.docx.comments import Comment
 from pytoolbox.docx.document import Block, Heading, ListItem, Table, items_of
 from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Item, Run
-
-#: Characters that would otherwise be read as Markdown syntax.
-_ESCAPE = str.maketrans({ch: "\\" + ch for ch in r"\`*_[]"})
 
 #: Paragraphs of inline items, keyed by footnote id.
 Notes = dict[str, list[list[Item]]]
@@ -226,33 +225,14 @@ def _inline(items: list[Item], numbers: dict[str, str], options: RenderOptions) 
 
 
 def _run(run: Run) -> str:
-    if not run.text:
-        return ""
-    if run.code:
-        text = f"`{run.text}`"
-    elif not run.text.strip():
-        # Whitespace only: splitting it into lead and trail would double it.
-        text = run.text
-    else:
-        text = _escape(run.text)
-        # Emphasis must hug the text, or Markdown will not apply it.
-        lead = text[: len(text) - len(text.lstrip())]
-        trail = text[len(text.rstrip()) :]
-        core = text.strip()
-        if run.strike:
-            core = f"~~{core}~~"
-        if run.bold:
-            core = f"**{core}**"
-        if run.italic:
-            core = f"*{core}*"
-        text = f"{lead}{core}{trail}"
-    if run.link:
-        return f"[{text.strip()}]({run.link})"
-    return text
-
-
-def _escape(text: str) -> str:
-    return text.translate(_ESCAPE)
+    return emphasis(
+        run.text,
+        bold=run.bold,
+        italic=run.italic,
+        strike=run.strike,
+        code=run.code,
+        link=run.link,
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────
