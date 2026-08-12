@@ -111,22 +111,139 @@ Wraps `rsync -azP -e "ssh -p <port>"`.
 
 ```shell
 pyssh rsync-dir -s ./site -d me@vps:/srv/site -p 22
-pyssh rsync-dir -s me@vps:/srv/site -d ./backup --ignore-existing
-pyssh rsync-dir -s ./site -d me@vps:/srv/site --delete --dry-run
-pyssh rsync-dir -s ./site -d me@vps:/srv/site -e '*.tmp' -e 'node_modules'
+pyssh rsync-dir -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
+pyssh rsync-dir -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
+pyssh rsync-dir -s ./site -d me@vps:/srv/site --mirror --dry-run
+pyssh rsync-dir -s me@vps:/srv/site -d ./backup --bwlimit 500k --no-compress
 ```
+
+Either side may be `user@host:/path`, and — unlike plain rsync — also
+`user:password@host:/path`, which routes through `sshpass` exactly as the
+tunnel commands do. Only one side may carry a password; rsync opens a single
+SSH connection.
+
+### Patterns
+
+Patterns are **shell globs, not regex**:
+
+| | |
+| --- | --- |
+| `*` | any characters, stops at `/` |
+| `**` | any characters, crosses `/` |
+| `?` | one character, not `/` |
+| `[a-z]`, `[!0-9]` | character class |
+| `foo/` | directories only |
+| `\*` | a literal asterisk |
+
+Two rules decide what a pattern applies to:
+
+- **No slash → matches the basename, at any depth.** `--match '*.jpg'` finds
+  `photos/2024/a.jpg`.
+- **A slash anywhere → matches the path from the transfer root**, and a leading
+  `/` anchors it there (not at the filesystem root). `--match 'src/*.js'` is one
+  level down; `--match '**/*.js'` is any depth.
+
+`{a,b}` is expanded before rsync sees it, because rsync has no brace expansion
+of its own and a quoted `*.{jpg,png}` would silently match nothing. For the same
+reason, a regex-shaped pattern is rejected with a suggestion rather than
+transferring zero files:
+
+```console
+$ pyssh rsync-dir -s ./site -d ./backup -e '.*\.log$'
+Error: '.*\.log$' looks like a regex. rsync matches shell globs, so this would
+silently match nothing -- did you mean '*.log'? Pass --raw-patterns to send it
+through unchanged.
+```
+
+`--raw-patterns` turns off both behaviours and gives verbatim rsync semantics.
+
+### Rule order
+
+rsync applies filter rules first-match-wins, so the order is fixed rather than
+following the order you type:
+
+```
+--exclude          -e, then --exclude-from lines
+--filter           --gitignore
+--include '*/'     \
+--include <match>  |  only when --match/--match-from is used
+--exclude '*'      /
+--prune-empty-dirs
+```
+
+Excludes therefore always beat matches: `-e node_modules --match '*.js'` skips
+`node_modules` even though its files match. The `--include '*/'` rule is what
+makes rsync descend into subdirectories at all, and `--prune-empty-dirs` clears
+the empty skeleton it would otherwise leave behind.
+
+### Options
+
+**Matching and filtering**
+
+| Option | Meaning |
+| --- | --- |
+| `--match GLOB` | Transfer *only* files matching GLOB, at any depth. Repeatable |
+| `-e, --exclude GLOB` | Skip files matching GLOB. Repeatable, applied before `--match` |
+| `--match-from FILE` | Read `--match` patterns from a file, one per line |
+| `--exclude-from FILE` | Read `--exclude` patterns from a file, one per line |
+| `--gitignore` | Honour `.gitignore` files in the tree |
+| `--files-from FILE` | Transfer exactly the listed paths |
+| `--min-size`, `--max-size` | Skip files below/above a size, e.g. `1k`, `10m` |
+| `--raw-patterns` | Pass patterns to rsync verbatim |
+
+In pattern files, blank lines and lines starting with `#` or `;` are ignored.
+`--files-from` cannot be combined with `--match` or `--gitignore`, and does not
+recurse into directories named in the list.
+
+**Safety**
+
+| Option | Meaning |
+| --- | --- |
+| `--delete` | Delete destination files missing from the source |
+| `--mirror` | `--delete` plus `--delete-excluded` |
+| `--backup-dir DIR` | Move deleted and overwritten files here instead of losing them |
+| `--stats` | Print rsync's transfer summary |
+| `-n, --dry-run` | Report what would transfer, change nothing |
+| `-y, --yes` | Skip the confirmation prompt |
+
+`--delete` and `--mirror` ask before running, naming the destination. A
+non-interactive session (pipe, cron, CI) takes the safe answer and aborts, so
+pass `-y` when you mean it. `--dry-run` never prompts.
+
+Note that `--mirror` together with `--match` deletes everything at the
+destination that does not match the pattern — consistent, and the reason the
+prompt exists. A relative `--backup-dir` resolves against the destination
+directory, which is rsync's own rule.
+
+**Transport**
 
 | Option | Meaning |
 | --- | --- |
 | `-p, --ssh-port` | Remote SSH port (default 22) |
 | `--identity` | Private key file |
+| `-o, --ssh-option` | Extra `ssh -o` option, repeatable |
+| `--bwlimit RATE` | Cap the transfer rate, e.g. `500k` |
+| `--no-compress` | Drop the `z` from `-azP` |
+| `--sudo` | Run rsync as root remotely; needs passwordless sudo there |
+
+Compression costs CPU to save bandwidth. On a LAN, or for video, images and
+archives that are already compressed, `--no-compress` is usually faster.
+
+**Comparison**
+
+| Option | Meaning |
+| --- | --- |
 | `-i, --ignore-existing` | Never touch files already at the destination |
-| `--delete` | Delete destination files missing from the source |
-| `-e, --exclude` | Exclude pattern, repeatable |
-| `-n, --dry-run` | Ask rsync to report what it would transfer |
+| `--existing` | Update only files already there; never create new ones |
+| `-c, --checksum` | Compare by contents rather than size and timestamp |
+| `--size-only` | Treat equal-sized files as identical |
 
 Without `--ignore-existing`, `--update` is used: only newer source files are
 transferred.
+
+Combinations that would cancel each other out — `--checksum` with
+`--size-only`, `--existing` with `--ignore-existing` — are rejected up front
+instead of being handed to rsync.
 
 ## Termux
 

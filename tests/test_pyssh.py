@@ -245,6 +245,140 @@ def test_rsync_dir_reports_failure(runner, monkeypatch):
     assert "23" in result.stderr
 
 
+@pytest.fixture
+def fake_rsync(monkeypatch):
+    """Capture the argument list rsync would have been run with."""
+    captured = {}
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, check=False):
+        captured["cmd"] = cmd
+        return FakeResult()
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", fake_run)
+    return captured
+
+
+@pytest.mark.parametrize(
+    ("spec", "target", "password"),
+    [
+        ("./my dir", "./my dir", None),
+        ("/srv/site", "/srv/site", None),
+        ("me@host:/srv", "me@host:/srv", None),
+        ("host:/srv", "host:/srv", None),
+        ("me:secret@host:/srv", "me@host:/srv", "secret"),
+    ],
+)
+def test_split_rsync_target(spec, target, password):
+    assert pyssh.split_rsync_target(spec) == (target, password)
+
+
+def test_rsync_dir_match_builds_include_rules(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management,
+        ["rsync-dir", "-s", "./site", "-d", "me@host:/srv", "--match", "*.{jpg,png}"],
+    )
+    assert result.exit_code == 0, result.output
+    cmd = fake_rsync["cmd"]
+    assert "*.jpg" in cmd and "*.png" in cmd
+    assert cmd[cmd.index("--include")] == "--include"
+    assert "-m" in cmd
+
+
+def test_rsync_dir_reads_patterns_from_a_file(runner, fake_rsync, tmp_path):
+    patterns = tmp_path / "ignore.txt"
+    patterns.write_text("# junk\n\n*.tmp\n", encoding="utf-8")
+    result = runner.invoke(
+        ssh_management,
+        ["rsync-dir", "-s", "./site", "-d", "./out", "--exclude-from", str(patterns)],
+    )
+    assert result.exit_code == 0, result.output
+    assert "*.tmp" in fake_rsync["cmd"]
+    assert "# junk" not in fake_rsync["cmd"]
+
+
+def test_rsync_dir_rejects_a_regex_shaped_pattern(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "a", "-d", "b", "-e", r".*\.log$"]
+    )
+    assert result.exit_code != 0
+    assert "regex" in result.stderr.lower()
+    assert "cmd" not in fake_rsync
+
+
+def test_rsync_dir_quotes_an_identity_path_with_spaces(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management,
+        ["rsync-dir", "-s", "a", "-d", "b", "--identity", "/my keys/id_ed25519"],
+    )
+    assert result.exit_code == 0, result.output
+    ssh_command = fake_rsync["cmd"][fake_rsync["cmd"].index("-e") + 1]
+    assert "'/my keys/id_ed25519'" in ssh_command
+
+
+def test_rsync_dir_passes_extra_ssh_options(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management,
+        ["rsync-dir", "-s", "a", "-d", "b", "-o", "Compression=yes"],
+    )
+    assert result.exit_code == 0, result.output
+    ssh_command = fake_rsync["cmd"][fake_rsync["cmd"].index("-e") + 1]
+    assert "-o Compression=yes" in ssh_command
+
+
+def test_rsync_dir_uses_sshpass_for_a_password_spec(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:hunter2@host:/srv"]
+    )
+    assert result.exit_code == 0, result.output
+    cmd = fake_rsync["cmd"]
+    assert cmd[0] == "sshpass"
+    assert "hunter2" not in " ".join(cmd)
+    assert cmd[-1] == "me@host:/srv"
+
+
+def test_rsync_dir_removes_the_password_file_afterwards(runner, fake_rsync):
+    runner.invoke(ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:pw@host:/srv"])
+    pass_file = pyssh.Path(fake_rsync["cmd"][2])
+    assert not pass_file.exists()
+
+
+def test_rsync_dir_rejects_a_password_on_both_sides(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "a:1@h1:/x", "-d", "b:2@h2:/y"]
+    )
+    assert result.exit_code != 0
+    assert "cmd" not in fake_rsync
+
+
+def test_rsync_dir_will_not_delete_without_confirmation(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "me@host:/srv", "--delete"]
+    )
+    assert result.exit_code != 0
+    assert "cmd" not in fake_rsync
+
+
+def test_rsync_dir_deletes_when_confirmed(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "me@host:/srv", "--delete", "-y"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--delete" in fake_rsync["cmd"]
+
+
+def test_rsync_dir_does_not_prompt_for_a_dry_run(runner, fake_rsync):
+    result = runner.invoke(
+        ssh_management,
+        ["rsync-dir", "-s", "./site", "-d", "me@host:/srv", "--mirror", "--dry-run"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "--delete-excluded" in fake_rsync["cmd"]
+
+
 def test_tunnel_refuses_a_busy_port(runner, monkeypatch):
     import socket
     from contextlib import closing

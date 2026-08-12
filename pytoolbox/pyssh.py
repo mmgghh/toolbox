@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -24,8 +25,15 @@ from typing import Optional
 
 import click
 
-from pytoolbox.core import console, paths
-from pytoolbox.core.options import CONTEXT_SETTINGS, AliasedGroup, verbose_option, version_option
+from pytoolbox.core import console, paths, rsync
+from pytoolbox.core.options import (
+    CONTEXT_SETTINGS,
+    AliasedGroup,
+    dry_run_option,
+    verbose_option,
+    version_option,
+    yes_option,
+)
 
 #: Endpoint used to verify that the proxy actually reaches the internet.
 #: Returns HTTP 204 with an empty body, so the check is fast and cheap.
@@ -659,21 +667,132 @@ def double_tunnel(
             session.cleanup()
 
 
-@ssh_management.command("rsync-dir")
+#: ``user[:password]@host:/path``. Anything else -- a local path, a bare
+#: ``host:/path`` -- is handed to rsync untouched.
+RSYNC_TARGET_RE = re.compile(
+    r"^(?P<user>[^@:/]+)(?::(?P<password>[^@]*))?@(?P<host>[^@:/]+):(?P<path>.*)$"
+)
+
+RSYNC_EPILOG = """\
+\b
+Patterns are globs, not regex:
+  *      any characters, stops at /
+  **     any characters, crosses /
+  ?      one character, not /
+  [a-z]  character class
+  foo/   directories only
+
+\b
+A pattern with no slash matches the basename at any depth, so '*.jpg'
+finds photos/2024/a.jpg. A pattern containing a slash is matched from
+the transfer root, and a leading / anchors it there.
+
+\b
+Excludes are always applied before matches, whatever order you type
+them in, so -e node_modules --match '*.js' skips node_modules. {a,b}
+is expanded for you; rsync itself cannot, and would match nothing.
+Use --raw-patterns for verbatim rsync semantics.
+"""
+
+
+def split_rsync_target(spec: str) -> tuple[str, Optional[str]]:
+    """Split an inline password out of an rsync target.
+
+    Returns the target as rsync should see it and the password, if any. Specs
+    that are not ``user[:password]@host:path`` -- local paths, bare
+    ``host:path`` -- come back unchanged.
+    """
+    match = RSYNC_TARGET_RE.match(spec)
+    if not match or match.group("password") is None:
+        return spec, None
+    user, host, path = match.group("user"), match.group("host"), match.group("path")
+    return f"{user}@{host}:{path}", match.group("password") or None
+
+
+@ssh_management.command("rsync-dir", epilog=RSYNC_EPILOG)
 @click.option(
     "-s",
     "--source",
     required=True,
     prompt=True,
-    help="Local path or 'user@host:/remote/path'.",
+    help="Local path, or 'user[:password]@host:/remote/path'.",
 )
 @click.option(
     "-d",
     "--destination",
     required=True,
     prompt=True,
-    help="Local path or 'user@host:/remote/path'.",
+    help="Local path, or 'user[:password]@host:/remote/path'.",
 )
+# ── matching and filtering ──
+@click.option(
+    "--match",
+    multiple=True,
+    metavar="GLOB",
+    help="Transfer only files matching GLOB, at any depth. Repeatable. Becomes "
+    "rsync's --include '*/' --include GLOB --exclude '*' --prune-empty-dirs.",
+)
+@click.option(
+    "-e",
+    "--exclude",
+    multiple=True,
+    metavar="GLOB",
+    help="Skip files matching GLOB. Repeatable, and applied before --match. "
+    "Becomes rsync's --exclude.",
+)
+@click.option(
+    "--match-from",
+    type=click.Path(dir_okay=False),
+    help="Read --match patterns from a file, one per line; '#' and ';' start a comment.",
+)
+@click.option(
+    "--exclude-from",
+    type=click.Path(dir_okay=False),
+    help="Read --exclude patterns from a file, one per line; '#' and ';' start a comment.",
+)
+@click.option(
+    "--gitignore",
+    is_flag=True,
+    help="Honour .gitignore files in the tree (rsync's --filter=':- .gitignore'). "
+    "Does not exclude .git/ itself -- add -e '.git' if you want that too.",
+)
+@click.option(
+    "--files-from",
+    type=click.Path(dir_okay=False),
+    help="Transfer exactly the paths listed in this file (rsync's --files-from). "
+    "Cannot be combined with --match or --gitignore; listed directories are not "
+    "recursed into.",
+)
+@click.option("--min-size", metavar="SIZE", help="Skip files smaller than SIZE, e.g. 1k.")
+@click.option("--max-size", metavar="SIZE", help="Skip files larger than SIZE, e.g. 10m.")
+@click.option(
+    "--raw-patterns",
+    is_flag=True,
+    help="Pass patterns to rsync verbatim: no {a,b} expansion, no regex check.",
+)
+# ── safety ──
+@click.option(
+    "--delete",
+    is_flag=True,
+    help="Delete destination files missing from the source. Asks first.",
+)
+@click.option(
+    "--mirror",
+    is_flag=True,
+    help="Make the destination identical to the source: rsync's --delete plus "
+    "--delete-excluded. Asks first. With --match this deletes everything at the "
+    "destination that does not match.",
+)
+@click.option(
+    "--backup-dir",
+    metavar="DIR",
+    type=click.Path(file_okay=False),
+    help="Move deleted and overwritten files here instead of losing them "
+    "(rsync's --backup --backup-dir). A relative DIR is resolved against the "
+    "destination directory.",
+)
+@click.option("--stats", is_flag=True, help="Print rsync's transfer summary at the end.")
+# ── transport ──
 @click.option(
     "-p",
     "--ssh-port",
@@ -683,69 +802,172 @@ def double_tunnel(
     help="SSH port of the remote side.",
 )
 @click.option(
+    "--identity",
+    type=click.Path(dir_okay=False),
+    help="Private key file to authenticate with.",
+)
+@click.option(
+    "-o",
+    "--ssh-option",
+    "ssh_options",
+    multiple=True,
+    metavar="OPT",
+    help="Extra 'ssh -o' option, repeatable. Example: -o ConnectTimeout=5.",
+)
+@click.option("--bwlimit", metavar="RATE", help="Cap the transfer rate, e.g. 500k or 1.5m.")
+@click.option(
+    "--no-compress",
+    is_flag=True,
+    help="Drop the 'z' from -azP. Worth it on a LAN, or for already-compressed data.",
+)
+@click.option(
+    "--sudo",
+    is_flag=True,
+    help="Run rsync as root on the remote side (--rsync-path='sudo rsync'). "
+    "Needs passwordless sudo there.",
+)
+# ── comparison ──
+@click.option(
     "-i",
     "--ignore-existing",
     is_flag=True,
     help="Never touch files that already exist at the destination.",
 )
 @click.option(
-    "--identity",
-    type=click.Path(dir_okay=False),
-    help="Private key file to authenticate with.",
-)
-@click.option("--delete", is_flag=True, help="Delete destination files missing from the source.")
-@click.option(
-    "-e",
-    "--exclude",
-    multiple=True,
-    help="Exclude pattern passed to rsync, repeatable.",
+    "--existing",
+    is_flag=True,
+    help="Update only files already at the destination; never create new ones.",
 )
 @click.option(
-    "-n", "--dry-run", is_flag=True, help="Ask rsync to report what it would transfer."
+    "-c",
+    "--checksum",
+    is_flag=True,
+    help="Compare by file contents rather than size and timestamp. Slower, exact.",
 )
+@click.option(
+    "--size-only",
+    is_flag=True,
+    help="Treat files of equal size as identical, ignoring timestamps.",
+)
+@dry_run_option
+@yes_option
 @verbose_option
 def rsync_dir(
     source: str,
     destination: str,
-    ssh_port: int,
-    ignore_existing: bool,
-    identity: Optional[str],
-    delete: bool,
+    match: tuple[str, ...],
     exclude: tuple[str, ...],
+    match_from: Optional[str],
+    exclude_from: Optional[str],
+    gitignore: bool,
+    files_from: Optional[str],
+    min_size: Optional[str],
+    max_size: Optional[str],
+    raw_patterns: bool,
+    delete: bool,
+    mirror: bool,
+    backup_dir: Optional[str],
+    stats: bool,
+    ssh_port: int,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    bwlimit: Optional[str],
+    no_compress: bool,
+    sudo: bool,
+    ignore_existing: bool,
+    existing: bool,
+    checksum: bool,
+    size_only: bool,
     dry_run: bool,
+    assume_yes: bool,
     verbose: int,
 ) -> None:
     """Copy a directory over SSH with rsync.
 
     \b
-    Wraps `rsync -avzP -e "ssh -p <port>"`. Arguments are passed to rsync
-    directly (no shell), so paths with spaces or quotes are safe.
+    Wraps `rsync -azP -e "ssh -p <port>"`. Arguments are passed to rsync
+    directly (no shell), so paths with spaces or quotes are safe. Without
+    --ignore-existing, --update is used: only newer source files transfer.
 
     \b
     Examples:
       pyssh rsync-dir -s ./site -d me@vps:/srv/site -p 22
-      pyssh rsync-dir -s me@vps:/srv/site -d ./backup --ignore-existing
-      pyssh rsync-dir -s ./site -d me@vps:/srv/site --delete --dry-run
+      pyssh rsync-dir -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
+      pyssh rsync-dir -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
+      pyssh rsync-dir -s ./site -d me@vps:/srv/site --mirror --dry-run
+      pyssh rsync-dir -s me@vps:/srv/site -d ./backup --bwlimit 500k
     """
     _require("rsync", "Install rsync (Termux: `pkg install rsync`).")
+
+    source, source_password = split_rsync_target(source)
+    destination, destination_password = split_rsync_target(destination)
+    if source_password and destination_password:
+        raise click.ClickException(
+            "Only one side can carry a password; rsync opens a single SSH connection."
+        )
+    password = source_password or destination_password
 
     ssh_parts = ["ssh", "-p", str(ssh_port)]
     if identity:
         ssh_parts += ["-i", str(Path(identity).expanduser())]
+    for option in ssh_options:
+        ssh_parts += ["-o", option]
+    if password:
+        # Host-key prompts cannot be answered when sshpass drives ssh.
+        ssh_parts += ["-o", "StrictHostKeyChecking=accept-new"]
 
-    cmd = ["rsync", "-azP", "-e", " ".join(ssh_parts)]
-    cmd.append("--ignore-existing" if ignore_existing else "--update")
-    if delete:
-        cmd.append("--delete")
-    if dry_run:
-        cmd.append("--dry-run")
-    for pattern in exclude:
-        cmd += ["--exclude", pattern]
-    cmd += ["-v"] * max(verbose, 1)
-    cmd += [source, destination]
+    if exclude_from:
+        exclude = (*exclude, *rsync.read_pattern_file(Path(exclude_from)))
+    if match_from:
+        match = (*match, *rsync.read_pattern_file(Path(match_from)))
+
+    plan = rsync.RsyncOptions(
+        source=source,
+        destination=destination,
+        ssh_command=shlex.join(ssh_parts),
+        ignore_existing=ignore_existing,
+        existing=existing,
+        checksum=checksum,
+        size_only=size_only,
+        compress=not no_compress,
+        bwlimit=bwlimit,
+        sudo=sudo,
+        delete=delete,
+        mirror=mirror,
+        backup_dir=backup_dir,
+        stats=stats,
+        dry_run=dry_run,
+        exclude=tuple(exclude),
+        match=tuple(match),
+        gitignore=gitignore,
+        files_from=files_from,
+        min_size=min_size,
+        max_size=max_size,
+        raw_patterns=raw_patterns,
+        verbose=verbose,
+    )
+    cmd = rsync.build_rsync_command(plan)
+
+    if plan.deletes and not dry_run:
+        what = "everything not matching" if match else "files missing from the source"
+        if not console.confirm(
+            f"Delete {what} under {destination}?", assume_yes, default=False
+        ):
+            raise click.Abort()
+
+    password_file = None
+    if password:
+        password_file = _password_file(
+            Server(user="rsync", host="rsync", password=password), "rsync"
+        )
+        cmd = ["sshpass", "-f", str(password_file)] + cmd
 
     console.info(f"$ {' '.join(cmd)}", verbose, threshold=0)
-    result = subprocess.run(cmd, check=False)
+    try:
+        result = subprocess.run(cmd, check=False)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
     if result.returncode != 0:
         raise click.ClickException(f"rsync exited with code {result.returncode}.")
 
