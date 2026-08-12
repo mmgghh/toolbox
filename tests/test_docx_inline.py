@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Run, parse_inline
+from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Math, Run, parse_inline
 from pytoolbox.docx.package import open_docx
-from tests.docx_fixtures import build_docx, commented, para, run
+from tests.docx_fixtures import build_docx, commented, mrun, omath, para, run
 
 
 def inline_of(tmp_path, paragraph_xml, parts=None):
@@ -21,6 +21,11 @@ def texts(items):
 def test_plain_text_becomes_one_run(tmp_path):
     items = inline_of(tmp_path, para("hello"))
     assert texts(items) == ["hello"]
+
+
+def test_an_equation_becomes_a_maths_item(tmp_path):
+    items = inline_of(tmp_path, para(runs=omath(mrun("E = mc"))))
+    assert [i.latex for i in items if isinstance(i, Math)] == ["E = mc"]
 
 
 def test_character_formatting_is_captured(tmp_path):

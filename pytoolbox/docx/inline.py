@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Optional, Union
 from xml.etree import ElementTree as ET
 
+from pytoolbox.docx.omml import latex_of
 from pytoolbox.docx.package import Package, attr, qn
 
 
@@ -50,7 +51,19 @@ class ImageRef:
     alt: str = ""
 
 
-Item = Union[Run, CommentMark, FootnoteMark, ImageRef]
+@dataclass
+class Math:
+    """An equation, already turned into LaTeX.
+
+    ``display`` marks the ones Word centres on a line of their own
+    (``m:oMathPara``) rather than setting inside a sentence.
+    """
+
+    latex: str
+    display: bool = False
+
+
+Item = Union[Run, CommentMark, FootnoteMark, ImageRef, Math]
 
 #: Fonts Word uses for inline code. Matching on name is crude but it is the
 #: only signal in the file; there is no semantic "code" run property.
@@ -76,6 +89,12 @@ def _walk(parent: ET.Element, pkg: Package, items: list[Item], link: Optional[st
             items.extend(_run_items(child, pkg, link))
         elif tag == qn("w:hyperlink"):
             _walk(child, pkg, items, link=_hyperlink_target(child, pkg))
+        elif tag == qn("m:oMathPara"):
+            # A paragraph of display equations, one m:oMath each.
+            for formula in child.findall(qn("m:oMath")):
+                _add_math(items, formula, display=True)
+        elif tag == qn("m:oMath"):
+            _add_math(items, child, display=False)
         elif tag == qn("w:commentRangeEnd"):
             comment_id = attr(child, "w:id")
             if comment_id is not None:
@@ -84,6 +103,13 @@ def _walk(parent: ET.Element, pkg: Package, items: list[Item], link: Optional[st
             continue
         elif tag in {qn(name) for name in _KEEP_WRAPPERS}:
             _walk(child, pkg, items, link)
+
+
+def _add_math(items: list[Item], formula: ET.Element, display: bool) -> None:
+    """Append an equation, unless it is one of Word's empty placeholders."""
+    latex = latex_of(formula).strip()
+    if latex:
+        items.append(Math(latex=latex, display=display))
 
 
 def _hyperlink_target(element: ET.Element, pkg: Package) -> Optional[str]:

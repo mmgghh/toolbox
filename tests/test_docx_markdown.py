@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pytoolbox.docx.comments import Comment
 from pytoolbox.docx.document import Heading, ListItem, Paragraph, Table
-from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Run
+from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Math, Run
 from pytoolbox.docx.markdown import RenderOptions, render
 
 
@@ -34,6 +34,21 @@ def test_a_heading_uses_hashes_for_its_level():
 def test_emphasis_wraps_the_run():
     items = [Run("plain "), Run("bold", bold=True), Run(" and "), Run("it", italic=True)]
     assert render([para(*items)], {}) == "plain **bold** and *it*\n"
+
+
+def test_an_inline_equation_is_wrapped_in_single_dollars():
+    items = [Run("where "), Math(latex="x_{i}"), Run(" is the input")]
+    assert render([para(*items)], {}) == "where $x_{i}$ is the input\n"
+
+
+def test_a_display_equation_stands_alone_in_double_dollars():
+    assert render([para(Math(latex=r"\frac{a}{b}", display=True))], {}) == "$$\n\\frac{a}{b}\n$$\n"
+
+
+def test_a_cell_never_breaks_its_row_across_lines():
+    """A newline inside a cell would end the row and wreck the table."""
+    table = Table(rows=[[[para(Run("a\nb"))], [para(Math(latex="x", display=True))]]])
+    assert render([table], {}).splitlines()[0] == "| a<br>b | $$<br>x<br>$$ |"
 
 
 def test_strikethrough_and_code_are_marked():

@@ -15,7 +15,7 @@ from pytoolbox.core.markdown import emphasis
 from pytoolbox.core.markdown import escape as _escape
 from pytoolbox.docx.comments import Comment
 from pytoolbox.docx.document import Block, Heading, ListItem, Table, items_of
-from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Item, Run
+from pytoolbox.docx.inline import CommentMark, FootnoteMark, ImageRef, Item, Math, Run
 
 #: Paragraphs of inline items, keyed by footnote id.
 Notes = dict[str, list[list[Item]]]
@@ -197,7 +197,10 @@ def _row(cells: list[str]) -> str:
 def _cell(cell, numbers: dict[str, str], options: RenderOptions) -> str:
     """Cell content on one line: Markdown tables cannot hold block structure."""
     parts = [_inline(block.items, numbers, options).strip() for block in cell]
-    return "<br>".join(part for part in parts if part).replace("|", "\\|")
+    joined = "<br>".join(part for part in parts if part).replace("|", "\\|")
+    # A line break of any kind would end the row early, so every one of them
+    # becomes the break that Markdown allows inside a cell.
+    return joined.replace("\n", "<br>")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -218,6 +221,10 @@ def _inline(items: list[Item], numbers: dict[str, str], options: RenderOptions) 
                 out.append(f" **[{number}]**")
         elif isinstance(item, FootnoteMark):
             out.append(f"[^{item.note_id}]")
+        elif isinstance(item, Math):
+            # Fenced $$ on lines of its own is what every Markdown renderer
+            # that does maths recognises as a displayed equation.
+            out.append(f"\n$$\n{item.latex}\n$$\n" if item.display else f"${item.latex}$")
         elif isinstance(item, ImageRef) and options.assets_dir:
             name = posixpath.basename(item.part_name)
             out.append(f"![{_escape(item.alt)}]({options.assets_dir}/{name})")
