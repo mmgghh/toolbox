@@ -15,6 +15,7 @@ from xml.etree import ElementTree as ET
 from pytoolbox.docx.inline import Item, parse_inline
 from pytoolbox.docx.numbering import Numbering
 from pytoolbox.docx.package import Package, attr, qn
+from pytoolbox.docx.styles import Styles
 
 #: ``Heading1`` … ``Heading9``. Style *ids* are language-independent in OOXML,
 #: while the display names in styles.xml are localised -- matching on the name
@@ -68,53 +69,54 @@ def items_of(block: Block) -> list[Item]:
     return list(block.items)
 
 
-def parse_document(pkg: Package, numbering: Numbering) -> list[Block]:
+def parse_document(pkg: Package, numbering: Numbering, styles: Styles) -> list[Block]:
     """Walk the document body into blocks, in document order."""
     body = pkg.document.find(qn("w:body"))
     if body is None:
         return []
-    return _blocks(body, pkg, numbering)
+    return _blocks(body, pkg, numbering, styles)
 
 
-def _blocks(parent: ET.Element, pkg: Package, numbering: Numbering) -> list[Block]:
+def _blocks(parent: ET.Element, pkg: Package, numbering: Numbering, styles: Styles) -> list[Block]:
     blocks: list[Block] = []
     for child in parent:
         if child.tag == qn("w:p"):
-            blocks.append(_paragraph(child, pkg, numbering))
+            blocks.append(_paragraph(child, pkg, numbering, styles))
         elif child.tag == qn("w:tbl"):
-            blocks.append(_table(child, pkg, numbering))
+            blocks.append(_table(child, pkg, numbering, styles))
         elif child.tag == qn("w:sdt"):
             # A content control wraps real content; step through it.
             content = child.find(qn("w:sdtContent"))
             if content is not None:
-                blocks.extend(_blocks(content, pkg, numbering))
+                blocks.extend(_blocks(content, pkg, numbering, styles))
     return blocks
 
 
-def _paragraph(element: ET.Element, pkg: Package, numbering: Numbering) -> Block:
+def _paragraph(element: ET.Element, pkg: Package, numbering: Numbering, styles: Styles) -> Block:
     """Classify one ``w:p`` as a heading, a list item or plain body text."""
     items = parse_inline(element, pkg)
     props = element.find(qn("w:pPr"))
 
-    num_id, ilvl = _list_properties(props)
+    num_id, ilvl = _list_properties(props, styles)
     if num_id is not None:
         return ListItem(level=ilvl, ordered=numbering.is_ordered(num_id, ilvl), items=items)
 
-    level = _heading_level(props)
+    level = _heading_level(props, styles)
     if level is not None:
         return Heading(level=level, items=items)
 
     return Paragraph(items=items)
 
 
-def _heading_level(props: Optional[ET.Element]) -> Optional[int]:
+def _heading_level(props: Optional[ET.Element], styles: Styles) -> Optional[int]:
     """Heading depth from the style id, falling back to the outline level."""
     if props is None:
         return None
 
-    style = props.find(qn("w:pStyle"))
-    if style is not None:
-        match = _HEADING_ID.match(attr(style, "w:val") or "")
+    # A house style is normally built on a built-in heading rather than used in
+    # its place, so the whole basedOn chain counts, not just the style named.
+    for style_id in styles.chain(_style_id(props)):
+        match = _HEADING_ID.match(style_id)
         if match:
             return min(int(match.group(1)), MAX_HEADING)
 
@@ -127,25 +129,53 @@ def _heading_level(props: Optional[ET.Element]) -> Optional[int]:
     return None
 
 
-def _list_properties(props: Optional[ET.Element]) -> tuple[Optional[str], int]:
-    """Return the paragraph's ``numId`` and nesting depth, if it is in a list."""
+def _list_properties(props: Optional[ET.Element], styles: Styles) -> tuple[Optional[str], int]:
+    """Return the paragraph's ``numId`` and nesting depth, if it is in a list.
+
+    Either half can come from the paragraph or from its style, and the
+    paragraph wins where both speak. Word writes the ``numPr`` on the paragraph
+    for a list made with the toolbar, and leaves it to the style for one made
+    with *List Bullet* -- both are lists, and only the second was being missed.
+    """
+    num_pr = props.find(qn("w:numPr")) if props is not None else None
+    style_id = _style_id(props)
+    style_num_id, style_ilvl = styles.list_properties(style_id)
+
+    own_num_id = _value(num_pr, "w:numId") if num_pr is not None else None
+    own_ilvl = _level(_value(num_pr, "w:ilvl")) if num_pr is not None else None
+
+    num_id = own_num_id if own_num_id is not None else style_num_id
+    if num_id == "0":
+        # Numbering id 0 is Word's way of cancelling what a style applied.
+        return None, 0
+    if num_id is None:
+        # A bare numPr whose style supplies nothing is still a list item, just
+        # one with no format to look up; it falls back to a bullet.
+        if num_pr is None:
+            return None, 0
+        num_id = ""
+
+    level = own_ilvl if own_ilvl is not None else style_ilvl
+    return num_id, level or 0
+
+
+def _style_id(props: Optional[ET.Element]) -> Optional[str]:
     if props is None:
-        return None, 0
-    num_pr = props.find(qn("w:numPr"))
-    if num_pr is None:
-        return None, 0
-
-    # A bare numPr is legal: the numbering can come from the paragraph style.
-    # Such a paragraph is still a list item, just one with no format to look up.
-    num_el = num_pr.find(qn("w:numId"))
-    num_id = attr(num_el, "w:val") if num_el is not None else ""
-    ilvl_el = num_pr.find(qn("w:ilvl"))
-    raw_level = attr(ilvl_el, "w:val") if ilvl_el is not None else "0"
-    level = int(raw_level) if raw_level and raw_level.isdigit() else 0
-    return num_id, level
+        return None
+    style = props.find(qn("w:pStyle"))
+    return attr(style, "w:val") if style is not None else None
 
 
-def _table(element: ET.Element, pkg: Package, numbering: Numbering) -> Table:
+def _value(parent: ET.Element, tag: str) -> Optional[str]:
+    element = parent.find(qn(tag))
+    return attr(element, "w:val") if element is not None else None
+
+
+def _level(raw: Optional[str]) -> Optional[int]:
+    return int(raw) if raw is not None and raw.isdigit() else None
+
+
+def _table(element: ET.Element, pkg: Package, numbering: Numbering, styles: Styles) -> Table:
     """Read a table's grid, noting how many leading rows repeat as headers."""
     rows: list[list[Cell]] = []
     header_rows = 0
@@ -154,7 +184,7 @@ def _table(element: ET.Element, pkg: Package, numbering: Numbering) -> Table:
     for row in element.findall(qn("w:tr")):
         cells: list[Cell] = []
         for cell in row.findall(qn("w:tc")):
-            cells.append(_blocks(cell, pkg, numbering))
+            cells.append(_blocks(cell, pkg, numbering, styles))
         rows.append(cells)
 
         if counting_header and _is_header_row(row):

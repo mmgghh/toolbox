@@ -20,6 +20,7 @@ WP = 'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingD
 A = 'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"'
 PIC = 'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"'
 W15 = 'xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml"'
+M = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
 
 _CONTENT_TYPES = """<?xml version="1.0" encoding="UTF-8"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -39,7 +40,7 @@ def document(body: str) -> str:
     """Wrap body fragments in a ``word/document.xml`` part."""
     return (
         f'<?xml version="1.0" encoding="UTF-8"?>'
-        f"<w:document {W} {R} {WP} {A} {PIC}><w:body>{body}</w:body></w:document>"
+        f"<w:document {W} {R} {WP} {A} {PIC} {M}><w:body>{body}</w:body></w:document>"
     )
 
 
@@ -63,6 +64,31 @@ def para(text: str = "", style: Optional[str] = None, runs: Optional[str] = None
     return f"<w:p>{props}{body}</w:p>"
 
 
+def styles_part(*entries: str) -> str:
+    """Wrap ``<w:style>`` fragments in a ``word/styles.xml`` part."""
+    return f'<?xml version="1.0"?><w:styles {W}>{"".join(entries)}</w:styles>'
+
+
+def style_def(style_id: str, props: str = "", based_on: Optional[str] = None) -> str:
+    """One paragraph ``<w:style>``, with ``props`` as the body of its ``w:pPr``."""
+    parent = f'<w:basedOn w:val="{based_on}"/>' if based_on else ""
+    paragraph_props = f"<w:pPr>{props}</w:pPr>" if props else ""
+    return (
+        f'<w:style w:type="paragraph" w:styleId="{style_id}">'
+        f"{parent}{paragraph_props}</w:style>"
+    )
+
+
+def num_pr(num_id: Optional[str] = None, ilvl: Optional[str] = None) -> str:
+    """A ``<w:numPr>``, for a paragraph's own ``w:pPr`` or for a style's."""
+    parts = ""
+    if ilvl is not None:
+        parts += f'<w:ilvl w:val="{ilvl}"/>'
+    if num_id is not None:
+        parts += f'<w:numId w:val="{num_id}"/>'
+    return f"<w:numPr>{parts}</w:numPr>"
+
+
 def run(text: str, bold: bool = False, italic: bool = False, strike: bool = False) -> str:
     """A run with optional character formatting."""
     marks = ""
@@ -74,6 +100,17 @@ def run(text: str, bold: bool = False, italic: bool = False, strike: bool = Fals
         marks += "<w:strike/>"
     props = f"<w:rPr>{marks}</w:rPr>" if marks else ""
     return f'<w:r>{props}<w:t xml:space="preserve">{text}</w:t></w:r>'
+
+
+def omath(inner: str, display: bool = False) -> str:
+    """An OMML equation: inline, or wrapped as a display paragraph."""
+    formula = f"<m:oMath>{inner}</m:oMath>"
+    return f"<m:oMathPara>{formula}</m:oMathPara>" if display else formula
+
+
+def mrun(text: str) -> str:
+    """A run of maths text, the ``m:r`` counterpart of ``w:r``."""
+    return f'<m:r><m:t xml:space="preserve">{text}</m:t></m:r>'
 
 
 def commented(cid: str, inner: str) -> str:

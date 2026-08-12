@@ -6,14 +6,15 @@ from pytoolbox.docx.document import Heading, ListItem, Paragraph, Table, parse_d
 from pytoolbox.docx.inline import Run
 from pytoolbox.docx.numbering import load_numbering
 from pytoolbox.docx.package import open_docx
-from tests.docx_fixtures import build_docx, para
+from pytoolbox.docx.styles import load_styles
+from tests.docx_fixtures import build_docx, num_pr, para, style_def, styles_part
 
 W = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 
 
 def blocks_of(tmp_path, body, parts=None):
     pkg = open_docx(build_docx(tmp_path / "a.docx", body, parts=parts))
-    return parse_document(pkg, load_numbering(pkg))
+    return parse_document(pkg, load_numbering(pkg), load_styles(pkg))
 
 
 def text_of(block):
@@ -56,6 +57,14 @@ def test_heading_levels_stop_at_six(tmp_path):
     assert blocks[0].level == 6
 
 
+def test_a_style_based_on_a_heading_is_a_heading(tmp_path):
+    """House styles are usually built on a built-in heading rather than reused."""
+    parts = {"word/styles.xml": styles_part(style_def("ChapterTitle", based_on="Heading2"))}
+    blocks = blocks_of(tmp_path, para("Scope", style="ChapterTitle"), parts)
+    assert isinstance(blocks[0], Heading)
+    assert blocks[0].level == 2
+
+
 def test_a_localised_style_name_is_not_mistaken_for_a_heading(tmp_path):
     """Only the English style *id* is a heading; ids are language-independent."""
     blocks = blocks_of(tmp_path, para("Titulo", style="Ttulo1"))
@@ -85,6 +94,55 @@ def test_list_nesting_depth_is_kept(tmp_path):
     body = list_para("top") + list_para("nested", ilvl="1")
     blocks = blocks_of(tmp_path, body, {"word/numbering.xml": numbering_part("bullet")})
     assert [b.level for b in blocks] == [0, 1]
+
+
+def test_a_paragraph_styled_as_a_list_becomes_a_list_item(tmp_path):
+    """Word omits numPr from the paragraph when its style already carries one."""
+    parts = {
+        "word/numbering.xml": numbering_part("bullet"),
+        "word/styles.xml": styles_part(style_def("ListBullet", num_pr(num_id="1"))),
+    }
+    blocks = blocks_of(tmp_path, para("one", style="ListBullet"), parts)
+    assert isinstance(blocks[0], ListItem)
+    assert blocks[0].ordered is False
+    assert blocks[0].level == 0
+
+
+def test_a_paragraph_can_opt_out_of_its_style_numbering(tmp_path):
+    """``numId="0"`` is how Word says "not a list item after all"."""
+    parts = {
+        "word/numbering.xml": numbering_part("bullet"),
+        "word/styles.xml": styles_part(style_def("ListBullet", num_pr(num_id="1"))),
+    }
+    body = f'<w:p><w:pPr><w:pStyle w:val="ListBullet"/>{num_pr(num_id="0")}</w:pPr>'
+    body += "<w:r><w:t>plain</w:t></w:r></w:p>"
+    blocks = blocks_of(tmp_path, body, parts)
+    assert isinstance(blocks[0], Paragraph)
+
+
+def test_a_style_chain_carries_the_numbering_down(tmp_path):
+    """A style based on a list style is a list style too."""
+    parts = {
+        "word/numbering.xml": numbering_part("decimal"),
+        "word/styles.xml": styles_part(
+            style_def("ListNumber", num_pr(num_id="1")),
+            style_def("MyList", based_on="ListNumber"),
+        ),
+    }
+    blocks = blocks_of(tmp_path, para("one", style="MyList"), parts)
+    assert isinstance(blocks[0], ListItem)
+    assert blocks[0].ordered is True
+
+
+def test_a_paragraph_outranks_its_style_for_nesting_depth(tmp_path):
+    parts = {
+        "word/numbering.xml": numbering_part("bullet"),
+        "word/styles.xml": styles_part(style_def("ListBullet", num_pr(num_id="1", ilvl="0"))),
+    }
+    body = f'<w:p><w:pPr><w:pStyle w:val="ListBullet"/>{num_pr(ilvl="1")}</w:pPr>'
+    body += "<w:r><w:t>nested</w:t></w:r></w:p>"
+    blocks = blocks_of(tmp_path, body, parts)
+    assert blocks[0].level == 1
 
 
 def test_a_table_becomes_rows_of_cells(tmp_path):

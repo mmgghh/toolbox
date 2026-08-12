@@ -5,7 +5,9 @@ to one onto that structure:
 
 ``package``    opens the zip and hands out parsed parts and relationships
 ``numbering``  turns ``numbering.xml`` into a list-level lookup
+``styles``     turns ``styles.xml`` into the properties a paragraph inherits
 ``comments``   turns ``comments.xml`` into threaded ``Comment`` objects
+``omml``       turns Word's equations into LaTeX
 ``document``   walks ``document.xml`` into a flat list of blocks
 ``markdown``   turns those blocks, plus the comments, into Markdown
 

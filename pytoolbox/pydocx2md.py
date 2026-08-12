@@ -25,6 +25,7 @@ from pytoolbox.docx.markdown import RenderOptions, render
 from pytoolbox.docx.notes import load_notes
 from pytoolbox.docx.numbering import load_numbering
 from pytoolbox.docx.package import open_docx
+from pytoolbox.docx.styles import load_styles
 
 #: Suffix for the directory holding a document's extracted images.
 ASSETS_SUFFIX = ".assets"
@@ -39,7 +40,7 @@ def convert(
     """Convert one document, returning every path written."""
     pkg = open_docx(source)
     numbering = load_numbering(pkg)
-    blocks = parse_document(pkg, numbering)
+    blocks = parse_document(pkg, numbering, load_styles(pkg))
     comments = load_comments(pkg) if include_comments else {}
     notes = load_notes(pkg)
 
