@@ -140,3 +140,7 @@ dmypy.json
 
 # ruff
 .ruff_cache/
+
+# local scratch: sample documents and sketches, not part of the package
+pytoolbox/temp_data/
+pytoolbox/tmp_*.py

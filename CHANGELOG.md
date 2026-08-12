@@ -5,7 +5,62 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pydocx2md` dropped bullets from style-based lists.** A paragraph is a list
+  item in Word either because it carries the numbering itself or because its
+  paragraph style does; only the first was read, so documents written with the
+  built-in *List Bullet* and *List Number* styles came out as plain text with
+  no markers at all. Styles are now resolved through their `basedOn` chain, a
+  paragraph's own `numPr` still wins over the style's, and `numId="0"` — Word's
+  way of cancelling a style's numbering — no longer makes a list item.
+
+  Heading detection follows the same chain: a house style based on `Heading2`
+  is now a level-2 heading instead of a paragraph.
+
+- **`pydocx2md` dropped equations entirely.** Word writes them as Office
+  MathML, which the inline reader never visited, so every formula vanished
+  without trace. They are now converted to LaTeX between dollars: `$…$` inline
+  and `$$…$$` for a displayed equation. Fractions, radicals, scripts,
+  delimiters, n-ary operators, accents, bars, limits, matrices and equation
+  arrays are translated; anything unrecognised degrades to the text inside it
+  rather than disappearing.
+
+- **`pydocx2md` could write a broken table row.** A line break inside a cell —
+  from `w:br`, or now from a displayed equation — ended the row early. Breaks
+  inside a cell become `<br>`.
+
+- **`pyssh rsync-dir` built a broken command for an identity path containing a
+  space.** The `-e` value was assembled with `" ".join(...)`, so
+  `--identity '/my keys/id_ed25519'` reached ssh as two arguments. It is now
+  built with `shlex.join`.
+
 ### Added
+
+- **`pyssh rsync-dir` can now say what to copy, not just what to skip.**
+  `--match GLOB` transfers only matching files, at any depth — the recursive
+  "only these" form, which in raw rsync means remembering to write
+  `--include '*/' --include GLOB --exclude '*' --prune-empty-dirs` in that
+  order. Because rsync applies filter rules first-match-wins while Click cannot
+  preserve order between two different options, the order is now fixed and
+  documented: excludes always beat matches, so `-e node_modules --match '*.js'`
+  skips `node_modules`.
+
+  Patterns are globs, and the two ways that silently transfer nothing are now
+  handled. `{a,b}` is expanded before rsync sees it, since rsync has no brace
+  expansion and a quoted `*.{jpg,png}` would match zero files without
+  complaint. Regex-shaped patterns are rejected with the glob they probably
+  meant, triggering only on markers meaningless to a glob — `.*` stays valid,
+  being the ordinary way to say "dotfiles". `--raw-patterns` opts out of both.
+
+  Also added: `--gitignore`, `--match-from`/`--exclude-from`, `--files-from`,
+  `--min-size`/`--max-size`; `--mirror`, `--backup-dir`, `--stats` and a
+  confirmation prompt before any deleting run (`-y` to skip, never prompted for
+  `--dry-run`); `--bwlimit`, `--no-compress`, `--sudo`, `-o/--ssh-option`, and
+  `user:password@host:/path` targets via `sshpass`, which the tunnel commands
+  already accepted but `rsync-dir` did not; `-c/--checksum`, `--size-only` and
+  `--existing`. Combinations that cancel out are rejected up front rather than
+  handed to rsync.
 
 - **New `pypdf2md` command** (`toolbox pdf2md`) — converts a digital PDF to
   Markdown, working the structure out from the page. A PDF stores placed

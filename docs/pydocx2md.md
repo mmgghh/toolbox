@@ -56,6 +56,7 @@ about, and the thread is quoted under the paragraph or table that holds it.
 | Bullet and numbered lists, nested | `- ` / `1. `, indented per level |
 | Table | Pipe table |
 | Embedded image | `![alt](<name>.assets/imageN.png)` |
+| Equation | LaTeX in `$…$`, or `$$…$$` on its own lines |
 | Footnote and endnote | `[^n]`, defined at the end |
 | Comment | Numbered marker plus a quoted thread |
 | Tracked insertion | Kept |
@@ -65,6 +66,29 @@ Headings are matched on the style **id**, not its display name, so a document
 written in a localised Word still converts. Persian and Arabic text passes
 through untouched — Markdown is plain text, so none of the reshaping
 `pymd2pdf` needs applies here.
+
+A list is recognised whether the paragraph carries the numbering itself — what
+Word writes for the toolbar buttons — or takes it from its style, as the
+built-in *List Bullet* and *List Number* do. Styles are followed up their
+`basedOn` chain, so a house style built on `Heading2` is a heading and one
+built on a list style is a list.
+
+## Equations
+
+Word's equations are Office MathML, which Markdown has no notion of, so they
+are written as LaTeX between dollars — `$…$` inside a sentence, and `$$…$$` on
+lines of its own for one Word centres on its own line:
+
+```markdown
+$$
+T_{B}(t) = T_{B,0} × D(λ, t, A_{B})
+$$
+```
+
+Fractions, radicals, sub- and superscripts, brackets, n-ary operators (`∑`,
+`∫`, …), accents, over- and underlines, function names, matrices and equation
+arrays are translated. Anything else falls back to the text inside it: a poor
+equation, but never a missing one.
 
 ## Options
 
@@ -85,8 +109,9 @@ stderr and the rest still convert, with a non-zero exit code at the end.
 - **Merged cells** cannot be expressed in Markdown. A horizontal merge becomes
   empty continuation cells and a vertical merge repeats blank.
 - **Multi-paragraph cells** join with `<br>`, since a pipe table row is one line.
-- Styles, colours, fonts, headers and footers, text boxes, equations and charts
-  are dropped.
+- Colours, fonts, headers and footers, text boxes and charts are dropped.
+- **Unicode in equations** is passed through as-is (`λ`, `×`). KaTeX, MathJax
+  and Typst render it; a plain LaTeX toolchain needs `unicode-math`.
 - Tracked deletions are accepted silently. There is no flag to review them; use
   Word for that.
 
