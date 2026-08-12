@@ -27,7 +27,7 @@ pymd2pdf notes.md --no-title-page --font-size 11 --offline
 | ` ```lang ` fences | Shaded code block |
 | `[text](url)` | Underlined blue text with a real PDF link |
 | `![alt](src)` | Embedded image, scaled to fit, with a caption |
-| Tables | Auto-sized columns, header fill, zebra rows |
+| Tables | Auto-sized columns, header fill, zebra rows; a cell that is only a link becomes a clickable link |
 | `- `, `* `, `+ ` | Bullet lists, marker cycles by nesting depth |
 | `1. ` | Numbered lists |
 | `- [ ]` / `- [x]` | Task lists |
@@ -48,6 +48,7 @@ the page header. Use `--no-title-page` to skip it.
 | `--landscape` | Landscape orientation |
 | `--margin` | Page margin in millimetres (default 20) |
 | `--font-size` | Body text size in points (default 10) |
+| `--fallback-font` | Extra font file for glyphs the main faces lack (repeatable) |
 | `--no-title-page` | Skip the generated cover page |
 | `--offline` | Never use the network |
 | `-q, --quiet` | Do not print output paths |
@@ -72,6 +73,10 @@ Handled correctly:
 - List markers are shaped together with the item text, which puts the marker's
   punctuation on the correct side.
 - Table columns are mirrored, so the first Markdown column lands on the right.
+- Cell text is shaped before the table is laid out, which means its Markdown
+  can no longer be parsed: a whole cell wrapped in `**` still renders bold,
+  and emphasis around part of a cell has its markers dropped rather than
+  printed literally.
 
 ### Installing a Persian font
 
@@ -103,6 +108,48 @@ Font directories are searched non-recursively and then one level deep, which
 covers Debian's per-family subdirectories and Termux's `$PREFIX/share/fonts`
 layout. If only some DejaVu faces are installed, the missing ones fall back to
 the regular face rather than failing.
+
+### Missing glyphs
+
+No single face covers everything: Vazir has no arrows or emoji, and DejaVu has
+no pictographs. Rather than dropping those characters, each one is drawn with
+the first face that has it:
+
+1. the face the text is set in (DejaVu, or Vazir for Persian)
+2. DejaVu — arrows, maths, geometric shapes, box drawing
+3. a symbol font, if one is installed, plus anything passed with
+   `--fallback-font`
+4. a text stand-in, when nothing can draw it: `→` becomes `->`, `✅` becomes
+   `✓`, `☑` becomes `[x]`
+
+Symbola gives the widest coverage of step 3:
+
+```shell
+sudo apt-get install fonts-symbola                                # Debian/Ubuntu
+sudo dnf install gdouros-symbola-fonts                            # Fedora/RHEL
+sudo pacman -S ttf-symbola                                        # Arch
+```
+
+Any other face works too:
+
+```shell
+pymd2pdf notes.md --fallback-font ~/fonts/NotoSansSymbols2-Regular.ttf
+```
+
+Two deliberate exceptions:
+
+- **Colour emoji fonts cannot be used.** NotoColorEmoji and friends store their
+  artwork as embedded bitmaps rather than outlines, which cannot be embedded in
+  a PDF this way. Passing one with `--fallback-font` prints a warning and is
+  ignored — registering it would claim coverage of every emoji and then draw
+  blanks.
+- **Colour-coded status emoji always become `●` `◐` `○`**, even when a symbol
+  font can draw them. PDF text is drawn in one colour, so 🟢 🟡 🔴 would come
+  out as three identical black discs, losing exactly the distinction they
+  encode. The same applies to their square forms 🟩 🟨 🟥.
+
+Variation selectors (the invisible `U+FE0F` that trails many emoji) are
+dropped, since no face draws them.
 
 ## Mermaid diagrams
 

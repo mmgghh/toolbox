@@ -69,6 +69,14 @@ def test_is_rtl():
     assert pymd2pdf._is_rtl("hello سلام")
 
 
+def test_strip_links_keeps_the_label():
+    assert pymd2pdf._strip_links("see [Braintrust](https://b.example/) here") == (
+        "see Braintrust here"
+    )
+    assert pymd2pdf._strip_links("![alt](img.png)") == "alt"
+    assert pymd2pdf._strip_links("no link here") == "no link here"
+
+
 def test_extract_title():
     assert pymd2pdf._extract_title(["intro", "# The **Title**", "more"]) == "The Title"
     assert pymd2pdf._extract_title(["no heading"]) == ""
@@ -104,6 +112,50 @@ def test_looks_like_svg():
     assert not pymd2pdf._looks_like_svg(b"\x89PNG\r\n")
 
 
+def test_glyph_translation_only_substitutes_what_no_font_draws():
+    covered = {ord("→"), ord("✅")}
+    table = pymd2pdf._build_glyph_translation(covered)
+    assert ord("→") not in table          # DejaVu can draw it: keep the arrow
+    assert ord("✅") not in table
+    assert table[ord("←")] == "<-"        # nothing can: fall back to text
+    assert table[0xFE0F] == ""            # variation selector: dropped
+
+
+def test_colour_status_emoji_are_always_substituted():
+    # Even when the symbol font covers them: a one-colour PDF would draw
+    # 🟢 and 🔴 as the same black disc.
+    table = pymd2pdf._build_glyph_translation({ord("🟢"), ord("🔴"), ord("🟡")})
+    assert table[ord("🟢")] == "●"
+    assert table[ord("🟡")] == "◐"
+    assert table[ord("🔴")] == "○"
+
+
+def test_substitute_glyphs_uses_the_built_table(monkeypatch):
+    monkeypatch.setattr(
+        pymd2pdf, "_glyph_translation", pymd2pdf._build_glyph_translation(set())
+    )
+    assert pymd2pdf._substitute_glyphs("done ✅️ and 🔴") == "done ✓ and ○"
+
+
+def test_substitute_glyphs_is_a_no_op_before_fonts_are_loaded(monkeypatch):
+    monkeypatch.setattr(pymd2pdf, "_glyph_translation", {})
+    assert pymd2pdf._substitute_glyphs("✅") == "✅"
+
+
+def test_colour_emoji_fonts_are_not_offered_as_fallbacks(tmp_path):
+    fake = tmp_path / "NotAFont.ttf"
+    fake.write_bytes(b"not a font at all")
+    assert not pymd2pdf._has_outlines(fake)
+
+
+@needs_fonts
+def test_dejavu_is_registered_as_a_fallback_face():
+    pdf = pymd2pdf.PDF()
+    assert any(
+        key.startswith(pymd2pdf.FONT_SANS.lower()) for key in pdf._fallback_font_ids
+    )
+
+
 def test_font_dirs_include_termux_paths_when_on_termux(monkeypatch, tmp_path):
     prefix = tmp_path / "termux" / "usr"
     prefix.mkdir(parents=True)
@@ -136,6 +188,58 @@ def test_convert_respects_page_and_font_options(tmp_path):
     # The module-level body size must be restored after each conversion.
     pymd2pdf.convert(source, a4, font_size=14, quiet=True)
     assert pymd2pdf.BODY_SIZE == 10
+
+
+TABLE_LINKS = """# Links
+
+A [body link](https://example.com/body) first, so the page already has an
+annotation when the table is drawn.
+
+| Ref | Note |
+| --- | --- |
+| [Whole](https://example.com/whole) | cell is only a link |
+| see [Inline](https://example.com/inline) here | link inside text |
+
+## جدول
+
+| مرجع | توضیح |
+| --- | --- |
+| [Farsi](https://example.com/farsi) | سلول فارسی |
+"""
+
+
+@needs_fonts
+@pytest.mark.parametrize(
+    ("url", "count"),
+    [
+        ("https://example.com/whole", 1),   # a whole-cell link stays clickable
+        ("https://example.com/farsi", 1),   # ... in an RTL table too
+        ("https://example.com/inline", 0),  # a link inside other text: label only
+    ],
+)
+def test_table_cell_links_become_annotations(tmp_path, url, count):
+    source = tmp_path / "doc.md"
+    source.write_text(TABLE_LINKS, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+    data = target.read_bytes()
+    # Annotation dictionaries are written uncompressed. Counting them also
+    # guards against fpdf2's cell-measuring pass leaking a second, misplaced
+    # copy -- see _isolated_annotations.
+    assert data.count(f"/URI ({url})".encode()) == count
+
+
+@needs_fonts
+def test_table_cells_show_the_label_not_the_link_markup(tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    source = tmp_path / "doc.md"
+    source.write_text(TABLE_LINKS, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+    text = "".join(page.extract_text() for page in pypdf.PdfReader(target).pages)
+    assert "Whole" in text and "Inline" in text
+    assert "](" not in text
+    assert "example.com" not in text
 
 
 @needs_fonts

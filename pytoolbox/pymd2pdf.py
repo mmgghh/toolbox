@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import click
@@ -64,6 +65,28 @@ PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
 FONT_SANS = "DejaVu"
 FONT_MONO = "DejaVuMono"
 FONT_FA   = "Vazir"
+#: Family prefix for the extra faces registered as per-glyph fallbacks.
+FONT_FALLBACK = "Fallback"
+
+#: Symbol/emoji faces tried, in order, as a last-resort fallback for glyphs
+#: neither DejaVu nor the Persian face can draw (✅ ❌ 💻 …). Monochrome
+#: outline fonts only: fpdf2 draws ``glyf``/``CFF`` outlines, so a colour
+#: emoji font (NotoColorEmoji's CBDT bitmaps, Apple's sbix) would contribute
+#: a cmap entry and then render nothing -- see _has_outlines.
+_SYMBOL_FONTS = (
+    "Symbola.ttf",
+    "Symbola_hint.ttf",
+    "NotoSansSymbols2-Regular.ttf",
+    "NotoSansSymbols-Regular.ttf",
+    "NotoEmoji-Regular.ttf",
+    "OpenSansEmoji.ttf",
+    "seguisym.ttf",        # Windows: Segoe UI Symbol
+    "Apple Symbols.ttf",   # macOS
+)
+
+#: Set by the CLI from ``--fallback-font``: extra faces to try before the
+#: built-in symbol candidates.
+_extra_fallback_fonts: tuple[Path, ...] = ()
 
 # Characters in the Arabic/Persian Unicode blocks (including presentation forms).
 _RTL_RE = re.compile(r'[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]')
@@ -76,16 +99,44 @@ def _is_rtl(text):
     return bool(text) and bool(_RTL_RE.search(text))
 
 
-# Glyphs missing from the base Vazir font. Replaced before shaping when only
-# base Vazir is available — Vazirmatn (its successor) covers them natively.
-_VAZIR_GLYPH_FALLBACK = {
-    '→': '->',   # →
-    '←': '<-',   # ←
-    '×': 'x',    # ×
-    '÷': '/',    # ÷
+# Variation selectors: zero-width characters that only pick a glyph *variant*
+# (text vs emoji presentation). No face draws them, so each is reported as a
+# missing glyph; dropping them is lossless. ZWNJ (U+200C) is deliberately not
+# in this set -- it is meaningful in Persian orthography.
+_VARIATION_SELECTORS = "\ufe0e\ufe0f"
+
+# Colour-coded status emoji, substituted even when a symbol face *can* draw
+# them: the PDF draws text in one colour, so 🔴 and 🟢 would come out as two
+# identical black discs, losing exactly the distinction they encode. The
+# stand-ins follow the usual full/half/empty "harvey ball" reading.
+_COLOUR_STATUS_SUBSTITUTES = {
+    '🟢': '●', '🟩': '●',
+    '🟡': '◐', '🟨': '◐', '🟠': '◐', '🟧': '◐',
+    '🔴': '○', '🟥': '○',
+}
+
+# Text stand-ins used only for characters *no* loaded face can draw (see
+# _build_glyph_translation): with DejaVu and a symbol font registered as
+# fallbacks, most of these now render as their real glyph instead.
+# Every substitute must itself be covered by DejaVu.
+_GLYPH_SUBSTITUTES = {
+    '→': '->',
+    '←': '<-',
+    '↔': '<->',
+    '⇢': '-->',
+    '×': 'x',
+    '÷': '/',
     '☐': '[ ]',  # ☐ BALLOT BOX
     '☑': '[x]',  # ☑ BALLOT BOX WITH CHECK
+    '☒': '[x]',  # ☒ BALLOT BOX WITH X
+    '✅': '✓',
+    '✔': '✓',
+    '❌': '✗',
+    '✖': '✗',
+    '⚠': '(!)',
     'ˏ': '/',  # ˏ MODIFIER LETTER LOW ACUTE ACCENT, seen as a numeral separator
+    '⬛': '●', '⚫': '●',
+    '⬜': '○', '⚪': '○',
     # Substitutes for the nested-bullet markers below must stay in the Unicode
     # "neutral" bidi classes (punctuation/symbols), not letters: a marker is
     # folded into RTL text as its first logical word, and unlike a neutral
@@ -95,9 +146,31 @@ _VAZIR_GLYPH_FALLBACK = {
     '▪': '*',    # ▪ BLACK SMALL SQUARE (nested list marker)
 }
 
-# Populated by _find_persian_font when the chosen Persian face needs glyph
-# substitution. Empty when the face has full coverage (e.g. Vazirmatn).
-_persian_glyph_fallback: dict = {}
+#: str.translate table built by PDF.__init__ once the loaded faces (and hence
+#: the set of drawable code points) are known.
+_glyph_translation: dict[int, str] = {}
+
+
+def _build_glyph_translation(covered) -> dict[int, str]:
+    """Map code points to stand-ins, given the code points the fonts can draw."""
+    table: dict[int, str] = {ord(c): '' for c in _VARIATION_SELECTORS}
+    table.update({ord(src): dst for src, dst in _COLOUR_STATUS_SUBSTITUTES.items()})
+    table.update({
+        ord(src): dst
+        for src, dst in _GLYPH_SUBSTITUTES.items()
+        if ord(src) not in covered
+    })
+    return table
+
+
+def _substitute_glyphs(text):
+    """Replace undrawable characters with stand-ins the loaded fonts cover.
+
+    Applied once to the whole document, before parsing, so every renderer
+    (RTL and LTR, headings, tables, code blocks) sees the same text. Safe to
+    apply twice: substitutes are themselves never keys of the table.
+    """
+    return text.translate(_glyph_translation) if _glyph_translation else text
 
 
 def _bidi_display(s):
@@ -128,9 +201,6 @@ def _shape_rtl(text):
     """
     if not _HAS_SHAPER or not text:
         return text
-    if _persian_glyph_fallback:
-        for src, dst in _persian_glyph_fallback.items():
-            text = text.replace(src, dst)
     return _bidi_display(arabic_reshaper.reshape(text))
 
 
@@ -160,9 +230,6 @@ def _shape_rtl_lines(pdf, text, max_width, marker=""):
     full_text = f"{marker} {text}" if marker else text
     if not _HAS_SHAPER or not text:
         return [full_text]
-    if _persian_glyph_fallback:
-        for src, dst in _persian_glyph_fallback.items():
-            full_text = full_text.replace(src, dst)
     words = arabic_reshaper.reshape(full_text).split(' ')
     lines, current = [], []
     for word in words:
@@ -252,35 +319,87 @@ def _find_persian_font():
     """Return (regular_path, bold_path) for the best available Persian face.
 
     Prefers Vazirmatn (Vazir's successor, broader Unicode coverage) over
-    base Vazir. When falling back to base Vazir, populates the
-    ``_persian_glyph_fallback`` map so missing glyphs get substituted at
-    shape time. Returns (None, None) if neither family is installed.
+    base Vazir. Whatever is found only has to cover the Arabic script:
+    symbols and Latin it lacks come from the fallback faces registered by
+    ``PDF.__init__``. Returns (None, None) if no family is installed.
     """
-    global _persian_glyph_fallback
-    # (regular, bold, needs_glyph_fallback)
     candidates = (
-        ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf", False),
-        ("Vazirmatn.ttf",         "Vazirmatn-Bold.ttf", False),
-        ("Vazir.ttf",             "Vazir-Bold.ttf",     True),
+        ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf"),
+        ("Vazirmatn.ttf",         "Vazirmatn-Bold.ttf"),
+        ("Vazir.ttf",             "Vazir-Bold.ttf"),
         # Noto ships in most distro font packages and on Termux, so it is a
         # reasonable last resort when no Vazir family is installed.
-        ("NotoNaskhArabic-Regular.ttf", "NotoNaskhArabic-Bold.ttf", True),
+        ("NotoNaskhArabic-Regular.ttf", "NotoNaskhArabic-Bold.ttf"),
     )
     for d in FONT_PERSIAN_DIRS:
-        for reg_name, bold_name, needs_fallback in candidates:
+        for reg_name, bold_name in candidates:
             reg = d / reg_name
             if reg.is_file():
                 bold = d / bold_name
-                _persian_glyph_fallback = dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
                 return reg, (bold if bold.is_file() else reg)
 
-    for reg_name, bold_name, needs_fallback in candidates:
+    for reg_name, bold_name in candidates:
         reg = paths.find_font(reg_name)
         if reg is not None:
             bold = paths.find_font(bold_name)
-            _persian_glyph_fallback = dict(_VAZIR_GLYPH_FALLBACK) if needs_fallback else {}
             return reg, (bold if bold is not None else reg)
     return None, None
+
+
+def _has_outlines(path):
+    """Whether a font file carries drawable outlines (``glyf`` or ``CFF``).
+
+    Colour emoji fonts store their artwork as embedded bitmaps (``CBDT``) or
+    Apple ``sbix`` tables, which fpdf2 cannot draw: registering one would
+    claim coverage of every emoji and then render blanks, which is worse than
+    substituting text. fontTools is already an fpdf2 dependency.
+    """
+    try:
+        from fontTools.ttLib import TTFont
+
+        font = TTFont(str(path), fontNumber=0, lazy=True)
+        try:
+            return "glyf" in font or "CFF " in font
+        finally:
+            font.close()
+    except Exception:
+        return False
+
+
+def _find_fallback_fonts():
+    """Paths of the extra faces to register as per-glyph fallbacks.
+
+    ``--fallback-font`` entries come first (an explicit choice wins), then the
+    first usable built-in symbol candidate. Unusable files are reported rather
+    than silently ignored, since the user asked for them by name.
+    """
+    found = []
+    for path in _extra_fallback_fonts:
+        if not _has_outlines(path):
+            print(
+                f"WARN: ignoring --fallback-font '{path}': not a font with drawable "
+                "outlines (colour-bitmap emoji fonts are not supported).",
+                file=sys.stderr,
+            )
+            continue
+        found.append(path)
+    for name in _SYMBOL_FONTS:
+        match = paths.find_font(name)
+        if match is not None and _has_outlines(match):
+            found.append(match)
+            break
+    # An explicitly named font may also be the one auto-detected; loading the
+    # same file twice costs a parse and buys nothing.
+    seen, unique = set(), []
+    for path in found:
+        try:
+            key = path.resolve()
+        except OSError:  # pragma: no cover - unresolvable symlink
+            key = path
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -306,6 +425,9 @@ class PDF(FPDF):
         if self.has_persian:
             self.add_font(FONT_FA, "",  str(fa_reg))
             self.add_font(FONT_FA, "B", str(fa_bold))
+
+        self._register_fallback_fonts()
+
         if not _HAS_SHAPER:
             print(
                 "WARN: arabic-reshaper / python-bidi not installed; Persian text "
@@ -320,6 +442,42 @@ class PDF(FPDF):
                 "in ~/.local/share/fonts or /usr/share/fonts/truetype/vazir.",
                 file=sys.stderr,
             )
+
+    def set_doc_title(self, title):
+        """Set the running-header title, known only after the text is parsed."""
+        self._doc_title = title
+
+    def _register_fallback_fonts(self):
+        """Register per-glyph fallbacks and rebuild the substitution table.
+
+        fpdf2 draws each character with the current face and, for characters
+        that face has no glyph for, looks through the fallback list instead of
+        dropping them. DejaVu comes first -- it covers the arrows, maths and
+        geometric shapes Vazir lacks in a matching text style -- then a symbol
+        face for the pictographs (✅ ❌ 💻) DejaVu itself lacks.
+        ``exact_match=False`` lets bold text fall back to a regular-weight
+        symbol face rather than losing the glyph over a weight mismatch.
+
+        Whatever the loaded faces still cannot draw is handled as text by
+        ``_substitute_glyphs``, so the module-level translation table is
+        rebuilt here from their combined coverage.
+        """
+        global _glyph_translation
+        fallbacks = [FONT_SANS]
+        for idx, path in enumerate(_find_fallback_fonts()):
+            family = f"{FONT_FALLBACK}{idx}"
+            try:
+                self.add_font(family, "", str(path))
+            except Exception as exc:  # pragma: no cover - malformed font file
+                print(f"WARN: could not load fallback font '{path}': {exc}", file=sys.stderr)
+                continue
+            fallbacks.append(family)
+        self.set_fallback_fonts(fallbacks, exact_match=False)
+
+        covered: set[int] = set()
+        for font in self.fonts.values():
+            covered.update(getattr(font, "cmap", ()) or ())
+        _glyph_translation = _build_glyph_translation(covered)
 
     def header(self):
         if self.page_no() > 1 and self._doc_title:
@@ -344,9 +502,18 @@ class PDF(FPDF):
 # Text helpers
 # ═══════════════════════════════════════════════════════════════════
 
+#: An inline link or image: the label is drawn, the target is not.
+_MD_LINK_RE = re.compile(r'!?\[([^\]]*)\]\(([^)]*)\)')
+
+
+def _strip_links(text):
+    """Replace ``[label](url)`` (and ``![alt](src)``) with just its label."""
+    return _MD_LINK_RE.sub(r'\1', text)
+
+
 def _strip_md(text):
     """Remove inline markdown markers, leaving the text that will be drawn."""
-    text = re.sub(r'!?\[([^\]]*)\]\(([^)]*)\)', r'\1', text)  # links and images
+    text = _strip_links(text)
     text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
     text = re.sub(r'__(.+?)__', r'\1', text)
     text = re.sub(r'~~(.+?)~~', r'\1', text)
@@ -636,6 +803,43 @@ def _strip_code_ticks(text):
 
 _CELL_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
 
+#: A cell that is nothing but a single link, which can therefore become a real
+#: PDF link annotation on the whole cell rather than plain label text.
+_CELL_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
+
+
+@contextmanager
+def _isolated_annotations(pdf):
+    """Keep fpdf2's cell-measuring pass from leaking link annotations.
+
+    Before drawing a table, fpdf2 renders every cell once with output
+    disabled to learn how tall it is, and restores the page's annotation
+    list afterwards -- but it restores the very list object it captured, so
+    whatever the measuring pass appended survives whenever the page already
+    had an annotation on it. Each linked cell then leaves an extra invisible
+    click target at the measuring cursor's position, usually somewhere in
+    the table's first row.
+
+    Starting the table with an *empty* list dodges the aliasing (fpdf2 keeps
+    a fresh list of its own in that case, and drops it along with the
+    measuring pass's additions); the page's real annotations are appended
+    back afterwards, in order.
+    """
+    page = pdf.pages[pdf.page]
+    saved = page.annots
+    if not saved:  # nothing to alias: fpdf2 already discards the additions
+        yield
+        return
+    page.annots = saved.__class__()
+    try:
+        yield
+    finally:
+        # ``page`` is the page the table started on; rows pushed onto later
+        # pages keep their own (initially empty, so unaffected) lists.
+        drawn = page.annots or []
+        page.annots = saved
+        saved.extend(drawn)
+
 
 def _add_table(pdf, headers, rows):
     from fpdf.enums import TableCellFillMode
@@ -661,20 +865,43 @@ def _add_table(pdf, headers, rows):
         rows = [list(reversed(row)) for row in rows]
 
     def _prep_cell(cell):
-        """Cell payload for table.row(): a dict for RTL cells (to carry a
-        bold FontFace when the whole cell is **wrapped**, since shaped/
-        reordered RTL text can't rely on fpdf2's own markdown bold parsing),
-        plain text otherwise (fpdf2's native `markdown=True` handles bold).
+        """Cell payload for table.row(): plain text, or a dict when the cell
+        needs more than fpdf2's own markdown parsing gives us.
+
+        That parser handles ``**bold**`` but knows nothing about links, so a
+        cell left as-is would print its raw ``[label](url)`` source. A cell
+        that is *only* a link becomes the label plus a real link annotation;
+        a link mixed into other text keeps just its label.
+
+        RTL cells always need the dict form: their text is shaped and bidi
+        reordered before fpdf2 sees it, so its markdown markers can no longer
+        be parsed and any bold has to travel as an explicit FontFace.
         """
-        if not has_persian:
-            return _strip_code_ticks(cell)
         text = _strip_code_ticks(cell).strip()
         bold_m = _CELL_BOLD_RE.match(text)
-        if bold_m:
-            text = bold_m.group(1)
+        inner = bold_m.group(1).strip() if bold_m else text
+        link_m = _CELL_LINK_RE.match(inner)
+        link = link_m.group(2) if link_m else None
+
+        if link is None and not has_persian:
+            # Nothing fpdf2 cannot handle itself: leave the ** markers in
+            # place for its markdown parser, having dropped the link syntax
+            # it does not understand.
+            return _strip_links(text)
+
+        emphasis = ("B" if bold_m else "") + ("U" if link else "")
+        # Only an RTL cell reaches here without a link, and its text is shaped
+        # and bidi reordered before fpdf2 sees it -- markdown markers around
+        # part of a cell can no longer be parsed, and would print literally.
+        # Whole-cell bold survives as the FontFace above; the rest is dropped.
+        body = link_m.group(1) if link_m else _strip_md(inner)
         return {
-            "text": _shape_rtl(text),
-            "style": FontFace(emphasis="BOLD") if bold_m else None,
+            "text": _shape_rtl(body) if has_persian else body,
+            "link": link,
+            "style": FontFace(
+                emphasis=emphasis or None,
+                color=CLR_LINK if link else None,
+            ) if emphasis else None,
         }
 
     # Natural widths (with backticks/markdown stripped, since they don't render).
@@ -723,7 +950,7 @@ def _add_table(pdf, headers, rows):
     pdf.set_draw_color(*CLR_TABLE_BORDER)
     pdf.set_text_color(*CLR_BODY)
 
-    with pdf.table(
+    with _isolated_annotations(pdf), pdf.table(
         col_widths=tuple(col_w),
         text_align=text_align,
         cell_fill_color=CLR_TABLE_ALT,
@@ -890,11 +1117,14 @@ def convert(
         BODY_SIZE = font_size
 
     md_path = Path(md_path)
-    md_text = md_path.read_text(encoding="utf-8")
+    # The PDF is built first because loading its faces is what determines
+    # which characters can be drawn, and hence which ones _substitute_glyphs
+    # has to replace with text stand-ins.
+    pdf = PDF(orientation=orientation, unit="mm", format=page_size)
+    md_text = _substitute_glyphs(md_path.read_text(encoding="utf-8"))
     lines = md_text.split('\n')
     title = _extract_title(lines) if title_page else ""
-
-    pdf = PDF(title=title, orientation=orientation, unit="mm", format=page_size)
+    pdf.set_doc_title(title)
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=margin)
     pdf.set_margins(margin, margin, margin)
@@ -1110,6 +1340,14 @@ def convert(
     default=None,
     help=f"Body text size in points (default: {BODY_SIZE}).",
 )
+@click.option(
+    "--fallback-font",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    help="Extra TTF/OTF to draw glyphs the main fonts lack (repeatable). "
+         "Tried before the auto-detected symbol font. Colour-bitmap emoji "
+         "fonts (e.g. NotoColorEmoji) cannot be used.",
+)
 @click.option("--no-title-page", is_flag=True, help="Skip the generated cover page.")
 @click.option(
     "--offline",
@@ -1126,6 +1364,7 @@ def pymd2pdf_cli(
     landscape: bool,
     margin: float,
     font_size: float | None,
+    fallback_font: tuple[Path, ...],
     no_title_page: bool,
     offline: bool,
     quiet: bool,
@@ -1166,6 +1405,21 @@ def pymd2pdf_cli(
     Run `fc-cache -f` afterwards on Linux.
 
     \b
+    ── Missing glyphs ─────────────────────────────────────────────────
+    Characters the main face cannot draw (symbols, arrows, emoji in a
+    Persian document) are taken from DejaVu and then from a symbol font
+    if one is installed — Symbola gives the widest coverage:
+      Debian/Ubuntu : sudo apt-get install fonts-symbola
+      Fedora/RHEL   : sudo dnf install gdouros-symbola-fonts
+      Arch          : sudo pacman -S ttf-symbola
+    Point at any other face with --fallback-font FILE (repeatable).
+    Colour emoji fonts (NotoColorEmoji and friends) store bitmaps rather
+    than outlines and cannot be embedded. Whatever no installed face can
+    draw degrades to a text stand-in (✅ -> ✓, → -> ->); colour-coded
+    status emoji always become ● ◐ ○, since a one-colour PDF would render
+    🟢 and 🔴 as the same black disc.
+
+    \b
     ── Images ─────────────────────────────────────────────────────────
     Standalone ``![alt](path)`` lines are embedded, scaled to fit the
     page. ``path`` may be a local file (relative to the Markdown file)
@@ -1186,7 +1440,7 @@ def pymd2pdf_cli(
                  pip install 'pytoolbox[rtl]'
                  # or: pip install arabic-reshaper python-bidi
     """
-    global _offline
+    global _offline, _extra_fallback_fonts
 
     if output and len(files) > 1:
         raise click.UsageError("-o/--output can only be used with a single input file.")
@@ -1194,6 +1448,7 @@ def pymd2pdf_cli(
         raise click.UsageError("Use either -o/--output or -d/--output-dir, not both.")
 
     _offline = offline
+    _extra_fallback_fonts = fallback_font
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 

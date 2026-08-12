@@ -5,7 +5,47 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pymd2pdf` draws glyphs its main font lacks instead of dropping them.**
+  Vazir has no arrows, maths symbols or emoji, so a Persian document full of
+  `⚠ ↔ ✗ ✅ 🔴` printed a wall of *"Font Vazir is missing the following
+  glyphs"* and left blanks in the PDF. DejaVu is now registered as a per-glyph
+  fallback face, followed by a symbol font (Symbola, Noto Sans Symbols, Segoe
+  UI Symbol, Apple Symbols) when one is installed — so each character is drawn
+  by the first face that actually has it. `--fallback-font FILE` adds any other
+  face and is repeatable.
+
+  Colour emoji fonts are rejected on purpose: they store bitmaps rather than
+  outlines, so registering one would claim coverage of every emoji and then
+  draw nothing.
+
+  What no installed face can draw still degrades to a text stand-in (`→` to
+  `->`, `✅` to `✓`), but that table is now driven by the fonts' real coverage
+  rather than assumed from the font's name, and applies to Latin text as well
+  as Persian. Colour-coded status emoji are always replaced with `●` `◐` `○`:
+  PDF text is one colour, so 🟢 and 🔴 would otherwise render as the same black
+  disc. Invisible variation selectors (`U+FE0F`) are dropped rather than
+  reported as missing.
+
 ### Fixed
+
+- **`pymd2pdf` printed raw Markdown inside table cells.** fpdf2's own markdown
+  parser understands `**bold**` but not links, so a cell holding
+  `[Mercor](https://www.mercor.com/)` printed that source verbatim — and
+  padded the column to the width of the URL. Cells now show the label; a cell
+  that is *only* a link becomes a real, clickable PDF link annotation, drawn
+  blue and underlined like links in body text.
+
+  Persian cells were worse off: their text is shaped and bidi reordered before
+  fpdf2 sees it, so no markdown in them could be parsed and emphasis around
+  *part* of a cell printed its `**` markers literally. Those markers are now
+  removed (whole-cell bold still renders bold, as before).
+
+  Linked cells also each left a stray invisible click target behind, because
+  fpdf2's cell-measuring pass leaks the annotations it creates whenever the
+  page already has one. `pymd2pdf` now hands each table an empty annotation
+  list and merges the real annotations back afterwards.
 
 - **`pydocx2md` dropped bullets from style-based lists.** A paragraph is a list
   item in Word either because it carries the numbering itself or because its
