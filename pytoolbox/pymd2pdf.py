@@ -35,6 +35,10 @@ try:
     import arabic_reshaper
     from bidi.algorithm import get_display
     _HAS_SHAPER = True
+    # The default configuration deletes Harakat (تشکیل/اعراب: فتحه، کسره، ضمه،
+    # تنوین, ...) before shaping, so e.g. "نُه" would reshape as "نه". Keep
+    # them; get_display (below) positions combining marks correctly on its own.
+    _reshaper = arabic_reshaper.ArabicReshaper(configuration={"delete_harakat": False})
 except ImportError:
     _HAS_SHAPER = False
 
@@ -201,7 +205,7 @@ def _shape_rtl(text):
     """
     if not _HAS_SHAPER or not text:
         return text
-    return _bidi_display(arabic_reshaper.reshape(text))
+    return _bidi_display(_reshaper.reshape(text))
 
 
 def _shape_rtl_lines(pdf, text, max_width, marker=""):
@@ -230,7 +234,7 @@ def _shape_rtl_lines(pdf, text, max_width, marker=""):
     full_text = f"{marker} {text}" if marker else text
     if not _HAS_SHAPER or not text:
         return [full_text]
-    words = arabic_reshaper.reshape(full_text).split(' ')
+    words = _reshaper.reshape(full_text).split(' ')
     lines, current = [], []
     for word in words:
         candidate = ' '.join(current + [word])
@@ -522,6 +526,13 @@ def _strip_md(text):
     return text
 
 
+#: A block whose *entire* text is wrapped in ``**bold**``. RTL blocks are
+#: shaped and bidi-reordered before fpdf2 sees them, so its own markdown
+#: parser can no longer find markers inside the text -- this is the one case
+#: (whole-block, not partial/inline) still worth honouring for RTL text.
+_WHOLE_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
+
+
 def _body_lh(pdf):
     return pdf.font_size * LINE_H_MULT
 
@@ -801,8 +812,6 @@ def _strip_code_ticks(text):
     return re.sub(r'`(.+?)`', r'\1', text)
 
 
-_CELL_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
-
 #: A cell that is nothing but a single link, which can therefore become a real
 #: PDF link annotation on the whole cell rather than plain label text.
 _CELL_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
@@ -879,7 +888,7 @@ def _add_table(pdf, headers, rows):
         be parsed and any bold has to travel as an explicit FontFace.
         """
         text = _strip_code_ticks(cell).strip()
-        bold_m = _CELL_BOLD_RE.match(text)
+        bold_m = _WHOLE_BOLD_RE.match(text)
         inner = bold_m.group(1).strip() if bold_m else text
         link_m = _CELL_LINK_RE.match(inner)
         link = link_m.group(2) if link_m else None
@@ -1011,14 +1020,16 @@ def _use_rtl_layout(pdf, text):
 def _add_paragraph(pdf, text):
     pdf.set_text_color(*CLR_BODY)
     if _use_rtl_layout(pdf, text):
-        pdf.set_font(FONT_FA, "", BODY_SIZE)
+        bold_m = _WHOLE_BOLD_RE.match(text.strip())
+        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- our wrap width must match
         # that actual usable text width or lines we judge to "just fit" wrap
         # again inside multi_cell.
         width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
         lh = _body_lh(pdf)
-        for line in _shape_rtl_lines(pdf, _strip_md(text), width):
+        body = bold_m.group(1) if bold_m else text
+        for line in _shape_rtl_lines(pdf, _strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(FONT_SANS, "", BODY_SIZE)
@@ -1030,14 +1041,16 @@ def _add_list_item(pdf, prefix, text, indent):
     pdf.set_text_color(*CLR_BODY)
     body = text.strip()
     if _use_rtl_layout(pdf, body):
-        pdf.set_font(FONT_FA, "", BODY_SIZE)
+        bold_m = _WHOLE_BOLD_RE.match(body)
+        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
         lh = _body_lh(pdf)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- wrap using the actual usable
         # text width or lines we judge to "just fit" wrap again inside multi_cell.
         usable_width = width - 2 * pdf.c_margin
-        lines = _shape_rtl_lines(pdf, _strip_md(body), usable_width, marker=prefix.strip())
+        inner = bold_m.group(1) if bold_m else body
+        lines = _shape_rtl_lines(pdf, _strip_md(inner), usable_width, marker=prefix.strip())
         for line in lines:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
@@ -1062,9 +1075,16 @@ def _add_blockquote(pdf, lines):
     pdf.set_text_color(*CLR_QUOTE_FG)
 
     if _use_rtl_layout(pdf, text):
-        pdf.set_font(FONT_FA, "", BODY_SIZE)
-        width = pdf.w - pdf.l_margin - pdf.r_margin - indent - 2 * pdf.c_margin
-        for line in _shape_rtl_lines(pdf, _strip_md(text), width):
+        bold_m = _WHOLE_BOLD_RE.match(text.strip())
+        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
+        # multi_cell reserves its own internal c_margin padding on each side,
+        # on top of the cell width we pass it -- our wrap width must match
+        # that actual usable text width or lines we judge to "just fit" wrap
+        # again inside multi_cell (see _add_paragraph's docstring).
+        width = pdf.w - pdf.l_margin - pdf.r_margin - indent
+        usable_width = width - 2 * pdf.c_margin
+        body = bold_m.group(1) if bold_m else text
+        for line in _shape_rtl_lines(pdf, _strip_md(body), usable_width):
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:

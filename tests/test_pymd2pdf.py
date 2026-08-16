@@ -13,6 +13,9 @@ from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
 needs_fonts = pytest.mark.skipif(not has_fonts, reason="DejaVu fonts are not installed")
+needs_shaper = pytest.mark.skipif(
+    not pymd2pdf._HAS_SHAPER, reason="arabic-reshaper / python-bidi are not installed"
+)
 
 SAMPLE = """# Title
 
@@ -67,6 +70,13 @@ def test_is_rtl():
     assert not pymd2pdf._is_rtl("hello")
     assert not pymd2pdf._is_rtl("")
     assert pymd2pdf._is_rtl("hello سلام")
+
+
+@needs_shaper
+def test_shape_rtl_keeps_harakat():
+    # "نُه" (nine) carries a damma on the noon; arabic_reshaper deletes
+    # Harakat by default, which would reshape it as "نه" (no) instead.
+    assert "ُ" in pymd2pdf._shape_rtl("نُه")
 
 
 def test_strip_links_keeps_the_label():
@@ -277,6 +287,85 @@ def test_long_rtl_table_cell_wraps_lines_in_reading_order(tmp_path):
     # PDF y-coordinates increase upward, so the first (higher) physical line
     # has the larger y.
     assert positions["start"] > positions["end"]
+
+
+LONG_RTL_BLOCKQUOTE = """> پیشنهاد: در MVP، Fit Score یک عدد ۰ تا ۱۰۰ باشد و تنها معیار پذیرشِ آن بر پایه‌ی یک رویداد رفتاری منفرد و بدون‌ابهام باشد — مثلاً «مشتری حداقل یکی از پنج نامزد پیشنهادی را به مرحله‌ی گفت‌وگو دعوت کرد». معیارهای مبتنی بر نتیجه‌ی نهایی (تحویل موفق) در MVP قابل اندازه‌گیری نیستند، چون چرخه‌شان از عمر MVP طولانی‌تر است.
+"""
+
+
+@needs_fonts
+def test_long_rtl_blockquote_does_not_orphan_a_word_onto_an_extra_line(tmp_path):
+    """A wrapped RTL blockquote line used to double-count multi_cell's
+    internal c_margin padding (once for wrapping, once inside multi_cell
+    itself), so multi_cell re-wrapped its already bidi-reordered text and
+    split a word off the end of the visual string onto its own orphan line.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    source = tmp_path / "doc.md"
+    source.write_text(LONG_RTL_BLOCKQUOTE, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, title_page=False, quiet=True)
+
+    line_ys = set()
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if text.strip() and "Page" not in text:
+            line_ys.add(round(tm[5], 1))
+
+    reader = pypdf.PdfReader(target)
+    reader.pages[-1].extract_text(visitor_text=visitor)
+    assert len(line_ys) == 3
+
+
+WHOLE_BOLD_RTL_BLOCKS = """این پاراگراف پررنگ نیست.
+
+**این پاراگراف باید به طور کامل پررنگ باشد.**
+
+- **این آیتم لیست باید پررنگ باشد.**
+- این آیتم لیست پررنگ نیست.
+
+> **این نقل‌قول باید پررنگ باشد.**
+"""
+
+
+@needs_fonts
+def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
+    """A paragraph/list-item/blockquote wrapped *entirely* in ``**bold**``
+    used to render as plain text: the RTL branches of these renderers
+    stripped markdown markers instead of parsing them (unlike the LTR path,
+    which goes through _render_rich), because RTL text has to be shaped and
+    bidi-reordered before fpdf2 sees it, so its own markdown parser can no
+    longer find markers inside it.
+    """
+    styles = []
+    orig_set_font = pymd2pdf.PDF.set_font
+
+    def spy(self, family, style="", size=0):
+        if family == pymd2pdf.FONT_FA and size == pymd2pdf.BODY_SIZE:
+            styles.append(style)
+        return orig_set_font(self, family, style, size)
+
+    monkeypatch.setattr(pymd2pdf.PDF, "set_font", spy)
+
+    pdf = pymd2pdf.PDF(orientation="P", unit="mm", format="A4")
+    if not pdf.has_persian:
+        pytest.skip("no Persian font installed")
+    pdf.doc_is_rtl = True
+    pdf.set_margins(20, 20, 20)
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=20)
+
+    for line in WHOLE_BOLD_RTL_BLOCKS.splitlines():
+        if not line.strip():
+            continue
+        if line.startswith("> "):
+            pymd2pdf._add_blockquote(pdf, [line[2:]])
+        elif line.startswith("- "):
+            pymd2pdf._add_list_item(pdf, "  • ", line[2:], 0)
+        else:
+            pymd2pdf._add_paragraph(pdf, line)
+
+    assert styles == ["", "B", "B", "", "B"]
 
 
 @needs_fonts
