@@ -848,6 +848,7 @@ def _add_table(pdf, headers, rows):
     pdf.ln(2)
     n = len(headers)
     page_w = pdf.w - pdf.l_margin - pdf.r_margin
+    CELL_PADDING = 1
 
     has_persian = getattr(pdf, "has_persian", False) and (
         getattr(pdf, "doc_is_rtl", False)
@@ -864,7 +865,7 @@ def _add_table(pdf, headers, rows):
         headers = list(reversed(headers))
         rows = [list(reversed(row)) for row in rows]
 
-    def _prep_cell(cell):
+    def _prep_cell(cell, col_width, is_header=False):
         """Cell payload for table.row(): plain text, or a dict when the cell
         needs more than fpdf2's own markdown parsing gives us.
 
@@ -895,8 +896,22 @@ def _add_table(pdf, headers, rows):
         # part of a cell can no longer be parsed, and would print literally.
         # Whole-cell bold survives as the FontFace above; the rest is dropped.
         body = link_m.group(1) if link_m else _strip_md(inner)
+        if has_persian:
+            # Reordering the *whole* cell into visual order and letting fpdf2's
+            # plain left-to-right wrapper break it into lines would scatter the
+            # paragraph's tail onto the first physical line (see
+            # _shape_rtl_lines's docstring). Wrap here instead, in logical
+            # order, one bidi-reordered line per line -- using the same style
+            # (bold for headings) fpdf2 will actually render the cell in, so
+            # our line breaks match its usable width and it doesn't re-wrap
+            # (and re-scramble) any of them.
+            pdf.set_font(table_font, "B" if (bold_m or is_header) else "", TABLE_SIZE)
+            usable_width = col_width - 2 * CELL_PADDING
+            shaped = "\n".join(_shape_rtl_lines(pdf, body, usable_width))
+        else:
+            shaped = body
         return {
-            "text": _shape_rtl(body) if has_persian else body,
+            "text": shaped,
             "link": link,
             "style": FontFace(
                 emphasis=emphasis or None,
@@ -959,11 +974,14 @@ def _add_table(pdf, headers, rows):
         headings_style=headings_style,
         line_height=TABLE_SIZE * 0.55,
         markdown=not has_persian,
-        padding=1,
+        padding=CELL_PADDING,
     ) as table:
-        table.row([_prep_cell(h) for h in headers])
+        table.row([_prep_cell(h, col_w[i], is_header=True) for i, h in enumerate(headers)])
         for row in rows:
-            cells = [_prep_cell(row[i]) if i < len(row) else "" for i in range(n)]
+            cells = [
+                _prep_cell(row[i], col_w[i]) if i < len(row) else ""
+                for i in range(n)
+            ]
             table.row(cells)
 
     pdf.ln(2)

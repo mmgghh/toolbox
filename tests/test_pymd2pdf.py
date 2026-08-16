@@ -242,6 +242,43 @@ def test_table_cells_show_the_label_not_the_link_markup(tmp_path):
     assert "example.com" not in text
 
 
+LONG_RTL_TABLE_CELL = """# Test
+
+| شرح | مقدار |
+| --- | --- |
+| MARKSTART این یک متن بسیار طولانی فارسی است که باید در چند خط داخل جدول بپیچد تا مشکل ترتیب خطوط را نشان دهد و این جمله همچنان ادامه دارد تا برسد به کلمه MARKEND |
+"""
+
+
+@needs_fonts
+def test_long_rtl_table_cell_wraps_lines_in_reading_order(tmp_path):
+    """A cell that wraps must keep the start of the sentence on the first
+    physical line -- reordering the whole cell into visual order before
+    fpdf2 wraps it (instead of wrapping first, like paragraphs/list items
+    do) put the tail of the sentence on the first line instead.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    source = tmp_path / "doc.md"
+    source.write_text(LONG_RTL_TABLE_CELL, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+
+    positions = {}
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if "MARKSTART" in text:
+            positions["start"] = tm[5]
+        elif "MARKEND" in text:
+            positions["end"] = tm[5]
+
+    reader = pypdf.PdfReader(target)
+    reader.pages[-1].extract_text(visitor_text=visitor)
+    assert positions.keys() == {"start", "end"}
+    # PDF y-coordinates increase upward, so the first (higher) physical line
+    # has the larger y.
+    assert positions["start"] > positions["end"]
+
+
 @needs_fonts
 def test_cli_writes_next_to_the_input(runner, tmp_path):
     source = tmp_path / "doc.md"
