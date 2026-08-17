@@ -7,6 +7,19 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pynet ip` can say where an address is.** `pynet ip --geo` adds city,
+  region, country, coordinates, timezone and network to the public address,
+  and `pynet ip 1.1.1.1` (or a hostname, which is resolved first) locates any
+  address. The lookup is opt-in and never load-bearing: plain `pynet ip`
+  contacts no geolocation service, and when the lookup fails — offline, or a
+  blocked provider — the addresses still print and the exit code stays 0. Only
+  an explicit `pynet ip ADDRESS`, where the location is the whole answer,
+  exits 1. Three free keyless providers are tried in turn (ipwho.is, ipapi.co,
+  freeipapi.com), all over HTTPS so the address is not sent in the clear, and
+  each one's answer is normalised to the same field names. What comes back is
+  where the address block is registered, which is often the ISP rather than
+  anyone's actual location.
+
 - **`pypdf2md` reads tables.** A PDF has no idea what a table is, and position
   alone cannot tell one from a two-column page — both are text, a band of air,
   then more text, lined up down the page. But a table is *drawn*, so the grid

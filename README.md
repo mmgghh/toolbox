@@ -29,7 +29,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pyjdate`  | `toolbox jdate`  | Jalali ↔ Gregorian conversion, intervals, distances              | [docs/pyjdate.md](docs/pyjdate.md) |
 | `pytime`   | `toolbox time`   | Time tracking in a single SQLite file, with reports              | [docs/pytime.md](docs/pytime.md) |
 | `pyssh`    | `toolbox ssh`    | SOCKS tunnels (single and chained) and an rsync wrapper          | [docs/pyssh.md](docs/pyssh.md) |
-| `pynet`    | `toolbox net`    | IP, DNS, ports, ping, HTTP, WHOIS, quick file server             | [docs/pynet.md](docs/pynet.md) |
+| `pynet`    | `toolbox net`    | IP and its location, DNS, ports, ping, HTTP, WHOIS, quick file server | [docs/pynet.md](docs/pynet.md) |
 | `pyps`     | `toolbox ps`     | Top memory/swap consumers, search and kill by name, `free`-like summary (Linux/Termux) | [docs/pyps.md](docs/pyps.md) |
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |

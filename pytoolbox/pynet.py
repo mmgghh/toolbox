@@ -219,6 +219,123 @@ def public_ip(timeout: float = 5.0) -> Optional[str]:
     return None
 
 
+def _network_name(asn, name) -> str:
+    """``"AS13335 Cloudflare"`` from whichever halves a provider supplied."""
+    asn_text = f"AS{asn}" if isinstance(asn, int) else str(asn or "").strip()
+    return " ".join(part for part in (asn_text, str(name or "").strip()) if part)
+
+
+def _parse_ipwho(data: dict) -> Optional[dict]:
+    """Normalise a response from ipwho.is."""
+    if data.get("success") is False:
+        return None
+    connection = data.get("connection") or {}
+    zone = data.get("timezone") or {}
+    return {
+        "ip": data.get("ip") or "",
+        "city": data.get("city") or "",
+        "region": data.get("region") or "",
+        "country": data.get("country") or "",
+        "country_code": data.get("country_code") or "",
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "timezone": (zone.get("id") if isinstance(zone, dict) else zone) or "",
+        "network": _network_name(connection.get("asn"), connection.get("isp") or connection.get("org")),
+    }
+
+
+def _parse_ipapi_co(data: dict) -> Optional[dict]:
+    """Normalise a response from ipapi.co."""
+    if data.get("error"):
+        return None
+    return {
+        "ip": data.get("ip") or "",
+        "city": data.get("city") or "",
+        "region": data.get("region") or "",
+        "country": data.get("country_name") or "",
+        "country_code": data.get("country_code") or "",
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "timezone": data.get("timezone") or "",
+        "network": _network_name(data.get("asn"), data.get("org")),
+    }
+
+
+def _parse_freeipapi(data: dict) -> Optional[dict]:
+    """Normalise a response from freeipapi.com."""
+    if not data.get("ipAddress"):
+        return None
+    return {
+        "ip": data.get("ipAddress") or "",
+        "city": data.get("cityName") or "",
+        "region": data.get("regionName") or "",
+        "country": data.get("countryName") or "",
+        "country_code": data.get("countryCode") or "",
+        "latitude": data.get("latitude"),
+        "longitude": data.get("longitude"),
+        "timezone": data.get("timeZone") or "",
+        "network": "",
+    }
+
+
+#: Geolocation providers, tried in order. All free, keyless and HTTPS-only, so
+#: the address being looked up is not sent in the clear.
+GEO_ENDPOINTS = (
+    ("https://ipwho.is/{ip}", _parse_ipwho),
+    ("https://ipapi.co/{ip}/json/", _parse_ipapi_co),
+    ("https://freeipapi.com/api/json/{ip}", _parse_freeipapi),
+)
+
+
+def geo_lookup(address: str, timeout: float = 5.0) -> Optional[dict]:
+    """Approximate location of ``address``, or ``None`` when nobody answers.
+
+    Returns rather than raises when every provider fails: an offline machine
+    should still see the addresses the caller has already collected. The answer
+    is where the address block is *registered*, which is regularly the ISP's
+    city rather than anyone's actual location -- treat it as a hint.
+    """
+    import requests
+
+    target = urllib.parse.quote(address.strip(), safe="")
+    if not target:
+        return None
+    for template, parse in GEO_ENDPOINTS:
+        try:
+            response = requests.get(template.format(ip=target), timeout=timeout)
+            response.raise_for_status()
+            data = response.json()
+        except Exception:  # noqa: BLE001 - try the next provider
+            continue
+        if not isinstance(data, dict):
+            continue
+        located = parse(data)
+        # A provider that answers "unknown" for a private or reserved address
+        # returns a well-formed payload with nothing in it; keep looking.
+        if located and (located["country"] or located["country_code"]):
+            return located
+    return None
+
+
+def format_location(located: dict) -> list[str]:
+    """Printable lines for one geolocation result, omitting what is unknown."""
+    place = ", ".join(part for part in (located["city"], located["region"], located["country"]) if part)
+    if place and located["country_code"]:
+        place = f"{place} ({located['country_code']})"
+
+    lines = []
+    if place:
+        lines.append(("location", place))
+    latitude, longitude = located["latitude"], located["longitude"]
+    if latitude not in (None, "") and longitude not in (None, ""):
+        lines.append(("coords", f"{latitude}, {longitude}"))
+    if located["timezone"]:
+        lines.append(("timezone", located["timezone"]))
+    if located["network"]:
+        lines.append(("network", located["network"]))
+    return [f"{label:<8} {value}" for label, value in lines]
+
+
 def tcp_ping(host: str, port: int, count: int, timeout: float) -> list[Optional[float]]:
     """Time repeated TCP handshakes -- the fallback when ICMP is unavailable."""
     timings: list[Optional[float]] = []
@@ -283,39 +400,79 @@ def net_cli() -> None:
 
 
 @net_cli.command("ip")
+@click.argument("address", required=False)
 @click.option("--local", "local_only", is_flag=True, help="Show only local interface addresses.")
 @click.option("--public", "public_only", is_flag=True, help="Show only the public address.")
+@click.option("--geo", is_flag=True, help="Also look up where the address is (needs internet).")
 @click.option("--timeout", default=5.0, show_default=True, help="Seconds to wait for the lookup.")
 @json_option
-def ip_command(local_only: bool, public_only: bool, timeout: float, as_json: bool) -> None:
+def ip_command(
+    address: Optional[str], local_only: bool, public_only: bool, geo: bool, timeout: float, as_json: bool
+) -> None:
     """Show this machine's local and public IP addresses.
+
+    \b
+    With ADDRESS (an IP or a hostname), locate that address instead. The
+    location lookup is opt-in and never required: without --geo, and whenever
+    the lookup fails, the addresses are still printed.
 
     \b
     Examples:
       pynet ip
       pynet ip --local
       pynet ip --public --json
+      pynet ip --geo
+      pynet ip 1.1.1.1
     """
     if local_only and public_only:
         raise click.ClickException("Use either --local or --public, not both.")
+    if local_only and (geo or address):
+        raise click.ClickException("--local shows this machine's own interfaces; there is nothing to locate.")
+    if address and public_only:
+        raise click.ClickException("Pass an address or --public, not both.")
 
     payload: dict = {}
-    if not public_only:
-        payload["local"] = local_addresses()
-    if not local_only:
-        payload["public"] = public_ip(timeout)
+    if address:
+        # A hostname is resolved first, so `pynet ip --geo example.com` works
+        # the same way every other pynet command accepts a name.
+        try:
+            ipaddress.ip_address(address)
+            target = address
+        except ValueError:
+            target = resolve_host(address)[0]
+        payload["address"] = target
+        payload["location"] = geo_lookup(target, timeout)
+    else:
+        if not public_only:
+            payload["local"] = local_addresses()
+        if not local_only:
+            payload["public"] = public_ip(timeout)
+        if geo and payload.get("public"):
+            payload["location"] = geo_lookup(payload["public"], timeout)
 
     if as_json:
         console.emit_json(payload)
-        return
+    else:
+        for entry in payload.get("local", []):
+            console.result(f"{entry['family']:<5} {entry['address']}")
+        if "address" in payload:
+            console.result(f"address  {payload['address']}")
+        if "public" in payload:
+            if payload["public"]:
+                console.result(f"public {payload['public']}")
+            else:
+                console.warn("Could not determine the public IP address (no internet?).")
+        if payload.get("location"):
+            for line in format_location(payload["location"]):
+                console.result(line)
+        elif "location" in payload:
+            where = payload.get("address") or payload.get("public") or "this address"
+            console.warn(f"Could not look up the location of {where} (no internet?).")
 
-    for entry in payload.get("local", []):
-        console.result(f"{entry['family']:<5} {entry['address']}")
-    if "public" in payload:
-        if payload["public"]:
-            console.result(f"public {payload['public']}")
-        else:
-            console.warn("Could not determine the public IP address (no internet?).")
+    # Only an explicit lookup that produced nothing is a failure: --geo is an
+    # addition to `pynet ip`, and must not break it when there is no internet.
+    if address and not payload.get("location"):
+        raise SystemExit(1)
 
 
 @net_cli.command()

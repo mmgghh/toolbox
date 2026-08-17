@@ -3,7 +3,7 @@
 Also available as `toolbox net`.
 
 ```
-ip      Local and public IP addresses
+ip      Local and public IP addresses, and where an address is
 dns     Resolve a name to addresses, or an address back to a name
 port    Check whether TCP ports are reachable
 scan    Scan a host for open TCP ports
@@ -26,6 +26,9 @@ commands accept `--json`.
 pynet ip
 pynet ip --local
 pynet ip --public --json
+pynet ip --geo                  # ...and where it thinks you are
+pynet ip 1.1.1.1                # locate any address
+pynet ip example.com --json     # a hostname is resolved first
 ```
 
 Local addresses are discovered by opening a UDP socket toward a public address
@@ -35,6 +38,36 @@ on most Linux systems and fails on Android).
 
 The public address comes from the first responding echo service among
 api.ipify.org, ifconfig.me and icanhazip.com.
+
+### Location
+
+`--geo` adds city, region, country, coordinates, timezone and network to the
+public address; passing an `ADDRESS` locates that one instead.
+
+```
+address  1.1.1.1
+location Brisbane, Queensland, Australia (AU)
+coords   -27.4675408, 153.028092
+timezone Australia/Brisbane
+network  AS13335 Cloudflare, Inc.
+```
+
+The lookup is **opt-in and never load-bearing**: `pynet ip` on its own touches
+no geolocation service, and when the lookup fails — no internet, a blocked
+provider — the addresses are still printed and the exit code stays 0. Only an
+explicit `pynet ip ADDRESS`, where the location *is* the answer, exits 1 when
+nothing comes back.
+
+Providers are tried in order until one answers: [ipwho.is](https://ipwho.is),
+[ipapi.co](https://ipapi.co), [freeipapi.com](https://freeipapi.com). All are
+free, need no key and are queried over HTTPS, so the address being looked up is
+not sent in the clear. Whichever one replies, the fields come back under the
+same names.
+
+A geolocation database says where an address *block was registered*, which is
+regularly the ISP's city rather than anywhere a person is; addresses behind a
+VPN or a mobile carrier are routinely off by hundreds of kilometres. Read it as
+a hint, not as a location for someone.
 
 ## `dns`
 

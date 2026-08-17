@@ -178,6 +178,149 @@ def test_ip_public_uses_the_first_working_endpoint(runner, monkeypatch):
     assert json.loads(result.output)["public"] == "203.0.113.7"
 
 
+# ── geolocation ─────────────────────────────────────────────────────
+
+#: One response per provider, all describing the same address.
+GEO_RESPONSES = {
+    "ipwho.is": {
+        "success": True,
+        "ip": "1.1.1.1",
+        "city": "Sydney",
+        "region": "New South Wales",
+        "country": "Australia",
+        "country_code": "AU",
+        "latitude": -33.86,
+        "longitude": 151.2,
+        "timezone": {"id": "Australia/Sydney"},
+        "connection": {"asn": 13335, "isp": "Cloudflare"},
+    },
+    "ipapi.co": {
+        "ip": "1.1.1.1",
+        "city": "Sydney",
+        "region": "New South Wales",
+        "country_name": "Australia",
+        "country_code": "AU",
+        "latitude": -33.86,
+        "longitude": 151.2,
+        "timezone": "Australia/Sydney",
+        "asn": "AS13335",
+        "org": "Cloudflare",
+    },
+    "freeipapi.com": {
+        "ipAddress": "1.1.1.1",
+        "cityName": "Sydney",
+        "regionName": "New South Wales",
+        "countryName": "Australia",
+        "countryCode": "AU",
+        "latitude": -33.86,
+        "longitude": 151.2,
+        "timeZone": "Australia/Sydney",
+    },
+}
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+def _fake_get(payloads):
+    """A requests.get stand-in serving one payload per host, 500ing otherwise."""
+    calls = []
+
+    def get(url, timeout=None):
+        calls.append(url)
+        for host, payload in payloads.items():
+            if host in url:
+                return _FakeResponse(payload)
+        raise OSError("unreachable")
+
+    get.calls = calls
+    return get
+
+
+@pytest.mark.parametrize("provider", sorted(GEO_RESPONSES))
+def test_every_provider_yields_the_same_shape(monkeypatch, provider):
+    """Whichever service answers, the caller sees one vocabulary."""
+    monkeypatch.setattr("requests.get", _fake_get({provider: GEO_RESPONSES[provider]}))
+    located = pynet.geo_lookup("1.1.1.1")
+    assert located["city"] == "Sydney"
+    assert located["country"] == "Australia"
+    assert located["country_code"] == "AU"
+    assert located["timezone"] == "Australia/Sydney"
+    assert (located["latitude"], located["longitude"]) == (-33.86, 151.2)
+
+
+def test_geo_lookup_falls_through_to_the_next_provider(monkeypatch):
+    get = _fake_get({"freeipapi.com": GEO_RESPONSES["freeipapi.com"]})
+    monkeypatch.setattr("requests.get", get)
+    assert pynet.geo_lookup("1.1.1.1")["country"] == "Australia"
+    assert len(get.calls) == len(pynet.GEO_ENDPOINTS)
+
+
+def test_geo_lookup_skips_a_provider_that_answers_nothing_useful(monkeypatch):
+    """A private address gets a well-formed payload with no location in it."""
+    empty = {"success": True, "ip": "10.0.0.1", "country": "", "country_code": ""}
+    get = _fake_get({"ipwho.is": empty, "ipapi.co": GEO_RESPONSES["ipapi.co"]})
+    monkeypatch.setattr("requests.get", get)
+    assert pynet.geo_lookup("10.0.0.1")["country"] == "Australia"
+
+
+def test_geo_lookup_returns_none_when_offline(monkeypatch):
+    monkeypatch.setattr("requests.get", _fake_get({}))
+    assert pynet.geo_lookup("1.1.1.1") is None
+
+
+def test_ip_geo_reports_the_location_of_an_address(runner, monkeypatch):
+    monkeypatch.setattr("requests.get", _fake_get({"ipwho.is": GEO_RESPONSES["ipwho.is"]}))
+    result = runner.invoke(net_cli, ["ip", "1.1.1.1"])
+    assert result.exit_code == 0, result.output
+    assert "Sydney, New South Wales, Australia (AU)" in result.stdout
+    assert "AS13335 Cloudflare" in result.stdout
+
+
+def test_ip_geo_adds_a_location_to_the_public_address(runner, monkeypatch):
+    monkeypatch.setattr(pynet, "public_ip", lambda timeout=5.0: "1.1.1.1")
+    monkeypatch.setattr("requests.get", _fake_get({"ipwho.is": GEO_RESPONSES["ipwho.is"]}))
+    payload = json.loads(runner.invoke(net_cli, ["ip", "--public", "--geo", "--json"]).stdout)
+    assert payload["public"] == "1.1.1.1"
+    assert payload["location"]["city"] == "Sydney"
+
+
+def test_ip_still_works_when_the_location_lookup_fails(runner, monkeypatch):
+    """--geo is an addition; losing it must not cost you the addresses."""
+    monkeypatch.setattr(pynet, "public_ip", lambda timeout=5.0: "203.0.113.7")
+    monkeypatch.setattr("requests.get", _fake_get({}))
+    result = runner.invoke(net_cli, ["ip", "--geo"])
+    assert result.exit_code == 0, result.output
+    assert "203.0.113.7" in result.stdout
+    assert "Could not look up the location" in result.stderr
+
+
+def test_ip_geo_of_an_explicit_address_exits_nonzero_when_it_fails(runner, monkeypatch):
+    monkeypatch.setattr("requests.get", _fake_get({}))
+    assert runner.invoke(net_cli, ["ip", "1.1.1.1"]).exit_code == 1
+
+
+def test_ip_geo_resolves_a_hostname_first(runner, monkeypatch):
+    monkeypatch.setattr(pynet, "resolve_host", lambda host, family=0: ["1.1.1.1"])
+    monkeypatch.setattr("requests.get", _fake_get({"ipwho.is": GEO_RESPONSES["ipwho.is"]}))
+    payload = json.loads(runner.invoke(net_cli, ["ip", "one.one.one.one", "--json"]).stdout)
+    assert payload["address"] == "1.1.1.1"
+    assert payload["location"]["country_code"] == "AU"
+
+
+def test_ip_rejects_locating_a_local_interface(runner):
+    result = runner.invoke(net_cli, ["ip", "--local", "--geo"])
+    assert result.exit_code != 0
+
+
 def test_ping_tcp_mode(runner, open_port):
     result = runner.invoke(
         net_cli, ["ping", "127.0.0.1", "--tcp", "-p", str(open_port), "-c", "2", "--json"]
