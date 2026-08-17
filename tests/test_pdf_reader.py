@@ -218,9 +218,32 @@ def test_a_multi_letter_glyph_is_turned_to_face_paint_order():
         font = _Font()
         text = "لا"
 
-    assert reader._ligatures(_Shown()) == "ال"
+    assert reader._letters(_Shown()) == ("ال", "\x01\x01")
 
     # A Latin ligature sits in a line that is never reversed, so it stands.
     _Shown._decoded_value = "\x02"
     _Shown.text = "ﬁ"
-    assert reader._ligatures(_Shown()) == "ﬁ"
+    assert reader._letters(_Shown()) == ("ﬁ", "\x02")
+
+
+def test_a_font_that_disagrees_with_itself_about_digits_is_repaired():
+    # Digit glyphs come as a block of ten and a font draws one set. Eight
+    # Persian and two ASCII is two wrong entries, not a font that mixes them.
+    class _Font:
+        character_map = dict(zip(map(chr, range(10)), "01۲۳۴۵۶۷۸۹"))
+
+    assert reader._digits(_Font()) == {ord("0") + n: chr(0x06F0 + n) for n in range(10)}
+
+
+def test_a_font_that_really_holds_both_digit_sets_is_left_alone():
+    class _Font:
+        character_map = dict(zip(map(chr, range(20)), "0123456789۰۱۲۳۴۵۶۷۸۹"))
+
+    assert reader._digits(_Font()) == {}
+
+
+def test_a_font_with_no_eastern_digits_is_left_alone():
+    class _Font:
+        character_map = dict(zip(map(chr, range(10)), "0123456789"))
+
+    assert reader._digits(_Font()) == {}

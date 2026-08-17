@@ -91,6 +91,16 @@ def dominant(text: str) -> Optional[str]:
     return "R" if rtl > ltr else "L"
 
 
+def joins_forward(char: str) -> bool:
+    """True when ``char`` is a letter that joins onto the one after it."""
+    return char in _JOINS_FORWARD
+
+
+def joins_backward(char: str) -> bool:
+    """True when ``char`` is a letter the one before it may join onto."""
+    return char in _JOINS_BACKWARD
+
+
 def direction(text: str, default: Optional[str] = None) -> Optional[str]:
     """``"R"``, ``"L"`` or ``default`` for text with no strong character.
 
@@ -186,7 +196,28 @@ def _shaped(char: str) -> bool:
     return any(start <= code <= stop for start, stop in PRESENTATION)
 
 
+def settle_marks(text: str) -> str:
+    """Turn each stand-in that landed between two letters into a joiner.
+
+    One that did not was never a joiner: a space with no width at the end of a
+    line, or a letter closed by the punctuation after it rather than by
+    anything invisible. Those are dropped.
+    """
+    if MARK not in text:
+        return text
+    out: list[str] = []
+    for index, char in enumerate(text):
+        if char != MARK:
+            out.append(char)
+            continue
+        before = unshape(out[-1]) if out else ""
+        after = unshape(text[index + 1]) if index + 1 < len(text) else ""
+        if joins_forward(before) and joins_backward(after):
+            out.append(ZWNJ)
+    return "".join(out)
+
+
 def restore(text: str, base: str) -> str:
     """A painted line as written: reading order, joiners and letters."""
-    ordered = reading_order(text, base).replace(MARK, ZWNJ)
+    ordered = settle_marks(reading_order(text, base))
     return unshape(join_marks(ordered))

@@ -54,6 +54,27 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`pypdf2md` dropped every half-space in a word-processor document.** A word
+  processor draws the four shapes of an Arabic letter as four different glyphs
+  and maps all four back to the one plain letter, so nothing about the shaping
+  reaches the text and `به‌موقع` came back as `بهموقع` — a different word. The
+  glyph *numbers* still differ, and reading the whole document tells them
+  apart: a glyph most of whose uses are where nothing could follow it is a
+  shape that joins nothing after it, and one of those used anywhere else was
+  closed by something invisible. The two kinds are nowhere near each other on
+  that measure — 1–5% against 66–99% in the file this was written against — and
+  a font that draws a letter only one way is left alone, since guessing from a
+  single glyph would put a non-joiner inside every second word. 989 joiners
+  came back in a 27-page document, none of them wrong.
+
+- **`pypdf2md` reported some Persian digits as ASCII.** Digit glyphs come as a
+  block of ten and a font draws one set of them, so a font claiming eight of
+  its ten are Persian and the other two ASCII is not describing a font that
+  mixes the two — no such font exists — but two entries filled in wrongly.
+  Taken at face value they turned `۱۴۰۵` into `1۴0۵`. A font with a clear
+  majority for one set now has the odd ones out read as that set; a font that
+  really holds both keeps both.
+
 - **`pypdf2md` let one line's character spacing squeeze the whole page.**
   `Tc` belongs to the graphics state, so `Q` puts back whatever it was; neither
   pypdf's text-state stack nor the walk on top of it did that. A Word document

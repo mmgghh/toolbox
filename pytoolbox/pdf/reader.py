@@ -38,6 +38,12 @@ class TextRun:
     widths. It is optional because a run can be built without a font to
     measure against; :mod:`~pytoolbox.pdf.layout` falls back to estimating the
     extent from the glyph count when it is missing.
+
+    ``codes`` names the glyph behind each character, one per character of
+    ``text``. Two glyphs of one font can stand for the same letter -- Arabic
+    letters are drawn differently depending on what they join to -- and which
+    of them was used is the only record some files keep of that shaping. It is
+    empty when the glyphs could not be lined up with the letters.
     """
 
     text: str
@@ -48,6 +54,7 @@ class TextRun:
     bold: bool = False
     italic: bool = False
     end: Optional[float] = None
+    codes: str = ""
 
 
 @dataclass
@@ -240,6 +247,7 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
     placements: list[Placement] = []
     rules: list[RuleBox] = []
     pending: list[RuleBox] = []
+    repairs: dict[int, dict[int, str]] = {}
     state = TextStateManager()
 
     def rectangle(operands: Any) -> None:
@@ -261,9 +269,13 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
         shown = state.text_state_params(raw)
         if shown.text:
             font = str(getattr(shown.font, "name", "") or "")
+            if id(shown.font) not in repairs:
+                repairs[id(shown.font)] = _digits(shown.font)
+            drawn, behind = _letters(shown)
             runs.append(
                 TextRun(
-                    text=_ligatures(shown),
+                    text=drawn.translate(repairs[id(shown.font)]),
+                    codes=behind,
                     x=shown.tx,
                     y=shown.ty,
                     size=abs(shown.font_height) or abs(float(shown.font_size)),
@@ -354,16 +366,51 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
 #: Bidirectional classes whose letters are painted right to left.
 _ARABIC = ("AL", "R")
 
+#: The zero of each digit set a font might actually be drawing: Persian's
+#: extended Arabic-Indic digits, then Arabic-Indic.
+EASTERN_ZEROS = ("۰", "٠")
 
-def _ligatures(shown: Any) -> str:
-    """The run's text, with multi-letter glyphs turned to face the same way.
 
-    One glyph can stand for several letters -- ``لا`` is drawn as a single
-    shape -- and the file says which letters those are, in *reading* order.
-    Everything around them is in paint order, so a ligature dropped in as-is
-    is the one piece of the line already the right way round, and comes out
-    backwards once the line is reversed. Turning it here costs nothing and
-    means nothing downstream has to know which glyph it came from.
+def _digits(font: Any) -> dict[int, str]:
+    """A repair table for a font whose mapping disagrees with itself.
+
+    Digit glyphs come as a block of ten, and a font draws one set of them. So
+    a font claiming eight of its ten are Persian and the other two are ASCII
+    is not describing a font that mixes the two -- no such font exists -- it is
+    describing two glyphs whose entries were filled in wrongly. Reading them
+    back at face value turns ``۱۴۰۵`` into ``1۴0۵``.
+    """
+    mapping = getattr(font, "character_map", None) or {}
+    western = 0
+    eastern = dict.fromkeys(EASTERN_ZEROS, 0)
+    for value in mapping.values():
+        if len(value) != 1:
+            continue
+        if "0" <= value <= "9":
+            western += 1
+        else:
+            for zero in EASTERN_ZEROS:
+                if zero <= value <= chr(ord(zero) + 9):
+                    eastern[zero] += 1
+    if not western:
+        return {}
+    zero, drawn = max(eastern.items(), key=lambda item: item[1])
+    # A font really holding both sets keeps both; only a clear majority for one
+    # set says the odd ones out are mistakes.
+    if drawn <= western:
+        return {}
+    return {ord("0") + step: chr(ord(zero) + step) for step in range(10)}
+
+
+def _letters(shown: Any) -> tuple[str, str]:
+    """The run's text, and the glyph behind each of its characters.
+
+    Multi-letter glyphs are turned to face the same way as everything else on
+    the way past. One glyph can stand for several letters -- ``لا`` is drawn as
+    a single shape -- and the file says which letters those are, in *reading*
+    order. Everything around them is in paint order, so a ligature dropped in
+    as-is is the one piece of the line already the right way round, and comes
+    out backwards once the line is reversed.
 
     Only Arabic ligatures are turned. A Latin one is in a line that will not
     be reversed at all, so it is already right.
@@ -371,17 +418,17 @@ def _ligatures(shown: Any) -> str:
     codes = getattr(shown, "_decoded_value", "")
     mapping = getattr(shown.font, "character_map", None)
     if not codes or not mapping:
-        return shown.text
+        return shown.text, ""
 
-    pieces: list[str] = []
-    ligature = False
+    letters: list[str] = []
+    behind: list[str] = []
     for code in codes:
-        letters = mapping.get(code, code)
-        if len(letters) > 1 and all(unicodedata.bidirectional(one) in _ARABIC for one in letters):
-            letters = letters[::-1]
-            ligature = True
-        pieces.append(letters)
-    return "".join(pieces) if ligature else shown.text
+        drawn = mapping.get(code, code)
+        if len(drawn) > 1 and all(unicodedata.bidirectional(one) in _ARABIC for one in drawn):
+            drawn = drawn[::-1]
+        letters.append(drawn)
+        behind.append(code * len(drawn))
+    return "".join(letters), "".join(behind)
 
 
 def _apply(matrix: Any, x: float, y: float) -> tuple[float, float]:

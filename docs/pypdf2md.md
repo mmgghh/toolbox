@@ -102,7 +102,8 @@ one before it leaves behind:
 2. **Zero-width non-joiners.** `می‌شود` and `میشود` are different words and the
    joiner between them has no glyph, but it leaves a trace: the letter before
    it keeps its unjoined shape. Where a writer draws a space for it instead,
-   that space takes no room on the page, which is the other way it is spotted.
+   that space takes no room on the page, which is the second way it is
+   spotted. The third is for files that name no shapes at all — see below.
 3. **Presentation forms.** Only then are the shaped glyphs (`ﻣ`, `ﯽ`) folded
    back to the letters someone can search for (`م`, `ی`).
 
@@ -124,6 +125,35 @@ the right margin, which is what the paragraph and indent rules read.
 
 This needs `python-bidi`, part of the `pdf2md` extra. Without it a right-to-left
 document still converts, but stays in painted order.
+
+## Files that name no shapes
+
+A word processor draws the four shapes of an Arabic letter as four different
+glyphs and maps all four back to the one plain letter, so nothing about the
+shaping reaches the text and the rule above has nothing to work from. The glyph
+*numbers* still differ, and that is enough to work it out from the document as a
+whole:
+
+- A glyph is a **closed** shape — one that joins nothing after it — if most of
+  its uses are where nothing could follow it: at the end of a word, or before a
+  letter that takes no join from behind. The two kinds of glyph are nowhere near
+  each other on this measure. In the document this was written against the
+  joined shapes are used that way 1–5% of the time and the closed ones 66–99%,
+  so where the line falls hardly matters.
+- A closed glyph used anywhere else was closed by something invisible, and that
+  is the non-joiner.
+
+Only a letter the font draws more than one way is read. A font with a single
+glyph per letter records nothing, and guessing from one glyph would put a
+non-joiner inside every second word — so a file like that is left alone, and
+costs one pass over the runs to rule out.
+
+The same document-wide look at a font settles its digits. Digit glyphs come as
+a block of ten and a font draws one set of them, so a font claiming eight of
+its ten are Persian and the other two ASCII is not describing a font that mixes
+the two — no such font exists — but two entries filled in wrongly. Taken at
+face value they turn `۱۴۰۵` into `1۴0۵`. A font that really holds both sets
+keeps both.
 
 ## Options
 
@@ -153,14 +183,12 @@ stderr and the rest still convert, with a non-zero exit code at the end.
 - **A list marker drawn as a shape is lost.** Some writers paint bullets as
   filled circles rather than text, and a marker that is not in the text layer
   cannot be read; those items come through as paragraphs.
-- **Non-joiners need shaped text.** They are recovered from the unjoined shape
-  a letter kept, or from a space drawn with no width. A file whose glyphs map
-  straight to plain letters records neither, and `می‌شود` comes back `میشود`.
+- **Non-joiners need a font that distinguishes the shapes**, one way or
+  another: named shapes, a space drawn with no width, or one letter drawn with
+  more than one glyph. A font with a single glyph per letter records nothing,
+  and `می‌شود` comes back `میشود`.
 - **A table inside a table loses the inner grid.** Only the outermost boxes are
   read, which is what keeps a cell's own backgrounds out of the grid.
-- **What the file says about a character is taken at its word.** A font whose
-  own mapping claims its `۱` glyph is an ASCII `1` will produce `1۴0۵`; there
-  is nothing else to go on.
 - **Scanned pages are reported, not read.** There is no OCR. A file whose pages
   are images gets an error naming `ocrmypdf`; a document with only a few such
   pages converts, with a warning.

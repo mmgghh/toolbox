@@ -19,7 +19,7 @@ from typing import Optional
 import click
 
 from pytoolbox.core.options import CONTEXT_SETTINGS, quiet_option, version_option
-from pytoolbox.pdf import layout, markdown, reader, structure, tables
+from pytoolbox.pdf import layout, markdown, reader, shaping, structure, tables
 
 #: Suffix for the directory holding a document's extracted images.
 ASSETS_SUFFIX = ".assets"
@@ -67,6 +67,11 @@ def convert(
             f"{source} has no text layer (looks scanned). OCR it first, for example: "
             f"ocrmypdf {source} out.pdf"
         )
+
+    # Before anything reads the text: a font that draws each Arabic shape as
+    # its own glyph but maps them all back to one letter records the joiners
+    # nowhere else, and the whole document is needed to tell the shapes apart.
+    shaping.restore_joiners(document)
 
     base = layout.base_direction(document.pages)
     # Tables are taken out of the page first: their rows read as two columns to
