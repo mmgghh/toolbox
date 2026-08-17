@@ -108,3 +108,53 @@ def test_a_heading_keeps_its_italics():
     blocks = [Heading(level=2, runs=[Run("Nota bene", bold=True, italic=True)])]
 
     assert render(blocks) == "## *Nota bene*\n"
+
+
+def test_a_table_is_rendered_with_a_header_row():
+    from pytoolbox.pdf.structure import Cell, Table
+
+    def cell(text):
+        return Cell(blocks=[Paragraph(runs=[Run(text)])])
+
+    table = Table(rows=[[cell("Name"), cell("Status")], [cell("a"), cell("b")]])
+
+    assert render([table]) == (
+        "| Name | Status |\n| :--- | :--- |\n| a | b |\n"
+    )
+
+
+def test_a_right_to_left_table_is_aligned_to_the_right():
+    from pytoolbox.pdf.structure import Cell, Table
+
+    table = Table(
+        rtl=True,
+        rows=[[Cell(blocks=[Paragraph(runs=[Run("نام")])])], [Cell(blocks=[Paragraph(runs=[Run("سند")])])]],
+    )
+
+    assert render([table]) == "| نام |\n| ---: |\n| سند |\n"
+
+
+def test_a_pipe_inside_a_cell_is_escaped():
+    from pytoolbox.pdf.structure import Cell, Table
+
+    table = Table(
+        rows=[
+            [Cell(blocks=[Paragraph(runs=[Run("a | b")])]), Cell()],
+            [Cell(), Cell()],
+        ]
+    )
+
+    assert "a \\| b" in render([table])
+
+
+def test_a_wrapped_cell_comes_back_as_one_line():
+    from pytoolbox.pdf.structure import Cell, Table
+
+    table = Table(
+        rows=[
+            [Cell(blocks=[Paragraph(runs=[Run("one")]), Paragraph(runs=[Run("two")])])],
+            [Cell()],
+        ]
+    )
+
+    assert render([table]).splitlines()[0] == "| one two |"

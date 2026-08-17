@@ -3,6 +3,12 @@
 This is the only module that imports :mod:`pypdf`. Everything downstream works
 on the dataclasses below, which is what lets the layout and structure rules be
 tested without building a PDF.
+
+Text comes out in *visual* order -- the order the glyphs are painted in, left
+to right -- because that is the only order a PDF records. A right-to-left
+document has already been through the bidirectional algorithm by the time it
+is written, so putting the words back in reading order is
+:mod:`~pytoolbox.pdf.text`'s job, not this module's.
 """
 
 from __future__ import annotations
@@ -25,7 +31,13 @@ SCANNED_DOCUMENT_SHARE = 0.8
 
 @dataclass
 class TextRun:
-    """A stretch of text drawn with one font at one place on the page."""
+    """A stretch of text drawn with one font at one place on the page.
+
+    ``end`` is where the run's last glyph stops, measured from the font's own
+    widths. It is optional because a run can be built without a font to
+    measure against; :mod:`~pytoolbox.pdf.layout` falls back to estimating the
+    extent from the glyph count when it is missing.
+    """
 
     text: str
     x: float
@@ -34,6 +46,7 @@ class TextRun:
     font: str = ""
     bold: bool = False
     italic: bool = False
+    end: Optional[float] = None
 
 
 @dataclass
@@ -60,6 +73,29 @@ class LinkBox:
 
 
 @dataclass
+class RuleBox:
+    """A painted rectangle, in page coordinates.
+
+    Table cells are the reason these are collected. Geometry alone cannot tell
+    a two-column page from a two-column table -- both are text, air, text --
+    but a table is drawn, and a page of prose is not.
+    """
+
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    @property
+    def width(self) -> float:
+        return self.x1 - self.x0
+
+    @property
+    def height(self) -> float:
+        return self.y1 - self.y0
+
+
+@dataclass
 class OutlineEntry:
     """One bookmark. ``level`` is 1-based."""
 
@@ -76,6 +112,7 @@ class Page:
     runs: list[TextRun] = field(default_factory=list)
     images: list[ImageBox] = field(default_factory=list)
     links: list[LinkBox] = field(default_factory=list)
+    rules: list[RuleBox] = field(default_factory=list)
 
     @property
     def scanned(self) -> bool:
@@ -159,6 +196,206 @@ def _page(source: Any, number: int, include_images: bool) -> Page:
         links=_links(source),
     )
 
+    try:
+        page.runs, placements, page.rules = _content(source)
+    except Exception:
+        # The walker reaches into pypdf's layout-mode internals, which are the
+        # only place it exposes a real position per show-text operator. If a
+        # future pypdf moves them, or a page defeats the walker, fall back to
+        # the supported visitor: its positions are coarse -- every run on a
+        # line reports the line's own origin -- but its text is still right.
+        try:
+            page.runs, placements = _visited(source)
+        except Exception as exc:  # pragma: no cover - a damaged page stops that page only
+            raise click.ClickException(f"page {number + 1} could not be read ({exc}).") from exc
+        page.rules = []
+
+    page.images = _images(source, placements, include_images)
+    return page
+
+
+#: A placed XObject: its name and the matrix that placed it.
+Placement = tuple[str, list[float]]
+
+
+#: Operators that put a path on the page, as opposed to clipping or dropping it.
+PAINTING = (b"S", b"s", b"f", b"F", b"f*", b"B", b"B*", b"b", b"b*")
+
+
+def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]]:
+    """Walk the page's content stream, measuring every show-text operator.
+
+    pypdf's own ``extract_text`` cannot answer "where is this word": it never
+    advances the text matrix for the glyphs it draws, so every run on a line
+    reports the line's origin. Without a real x per run there are no columns,
+    no table cells and no way to tell a space from a kern, which is most of
+    what this package needs, so the operators are walked here instead.
+    """
+    from pypdf._text_extraction._layout_mode._fixed_width_page import resolve_font
+    from pypdf._text_extraction._layout_mode._text_state_manager import TextStateManager
+    from pypdf.generic import ContentStream
+
+    runs: list[TextRun] = []
+    placements: list[Placement] = []
+    rules: list[RuleBox] = []
+    pending: list[RuleBox] = []
+    state = TextStateManager()
+
+    def rectangle(operands: Any) -> None:
+        x, y, width, height = (float(value) for value in operands[:4])
+        matrix = state.effective_transform
+        corners = [
+            _apply(matrix, x, y),
+            _apply(matrix, x + width, y),
+            _apply(matrix, x, y + height),
+            _apply(matrix, x + width, y + height),
+        ]
+        xs = [point[0] for point in corners]
+        ys = [point[1] for point in corners]
+        pending.append(RuleBox(min(xs), min(ys), max(xs), max(ys)))
+
+    def show(raw: Any) -> None:
+        if state.font is None:
+            return
+        shown = state.text_state_params(raw)
+        if shown.text:
+            font = str(getattr(shown.font, "name", "") or "")
+            runs.append(
+                TextRun(
+                    text=shown.text,
+                    x=shown.tx,
+                    y=shown.ty,
+                    size=abs(shown.font_height) or abs(float(shown.font_size)),
+                    font=font,
+                    bold=_is_bold(font) or _weighted(shown.font),
+                    italic=_is_italic(font) or _sloped(shown.font),
+                    # A negative advance is a width the font did not supply,
+                    # not a glyph drawn backwards.
+                    end=max(shown.displaced_tx, shown.tx),
+                )
+            )
+        # The whole point of the walk: step past what was just drawn, so the
+        # next operator's position is its own rather than the line's.
+        state.add_trm(shown.displacement_matrix())
+
+    def walk(ops: Any, fonts: dict, resources: Any, end: Optional[bytes], depth: int) -> None:
+        for operands, operator in ops:
+            if operator == end:
+                if operator == b"Q":
+                    state.remove_q()
+                elif operator == b"ET":
+                    state.reset_tm()
+                return
+            if operator == b"q":
+                state.add_q()
+                walk(ops, fonts, resources, b"Q", depth)
+            elif operator == b"BT":
+                walk(ops, fonts, resources, b"ET", depth)
+            elif operator == b"cm":
+                state.add_cm(*operands)
+            elif operator == b"Tf":
+                try:
+                    state.set_font(resolve_font(fonts, operands[0]), float(operands[1]))
+                except Exception:  # pragma: no cover - an unusable font shows no text
+                    continue
+            elif operator in (b"Td", b"TD", b"Tm", b"T*"):
+                state.reset_trm()
+                if operator == b"Tm":
+                    state.reset_tm()
+                elif operator == b"TD":
+                    state.set_state_param(b"TL", -float(operands[1]))
+                elif operator == b"T*":
+                    operands = [0, -state.TL]
+                state.add_tm(list(operands))
+            elif operator == b"Tj":
+                show(operands[0])
+            elif operator == b"'":
+                state.reset_trm()
+                state.add_tm([0, -state.TL])
+                show(operands[0])
+            elif operator == b'"':
+                state.reset_trm()
+                state.set_state_param(b"Tw", operands[0])
+                state.set_state_param(b"Tc", operands[1])
+                state.add_tm([0, -state.TL])
+                show(operands[2])
+            elif operator == b"TJ":
+                for item in operands[0]:
+                    if isinstance(item, bytes):
+                        show(item)
+                    else:
+                        # A TJ number moves the pen back by thousandths of an em.
+                        step = -float(item) / 1000.0 * state.font_size * (state.Tz / 100.0)
+                        state.add_trm([1.0, 0.0, 0.0, 1.0, step, 0.0])
+            elif operator == b"Do" and operands:
+                _do(operands[0], resources, fonts, placements, walk, state, depth)
+            elif operator == b"re" and len(operands) >= 4:
+                rectangle(operands)
+            elif operator in PAINTING:
+                rules.extend(pending)
+                pending.clear()
+            elif operator in (b"n", b"m", b"l", b"c", b"v", b"y", b"h"):
+                # A path that is only clipped, or one built from segments
+                # rather than a rectangle, is not a cell.
+                if operator == b"n":
+                    pending.clear()
+            else:
+                state.set_state_param(operator, operands)
+
+    fonts = source._layout_mode_fonts()
+    stream = ContentStream(source["/Contents"].get_object(), source.pdf, "bytes")
+    walk(iter(stream.operations), fonts, source.get("/Resources"), None, 0)
+    return runs, placements, rules
+
+
+def _apply(matrix: Any, x: float, y: float) -> tuple[float, float]:
+    """A point through a PDF transformation matrix."""
+    a, b, c, d, e, f = (float(value) for value in matrix[:6])
+    return a * x + c * y + e, b * x + d * y + f
+
+
+#: Form XObjects may nest; stop well before a cyclic file exhausts the stack.
+MAX_FORM_DEPTH = 8
+
+
+def _do(name: Any, resources: Any, fonts: dict, placements: list, walk: Any, state: Any, depth: int) -> None:
+    """Draw an XObject: record an image, or walk into a form's own operators."""
+    from pypdf._font import Font
+    from pypdf.generic import ContentStream
+
+    matrix = list(state.effective_transform)
+    try:
+        target = resources["/XObject"][name].get_object() if resources else None
+    except Exception:
+        target = None
+    if target is None or target.get("/Subtype") != "/Form":
+        placements.append((str(name), [float(value) for value in matrix]))
+        return
+    if depth >= MAX_FORM_DEPTH:  # pragma: no cover - only a pathological file nests this deep
+        return
+
+    own = target.get("/Resources")
+    inner = dict(fonts)
+    try:
+        for key, value in (own or {}).get("/Font", {}).items():
+            inner[key] = Font.from_font_resource(value.get_object())
+    except Exception:  # pragma: no cover - a broken font must not lose the text
+        pass
+
+    state.add_q()
+    form_matrix = target.get("/Matrix")
+    if form_matrix:
+        state.add_cm(*[float(value) for value in form_matrix])
+    walk(iter(ContentStream(target, target.indirect_reference.pdf).operations),
+         inner, own or resources, None, depth + 1)
+    state.remove_q()
+
+
+def _visited(source: Any) -> tuple[list[TextRun], list[Placement]]:
+    """Positions from pypdf's supported visitor, used when the walk fails."""
+    runs: list[TextRun] = []
+    placements: list[Placement] = []
+
     def visit_text(text: str, cm: Any, tm: Any, font_dict: Any, font_size: Any) -> None:
         if not text or not text.strip():
             return
@@ -166,7 +403,7 @@ def _page(source: Any, number: int, include_images: bool) -> Page:
         # tm holds the text's own position; cm the enclosing transformation.
         x_scale = float(cm[0]) or 1.0
         y_scale = float(cm[3]) or 1.0
-        page.runs.append(
+        runs.append(
             TextRun(
                 text=text,
                 x=float(tm[4]) * x_scale + float(cm[4]),
@@ -178,19 +415,12 @@ def _page(source: Any, number: int, include_images: bool) -> Page:
             )
         )
 
-    placements: list[tuple[str, list[float]]] = []
-
     def visit_operand(operator: Any, operands: Any, cm: Any, tm: Any) -> None:
         if operator == b"Do" and operands:
             placements.append((str(operands[0]), [float(value) for value in cm]))
 
-    try:
-        source.extract_text(visitor_text=visit_text, visitor_operand_before=visit_operand)
-    except Exception as exc:  # pragma: no cover - a damaged page stops that page only
-        raise click.ClickException(f"page {number + 1} could not be read ({exc}).") from exc
-
-    page.images = _images(source, placements, include_images)
-    return page
+    source.extract_text(visitor_text=visit_text, visitor_operand_before=visit_operand)
+    return runs, placements
 
 
 def _images(
@@ -285,3 +515,34 @@ def _is_bold(font: str) -> bool:
 def _is_italic(font: str) -> bool:
     lowered = font.lower()
     return "italic" in lowered or "oblique" in lowered
+
+
+#: A subset embeds under a name like "ABCDEF+Vazir", which says nothing about
+#: weight. The descriptor does, so it is consulted when the name is silent.
+BOLD_WEIGHT = 600
+
+#: /Flags bit 19 (1-based) is ForceBold; bit 7 is Italic.
+FLAG_ITALIC = 1 << 6
+FLAG_BOLD = 1 << 18
+
+
+def _weighted(font: Any) -> bool:
+    descriptor = getattr(font, "font_descriptor", None)
+    if descriptor is None:
+        return False
+    try:
+        if float(getattr(descriptor, "weight", 0) or 0) >= BOLD_WEIGHT:
+            return True
+    except (TypeError, ValueError):
+        if _is_bold(str(getattr(descriptor, "weight", ""))):
+            return True
+    return bool(int(getattr(descriptor, "flags", 0) or 0) & FLAG_BOLD)
+
+
+def _sloped(font: Any) -> bool:
+    descriptor = getattr(font, "font_descriptor", None)
+    if descriptor is None:
+        return False
+    if float(getattr(descriptor, "italic_angle", 0) or 0):
+        return True
+    return bool(int(getattr(descriptor, "flags", 0) or 0) & FLAG_ITALIC)

@@ -5,8 +5,10 @@ Also available as ``toolbox pdf2md``. Needs the ``pdf2md`` extra for ``pypdf``.
 A PDF stores placed glyphs, not structure -- nothing in the file says
 "heading". Everything above the reader is inference: headings come from the
 outline when the author left one and from font size otherwise, paragraphs are
-reflowed and de-hyphenated, running headers and page numbers are dropped. Each
-rule is chosen to fail towards plain text rather than towards mangled text.
+reflowed and de-hyphenated, running headers and page numbers are dropped,
+tables are read off the cell borders the writer drew, and a Persian or Arabic
+page is put back into reading order. Each rule is chosen to fail towards plain
+text rather than towards mangled text.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from typing import Optional
 import click
 
 from pytoolbox.core.options import CONTEXT_SETTINGS, quiet_option, version_option
-from pytoolbox.pdf import layout, markdown, reader, structure
+from pytoolbox.pdf import layout, markdown, reader, structure, tables
 
 #: Suffix for the directory holding a document's extracted images.
 ASSETS_SUFFIX = ".assets"
@@ -66,13 +68,24 @@ def convert(
             f"ocrmypdf {source} out.pdf"
         )
 
-    per_page = [layout.page_lines(page, single_column) for page in document.pages]
+    base = layout.base_direction(document.pages)
+    # Tables are taken out of the page first: their rows read as two columns to
+    # a gutter search, and their cells as paragraphs to everything after it.
+    found = [tables.find(page, base) for page in document.pages]
+    per_page = [
+        layout.page_lines(page, single_column, base, runs=rest)
+        for page, (_, rest) in zip(document.pages, found)
+    ]
     per_page = layout.drop_furniture(per_page, document.pages)
 
     images = [image for page in document.pages for image in page.images if image.data]
     assets_name = destination.stem + ASSETS_SUFFIX
     blocks = structure.build(
-        document, per_page, include_images=include_images, page_breaks=page_breaks
+        document,
+        per_page,
+        grids=[grids for grids, _ in found],
+        include_images=include_images,
+        page_breaks=page_breaks,
     )
     text = markdown.render(blocks, assets_dir=assets_name if images else None)
 
@@ -162,7 +175,9 @@ def pdf2md_cli(
     \b
     Structure is inferred from the page: headings from the outline or from
     font size, paragraphs reflowed and de-hyphenated, running headers and
-    page numbers dropped. Scanned files are reported, not guessed at.
+    page numbers dropped, tables read off their drawn borders, and Persian,
+    Arabic or Hebrew text put back into reading order. Scanned files are
+    reported, not guessed at.
 
     \b
     Examples:

@@ -155,3 +155,35 @@ def test_a_file_that_is_not_a_pdf_is_rejected(tmp_path):
         reader.read(path)
 
     assert "not a PDF" in str(excinfo.value)
+
+
+def test_each_run_reports_where_it_stops(tmp_path):
+    path = write_pdf(tmp_path / "a.pdf", [[text(72, 700, 12, "Quarterly")]])
+
+    run = reader.read(path).pages[0].runs[0]
+
+    assert run.end is not None
+    assert run.end > run.x
+
+
+def test_runs_on_one_line_report_their_own_positions(tmp_path):
+    # Everything geometric downstream needs this. pypdf's own extraction
+    # reports the line's origin for every run drawn after the first.
+    path = write_pdf(tmp_path / "a.pdf", [[text(72, 700, 12, "Left"), text(300, 700, 12, "Right")]])
+
+    runs = {run.text: run for run in reader.read(path).pages[0].runs}
+
+    assert runs["Left"].x == pytest.approx(72, abs=1)
+    assert runs["Right"].x == pytest.approx(300, abs=1)
+
+
+def test_painted_rectangles_are_reported(tmp_path):
+    from tests.pdf_fixtures import rule
+
+    path = write_pdf(tmp_path / "a.pdf", [[rule(100, 200, 50, 20), text(72, 700, 12, "x")]])
+
+    rules = reader.read(path).pages[0].rules
+
+    assert len(rules) == 1
+    assert (rules[0].x0, rules[0].y0) == pytest.approx((100, 200))
+    assert (rules[0].width, rules[0].height) == pytest.approx((50, 20))

@@ -40,8 +40,10 @@ dependencies = [
 pdf = ["fpdf2>=2.7", "Pillow>=9.0"]
 # Persian/Arabic shaping and bidi reordering for pymd2pdf.
 rtl = ["arabic-reshaper>=3.0", "python-bidi>=0.4"]
-# PDF to Markdown.
-pdf2md = ["pypdf>=4.0"]
+# PDF to Markdown. python-bidi puts a Persian or Arabic page back into reading
+# order; without it those documents still convert, but stay in the order the
+# glyphs were painted in.
+pdf2md = ["pypdf>=4.0", "python-bidi>=0.4"]
 # Excel export for pytime reports.
 excel = ["openpyxl>=3.0"]
 # SOCKS support so pyssh can verify a tunnel really works.

@@ -4,15 +4,23 @@ The rules here are geometric and deliberately conservative: a page that does
 not split cleanly into columns is left in plain reading order, because
 half-detected columns interleave real sentences, which is worse than not
 detecting them at all.
+
+A line arrives as glyphs in paint order and leaves as text in reading order.
+For a left-to-right page those are the same thing; for a Persian or Arabic one
+they are not, and :mod:`~pytoolbox.pdf.text` does the reversing. The runs
+themselves stay in paint order throughout, because that is the order their
+positions are in and every geometric rule below reads positions.
 """
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from statistics import median
 from typing import Optional
 
+from pytoolbox.pdf import text as bidi_text
 from pytoolbox.pdf.reader import Page, TextRun
 
 #: Baselines within this fraction of the font size are the same line.
@@ -21,8 +29,15 @@ BASELINE_TOLERANCE = 0.4
 #: A horizontal gap wider than this fraction of the font size is a space.
 SPACE_GAP = 0.25
 
+#: And one wider than this is not a space at all but a jump to the next cell.
+CELL_GAP = 1.2
+
 #: Average glyph width as a fraction of the font size, for estimating extents.
 GLYPH_WIDTH = 0.5
+
+#: A run this much of whose width lands on its neighbour was drawn on top of
+#: it, and so took no room of its own: a vowel mark, or a non-joiner's space.
+DRAWN_OVER = 0.8
 
 #: A gutter must be at least this fraction of the page wide.
 MIN_GUTTER = 0.02
@@ -52,14 +67,43 @@ _DIGITS = re.compile(r"\d+")
 
 @dataclass
 class Line:
-    """Runs sharing a baseline, in reading order."""
+    """Runs sharing a baseline, kept in paint order.
+
+    ``base`` is the direction this line's own text reads in and decides the
+    order its runs are stitched together in. ``flow`` is the direction the
+    page runs in and decides which edge is the start of a line, which is not
+    the same question: a Latin caption inside a Persian table still hangs off
+    the right margin, and reading its own three words left to right does not
+    move it.
+    """
 
     runs: list[TextRun] = field(default_factory=list)
     page: int = 0
+    base: str = "L"
+    flow: str = "L"
+    _parts: Optional[list[tuple[TextRun, str]]] = field(
+        default=None, repr=False, compare=False
+    )
+
+    @property
+    def parts(self) -> list[tuple[TextRun, str]]:
+        """Each run with the text it contributes, in reading order.
+
+        Pairing text back to its run is what keeps bold, italic and links
+        attached to exactly their own characters once the line has been
+        reordered.
+        """
+        if self._parts is None:
+            self._parts = _stitch(self.runs, self.base)
+        return self._parts
 
     @property
     def text(self) -> str:
-        return _join(self.runs)
+        return "".join(text for _, text in self.parts).strip()
+
+    @property
+    def rtl(self) -> bool:
+        return self.flow == "R"
 
     @property
     def x0(self) -> float:
@@ -67,8 +111,17 @@ class Line:
 
     @property
     def x1(self) -> float:
-        # A run carries no width, so estimate it from the glyph count.
-        return max(run.x + GLYPH_WIDTH * run.size * len(run.text) for run in self.runs)
+        return max(_end(run) for run in self.runs)
+
+    @property
+    def start(self) -> float:
+        """The edge the line begins at, whichever way it is read."""
+        return self.x1 if self.rtl else self.x0
+
+    @property
+    def stop(self) -> float:
+        """The edge the line ends at, whichever way it is read."""
+        return self.x0 if self.rtl else self.x1
 
     @property
     def y(self) -> float:
@@ -89,43 +142,198 @@ class Line:
         return bool(visible) and all(run.italic for run in visible)
 
 
-def _join(runs: list[TextRun]) -> str:
-    """Concatenate runs, inserting a space only where the gap implies one."""
+def _stitch(runs: list[TextRun], base: str) -> list[tuple[TextRun, str]]:
+    """Painted runs to reading-order text, styling still attached.
+
+    Runs are reordered in blocks rather than one at a time: reordering is what
+    moves a run's characters elsewhere in the line, and a block that is bold
+    throughout stays bold wherever it lands. A block ends where the styling
+    changes or where a gap wide enough to be a space falls, so the spaces
+    themselves stay between the same two neighbours after the reversal.
+    """
     if not runs:
-        return ""
-    parts = [runs[0].text]
-    for previous, current in zip(runs, runs[1:]):
-        end = previous.x + GLYPH_WIDTH * previous.size * len(previous.text)
-        gap = current.x - end
-        if gap > SPACE_GAP * max(previous.size, current.size) and not parts[-1].endswith(" "):
-            parts.append(" ")
-        parts.append(current.text)
-    return "".join(parts).strip()
+        return []
+
+    runs = _marks_first(runs, base)
+    blocks: list[list[tuple[TextRun, str]]] = []
+    # A separator block is finished the moment it opens: text may not join it,
+    # or the space would drift to the far end of its neighbour on reversal.
+    separator: list[bool] = []
+
+    reach = _end(runs[0])
+    for index, run in enumerate(runs):
+        following = runs[index + 1] if index + 1 < len(runs) else None
+        piece = _piece(runs[index - 1] if index else None, run, following)
+        if piece is not None:
+            if blocks and not separator[-1] and _same_style(blocks[-1][0][0], run):
+                blocks[-1].append((run, piece))
+            else:
+                blocks.append([(run, piece)])
+                separator.append(False)
+        reach = max(reach, _end(run))
+        if following is not None and _spaced(run, following, reach):
+            blocks.append([(run, " ")])
+            separator.append(True)
+
+    ordered = list(reversed(blocks)) if base == "R" else blocks
+    out: list[tuple[TextRun, str]] = []
+    for block in ordered:
+        restored = bidi_text.restore("".join(text for _, text in block), base)
+        if restored:
+            out.append((block[0][0], restored))
+    return out
 
 
-def to_lines(runs: list[TextRun], page: int = 0) -> list[Line]:
-    """Group runs sharing a baseline, ordered top to bottom then left to right."""
-    lines: list[Line] = []
+def _marks_first(runs: list[TextRun], base: str) -> list[TextRun]:
+    """Move a run drawn *over* its neighbour in front of it.
+
+    Two things are drawn this way and neither takes any room: a vowel mark,
+    painted on top of its letter, and the space some writers draw where a
+    non-joiner belongs. Which side of the letter the writer drew it on says
+    nothing -- the writers tested disagree -- but which letter it is drawn over
+    says everything, and putting it first is what survives the reversal a
+    right-to-left line is about to go through.
+    """
+    if base != "R":
+        return runs
+    ordered = list(runs)
+    for index in range(1, len(ordered)):
+        drawn = ordered[index]
+        before = ordered[index - 1]
+        after = ordered[index + 1] if index + 1 < len(ordered) else None
+        # Whichever neighbour it is drawn further over is the one it belongs
+        # to. Something already sitting in front of its letter overlaps the
+        # run after it, and moving that would hand it to the word before.
+        if _mark_only(drawn):
+            moves = _covered(drawn, before) > _covered(drawn, after)
+        elif not drawn.text.strip():
+            # A space needs the stricter test: kerning laps one letter a little
+            # way over the next, and a space next to a kerned pair would look
+            # drawn-over on the strength of that alone.
+            moves = _over(drawn, before) and not _over(drawn, after)
+        else:
+            continue
+        if moves:
+            ordered[index - 1], ordered[index] = drawn, before
+    return ordered
+
+
+def _covered(run: TextRun, other: Optional[TextRun]) -> float:
+    """How much of ``run``'s width is drawn over ``other``."""
+    if other is None:
+        return 0.0
+    return max(0.0, min(_end(run), _end(other)) - max(run.x, other.x))
+
+
+def _mark_only(run: TextRun) -> bool:
+    return bool(run.text) and all(unicodedata.combining(char) for char in run.text)
+
+
+def _same_style(one: TextRun, other: TextRun) -> bool:
+    return one.bold == other.bold and one.italic == other.italic
+
+
+def _piece(previous: Optional[TextRun], run: TextRun, following: Optional[TextRun]) -> Optional[str]:
+    """The characters ``run`` contributes, or None when it draws nothing.
+
+    A space drawn on top of the letter after it never took any room on the
+    page, so it was not a space: it is where a non-joiner used to be.
+    """
+    if run.text.strip():
+        return run.text
+    if _over(run, following):
+        return bidi_text.MARK if _between_letters(previous, following) else None
+    return run.text
+
+
+def _over(run: TextRun, other: Optional[TextRun]) -> bool:
+    """True when ``run`` is drawn almost entirely on top of ``other``."""
+    width = _end(run) - run.x
+    if other is None or width <= 0:
+        return False
+    return _covered(run, other) > DRAWN_OVER * width
+
+
+def _between_letters(previous: Optional[TextRun], following: Optional[TextRun]) -> bool:
+    """True when both neighbours are Arabic, the only script with joiners."""
+    before = previous.text.strip()[-1:] if previous is not None else ""
+    after = following.text.strip()[:1] if following is not None else ""
+    return bool(before) and bool(after) and all(
+        unicodedata.bidirectional(char) == "AL" for char in (before, after)
+    )
+
+
+def _spaced(previous: TextRun, current: TextRun, reach: float) -> bool:
+    """True when the gap before ``current`` is wide enough to be a space.
+
+    The gap is measured from the furthest point drawn so far, not from the run
+    just before it. A vowel mark or a non-joiner takes no room and leaves the
+    pen where it was, and measuring from one of those would put a space in the
+    middle of a word.
+    """
+    if previous.text.endswith(" ") or current.text.startswith(" "):
+        return False
+    return current.x - reach > SPACE_GAP * max(previous.size, current.size)
+
+
+def baselines(runs: list[TextRun]) -> list[list[TextRun]]:
+    """Runs grouped by the baseline they sit on, each group left to right."""
+    groups: list[list[TextRun]] = []
     for run in sorted(runs, key=lambda item: (-item.y, item.x)):
-        target: Optional[Line] = None
-        for line in lines:
-            tolerance = BASELINE_TOLERANCE * max(line.size, run.size, 1.0)
-            if abs(line.runs[0].y - run.y) <= tolerance:
-                target = line
+        target: Optional[list[TextRun]] = None
+        for group in groups:
+            size = max(item.size for item in group)
+            if abs(group[0].y - run.y) <= BASELINE_TOLERANCE * max(size, run.size, 1.0):
+                target = group
                 break
         if target is None:
-            lines.append(Line(runs=[run], page=page))
+            groups.append([run])
         else:
-            target.runs.append(run)
+            target.append(run)
+    for group in groups:
+        # Runs that share an origin keep the order they were drawn in; which
+        # of them comes first is settled later, by what each is drawn over.
+        group.sort(key=lambda item: item.x)
+    return groups
 
+
+def cells(runs: list[TextRun]) -> list[list[TextRun]]:
+    """One baseline's runs split where a gap is too wide to be a space.
+
+    A space between words is about a quarter of the font size; the space
+    between two table cells is several times that. Nothing here decides that
+    the line *is* a table row -- only that it has more than one piece, which
+    is what :mod:`~pytoolbox.pdf.tables` needs to look for a pattern in.
+    """
+    groups: list[list[TextRun]] = []
+    for run in runs:
+        if groups and run.x - _end(groups[-1][-1]) <= CELL_GAP * max(run.size, 1.0):
+            groups[-1].append(run)
+        else:
+            groups.append([run])
+    return groups
+
+
+def to_lines(runs: list[TextRun], page: int = 0, base: Optional[str] = None) -> list[Line]:
+    """Group runs sharing a baseline, ordered top to bottom then left to right."""
+    lines = [Line(runs=group, page=page) for group in baselines(runs)]
     for line in lines:
-        line.runs.sort(key=lambda item: item.x)
+        line.base = bidi_text.direction("".join(run.text for run in line.runs), base) or "L"
+        line.flow = base or line.base
     lines.sort(key=lambda line: (-line.y, line.x0))
     return lines
 
 
+def base_direction(pages: list[Page]) -> str:
+    """The direction most of the document's letters are written in."""
+    sample = "".join(run.text for page in pages for run in page.runs)
+    return bidi_text.dominant(sample) or "L"
+
+
 def _end(run: TextRun) -> float:
-    """Where a run stops, estimated from its glyph count."""
+    """Where a run stops: measured if the reader could, estimated otherwise."""
+    if run.end is not None:
+        return run.end
     return run.x + GLYPH_WIDTH * run.size * len(run.text)
 
 
@@ -155,6 +363,17 @@ def split_columns(runs: list[TextRun], width: float) -> list[list[TextRun]]:
     return groups
 
 
+def _columns(runs: list[TextRun], width: float, base: str) -> list[list[TextRun]]:
+    """Columns in reading order, which on a right-to-left page starts right."""
+    groups = split_columns(runs, width)
+    if base == "R" and len(groups) > 1:
+        # Only the columns swap. A run spanning both still comes first.
+        head = groups[:-2]
+        head.extend(reversed(groups[-2:]))
+        return head
+    return groups
+
+
 def _gutter(runs: list[TextRun], width: float) -> Optional[float]:
     """The x of a vertical whitespace gutter, if the page has a clean one."""
     if len(runs) < 4 or width <= 0:
@@ -167,7 +386,16 @@ def _gutter(runs: list[TextRun], width: float) -> Optional[float]:
     right = [run for run in runs if run.x >= candidate]
     if not left or not right:
         return None
-    if (len(left) + len(right)) / len(runs) < MIN_COLUMN_SHARE:
+    # Counted by line, not by run. A table row leaves the middle clear exactly
+    # as a two-column page does, but it also puts two or three runs on every
+    # baseline, so counting runs lets one table outvote a page of prose.
+    groups = baselines(runs)
+    clear = sum(
+        1
+        for group in groups
+        if all(_end(run) <= candidate or run.x >= candidate for run in group)
+    )
+    if clear / len(groups) < MIN_COLUMN_SHARE:
         return None
     if min(run.x for run in right) - max(_end(run) for run in left) < MIN_GUTTER * width:
         return None
@@ -177,13 +405,23 @@ def _gutter(runs: list[TextRun], width: float) -> Optional[float]:
     return candidate
 
 
-def page_lines(page: Page, single_column: bool = False) -> list[Line]:
-    """Every line on ``page``, in reading order."""
+def page_lines(
+    page: Page,
+    single_column: bool = False,
+    base: Optional[str] = None,
+    runs: Optional[list[TextRun]] = None,
+) -> list[Line]:
+    """Every line on ``page``, in reading order.
+
+    ``runs`` narrows the page to a subset, which is how the runs a table has
+    already claimed are kept out of the running text.
+    """
+    source = page.runs if runs is None else runs
     if single_column:
-        return to_lines(page.runs, page.number)
+        return to_lines(source, page.number, base)
     lines: list[Line] = []
-    for column in split_columns(page.runs, page.width):
-        lines.extend(to_lines(column, page.number))
+    for column in _columns(source, page.width, base or "L"):
+        lines.extend(to_lines(column, page.number, base))
     return lines
 
 

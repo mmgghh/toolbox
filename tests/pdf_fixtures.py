@@ -36,6 +36,11 @@ def link(x0: float, y0: float, x1: float, y1: float, uri: str) -> Item:
     return ("link", x0, y0, x1, y1, uri)
 
 
+def rule(x: float, y: float, width: float, height: float) -> Item:
+    """Stroke a rectangle, the way a table's cell borders are drawn."""
+    return ("rule", x, y, width, height, None)
+
+
 #: Raw RGB samples for a 4x4 image -- the smallest thing worth extracting.
 _PIXELS = zlib.compress(bytes([200, 30, 30] * 16))
 
@@ -151,6 +156,9 @@ def _page(
             )
             xobjects.append((name, number))
             parts.append(f"q {item_width} 0 0 {item_height} {x} {y} cm /{name} Do Q")
+        elif kind == "rule":
+            _, x, y, item_width, item_height, _ = item
+            parts.append(f"{x} {y} {item_width} {item_height} re S")
         elif kind == "link":
             _, x0, y0, x1, y1, uri = item
             annotations.append(

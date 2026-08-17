@@ -7,6 +7,30 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pypdf2md` reads tables.** A PDF has no idea what a table is, and position
+  alone cannot tell one from a two-column page — both are text, a band of air,
+  then more text, lined up down the page. But a table is *drawn*, so the grid
+  is now read off the rectangles the writer painted, which also settles where
+  an empty cell was and which lines belong to a cell that wrapped. Cells come
+  out as a GitHub-flavoured Markdown table, right-aligned for a right-to-left
+  document, and a table split over a page break is sewn back together by its
+  repeated header. A table nobody drew a border for is still read as running
+  text, which is the old behaviour: no table is invented from spacing alone.
+
+- **`pypdf2md` reads Persian, Arabic and Hebrew in the right order.** A PDF
+  stores glyphs in the order they are painted, which for these scripts is the
+  order they appear on the page, not the order they are read in. Everything
+  after the reader now works from that assumption: the bidirectional algorithm
+  is run in reverse to recover reading order, shaped presentation forms
+  (`ﻣ`, `ﯽ`) fold back to the letters someone can search for (`م`, `ی`), and
+  the zero-width non-joiners that make `می‌شود` a different word from `میشود`
+  are put back — recovered from the unjoined shapes the letters kept, or from
+  a space the writer drew but never advanced past. Vowel marks are returned to
+  the letters they sit on, headings and lists are measured from the margin the
+  text starts at rather than always from the left, and a table's first column
+  is the rightmost one. Needs `python-bidi`, now part of the `pdf2md` extra;
+  without it those documents still convert, but stay in painted order.
+
 - **`pymd2pdf` draws glyphs its main font lacks instead of dropping them.**
   Vazir has no arrows, maths symbols or emoji, so a Persian document full of
   `⚠ ↔ ✗ ✅ 🔴` printed a wall of *"Font Vazir is missing the following
@@ -29,6 +53,22 @@ This project follows [Semantic Versioning](https://semver.org/).
   reported as missing.
 
 ### Fixed
+
+- **`pypdf2md` had no real position for any word but the first on a line.**
+  pypdf's text extraction never advances the text matrix for the glyphs it
+  draws, so every run on a line reported the line's own origin — and some
+  reported (0, 0). Every geometric rule in the package reads positions, so
+  columns, paragraph breaks, indentation and the difference between a space
+  and a kern were all being decided from coordinates that did not exist. The
+  page's content stream is now walked directly, measuring each run against the
+  font's own widths, and each run also reports where it stops. pypdf's
+  supported visitor stays as a fallback if that walk ever fails.
+
+  The same extraction was also mangling Persian on its own account: it treats
+  Arabic-Indic digits as right-to-left, so `۲۵ مرداد ۱۴۰۵` came back as
+  `۵۲ ﻣﺮﺩﺍﺩ ۵۰۴۱`, and it emitted direction changes as separate fragments that
+  were then concatenated in painted order. Text now comes out of the reader
+  untouched, in painted order, and is reordered once, properly.
 
 - **`pymd2pdf` printed raw Markdown inside table cells.** fpdf2's own markdown
   parser understands `**bold**` but not links, so a cell holding

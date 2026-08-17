@@ -234,3 +234,114 @@ def test_a_header_that_drifts_down_the_page_is_kept():
     cleaned = drop_furniture(per_page, pages)
 
     assert all(len(page) == 2 for page in cleaned)
+
+
+def test_a_measured_run_uses_its_own_extent_for_the_gap():
+    # The reader measures where a run stops; without that the extent is
+    # estimated from the glyph count, which a table's gaps do not survive.
+    tight = to_lines([run("Name", 72, 700, end=100), run("Status", 101, 700)])[0]
+    apart = to_lines([run("Name", 72, 700, end=100), run("Status", 300, 700)])[0]
+
+    assert tight.text == "NameStatus"
+    assert apart.text == "Name Status"
+
+
+def _persian_page(runs):
+    return Page(number=0, width=612.0, height=792.0, runs=list(runs))
+
+
+def test_a_right_to_left_line_reads_from_the_right():
+    # Painted left to right, as a PDF records it; read right to left.
+    lines = to_lines(
+        [run("BRD", 72, 700, end=100), run("ﯼﺪﯿﻠﮐ", 110, 700, end=160)],
+        base="R",
+    )
+
+    assert lines[0].text == "کلیدی BRD"
+
+
+def test_a_right_to_left_line_starts_at_its_right_edge():
+    line = to_lines([run("ﻢﻠﻋ", 72, 700, end=160)], base="R")[0]
+
+    assert line.rtl
+    assert line.start == 160
+    assert line.stop == 72
+
+
+def test_a_page_direction_overrides_a_line_of_latin_inside_it():
+    # The line's own text reads left to right, but it still hangs off the
+    # right margin, so the geometry rules must treat it as right-to-left.
+    line = to_lines([run("AB-27", 72, 700, end=160)], base="R")[0]
+
+    assert line.base == "L"
+    assert line.rtl
+
+
+def test_a_space_that_takes_no_room_is_a_non_joiner():
+    # A writer marking a non-joiner draws a space and does not advance past
+    # it, so the next letter starts back where the space did.
+    lines = to_lines(
+        [
+            run("ﯼﺎﻫ", 72, 700, end=100),
+            run(" ", 100, 700, end=105),
+            run("ﺶﺳﺮﭘ", 100, 700, end=140),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "پرسش‌های"
+
+
+def test_a_real_space_between_words_is_kept():
+    lines = to_lines(
+        [
+            run("ﺪﻨﺳ", 72, 700, end=100),
+            run(" ", 100, 700, end=105),
+            run("ﻦﯾﺍ", 105, 700, end=140),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "این سند"
+
+
+def test_a_table_row_does_not_read_as_two_columns():
+    # Text, air, text on every line is what a table row looks like and what
+    # two columns look like; a page that is mostly running text is neither.
+    runs = [run(f"a paragraph line {i}", 72, 700 - i * 12, end=540) for i in range(8)]
+    for i in range(4):
+        runs.append(run(f"label{i}", 72, 560 - i * 12, end=140))
+        runs.append(run(f"value{i}", 330, 560 - i * 12, end=400))
+
+    lines = page_lines(_page_of(runs))
+
+    assert lines[8].text == "label0 value0"
+
+
+def test_a_vowel_mark_stays_on_the_letter_it_was_drawn_over():
+    # The mark is painted on top of its letter and takes no width, so where
+    # the writer put it in the stream says nothing and where it sits says all.
+    lines = to_lines(
+        [
+            run("ﺎﻓﺮﺻ", 72, 700, end=100),
+            run("ً", 96, 700, end=102),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "صرفاً"
+
+
+def test_a_space_beside_a_kerned_pair_is_still_a_space():
+    # Kerning laps one letter a little over the next; that is not a letter
+    # drawn on top of another, and the space between words must survive it.
+    lines = to_lines(
+        [
+            run("ﺪﻨﺳ", 72, 700, end=100),
+            run(" ", 99, 700, end=104),
+            run("ﻦﯾﺍ", 104, 700, end=140),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "این سند"

@@ -242,3 +242,60 @@ def test_a_mailto_link_is_kept():
     blocks = build(document(page), [[line("email us", 700)]])
 
     assert blocks[0].runs[0].link == "mailto:someone@example.com"
+
+
+def rtl_line(text, y, size=10.0, x=72.0, x1=None, page=0, **kwargs):
+    run = TextRun(text=text, x=x, y=y, size=size, end=x1 if x1 is not None else x + 200, **kwargs)
+    return Line(runs=[run], page=page, base="R", flow="R")
+
+
+def test_a_wrapped_list_item_stays_one_item():
+    lines = [
+        line("- The first point, which runs on past the end of its line and", 700),
+        line("carries on here.", 688),
+        line("- The second point.", 676),
+    ]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [type(block) for block in blocks] == [ListItem, ListItem]
+    assert blocks[0].runs[-1].text.endswith("carries on here.")
+
+
+def test_a_list_item_does_not_swallow_the_paragraph_after_a_gap():
+    lines = [line(f"Body line {i}.", 760 - i * 12) for i in range(5)]
+    lines += [
+        line("- The only point.", 700),
+        line("A new paragraph, well clear of the list above it.", 660),
+    ]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [type(block) for block in blocks] == [Paragraph, ListItem, Paragraph]
+
+
+def test_a_heading_too_long_for_one_line_stays_one_heading():
+    lines = [
+        line("A Title That Did Not Fit On", 740, size=24),
+        line("One Single Line", 716, size=24),
+    ]
+    lines += [line(f"Body line {i}.", 690 - i * 12) for i in range(4)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [type(block) for block in blocks] == [Heading, Paragraph]
+    assert blocks[0].runs[-1].text.endswith("One Single Line")
+
+
+def test_a_right_to_left_paragraph_breaks_on_its_own_ragged_edge():
+    # The short line is short at the left, which is where a Persian
+    # paragraph's last line stops.
+    lines = [
+        rtl_line("first line", 700, x=72, x1=500),
+        rtl_line("short last", 688, x=400, x1=500),
+        rtl_line("next paragraph", 676, x=72, x1=500),
+    ]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert len(blocks) == 2

@@ -35,6 +35,8 @@ paragraph, which is the outcome that loses the least.
 | An embedded image | `![](<name>.assets/imageN.png)` |
 | A running header, footer or page number | Dropped |
 | Two columns on a page | Read down one column, then the other |
+| A ruled grid of cells | A Markdown table |
+| Persian, Arabic or Hebrew text | Put back into reading order |
 
 Headings come from the **outline first**. A bookmark is the author's own
 statement of structure, so it beats anything geometry could suggest; font size
@@ -59,6 +61,65 @@ page is read as one column, because a half-detected split interleaves real
 sentences. `--single-column` skips detection entirely for a page it still gets
 wrong.
 
+## Tables
+
+A PDF has no idea what a table is, and position alone cannot tell one from a
+two-column page: both are text, a band of air, then more text, holding their
+edges down the page. The difference is that a table is **drawn**, so the grid
+is read off the rectangles the writer painted — the cell boxes one writer
+fills, or the hairline borders another strokes. Both are read as the lines they
+look like on the page.
+
+Working from the grid rather than from the gaps settles the awkward cases for
+free, because each is a question about the grid and the grid is known: an empty
+cell, a cell whose text wrapped over three lines, a cell merged across two
+columns. A table split by a page break is sewn back together when the second
+half opens with the first's header, which is how a printed table says it is
+continued.
+
+Cells are read with the paragraph and list rules but not the heading ones: a
+header cell is bold and short, which is exactly the shape of a heading. Markdown
+has no row spans and no line breaks inside a cell, so a wrapped cell is put back
+on one line and the top row becomes the header whether or not it was one.
+
+A table nobody drew a border around is read as running text. Inferring one from
+spacing is the least reliable guess available, and a wrong guess destroys
+content that would otherwise have survived as plain lines.
+
+## Right-to-left documents
+
+A PDF stores glyphs in the order they are painted. For Persian, Arabic or
+Hebrew that is the order they appear **on the page**, not the order they are
+read in: the writer already ran the bidirectional algorithm and stored the
+result. Three things are undone, in this order, because each needs what the
+one before it leaves behind:
+
+1. **Reading order.** Running the bidirectional algorithm over visual text is
+   very nearly its own inverse, so it is what puts the words back. It cannot be
+   exactly its own inverse — `(۲۰۲۶-۰۸-۱۶)` and `(۱۶-۰۸-۲۰۲۶)` render
+   identically in a right-to-left paragraph — so where the page is genuinely
+   ambiguous, the page's own reading wins.
+2. **Zero-width non-joiners.** `می‌شود` and `میشود` are different words and the
+   joiner between them has no glyph, but it leaves a trace: the letter before
+   it keeps its unjoined shape. Where a writer draws a space for it instead,
+   that space takes no room on the page, which is the other way it is spotted.
+3. **Presentation forms.** Only then are the shaped glyphs (`ﻣ`, `ﯽ`) folded
+   back to the letters someone can search for (`م`, `ی`).
+
+Vowel marks are returned to the letters they sit on — whichever neighbour a
+mark is drawn further over is its letter — and the geometric rules measure from
+the margin the text starts at rather than always from the left, so a Persian
+list nests towards the left and a table's first column is the rightmost one.
+
+The line's own direction and the page's are kept apart. A Persian sentence
+quoting two English terms has more Latin letters in it than Persian ones and is
+still a Persian sentence, so the document's direction stands unless a line holds
+nothing of it at all; and a line of Latin inside a Persian table still hangs off
+the right margin, which is what the paragraph and indent rules read.
+
+This needs `python-bidi`, part of the `pdf2md` extra. Without it a right-to-left
+document still converts, but stays in painted order.
+
 ## Options
 
 | Option | Meaning |
@@ -78,10 +139,15 @@ stderr and the rest still convert, with a non-zero exit code at the end.
 
 ## Limits
 
-- **Tables are not reconstructed.** Inferring one from column-aligned text is
-  the least reliable guess available, and a wrong guess destroys content that
-  would otherwise have survived intact as plain lines. A table's cells come
-  through as ordinary text.
+- **Only ruled tables are found.** A table drawn with no borders at all is read
+  as running text; see [Tables](#tables).
+- **Bidirectional text is not always recoverable.** A date, or a run of Latin
+  terms separated by commas inside a Persian sentence, can be laid out
+  identically from more than one source ordering. The page's own reading is
+  what comes back.
+- **A list marker drawn as a shape is lost.** Some writers paint bullets as
+  filled circles rather than text, and a marker that is not in the text layer
+  cannot be read; those items come through as paragraphs.
 - **Scanned pages are reported, not read.** There is no OCR. A file whose pages
   are images gets an error naming `ocrmypdf`; a document with only a few such
   pages converts, with a warning.

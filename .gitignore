@@ -144,6 +144,7 @@ dmypy.json
 # local scratch: sample documents and sketches, not part of the package
 pytoolbox/temp_data/
 pytoolbox/tmp_*.py
+tests/temp/
 
 # local agent planning docs, not part of the package
 docs/superpowers/

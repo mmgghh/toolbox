@@ -60,7 +60,7 @@ installs anywhere without a compiler. Add what you need:
 | Extra   | Adds                              | Needed for                              |
 | ------- | --------------------------------- | --------------------------------------- |
 | `pdf`   | `fpdf2`, `Pillow`                 | `pymd2pdf`                              |
-| `pdf2md`| `pypdf`                           | `pypdf2md`                              |
+| `pdf2md`| `pypdf`, `python-bidi`            | `pypdf2md`                              |
 | `rtl`   | `arabic-reshaper`, `python-bidi`  | Persian/Arabic shaping in `pymd2pdf`    |
 | `excel` | `openpyxl`                        | `pytime report --format excel`          |
 | `socks` | `requests[socks]`                 | `pyssh --reconnect` proxy health checks |
