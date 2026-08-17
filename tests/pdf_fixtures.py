@@ -41,6 +41,15 @@ def rule(x: float, y: float, width: float, height: float) -> Item:
     return ("rule", x, y, width, height, None)
 
 
+def kerned(x: float, y: float, size: float, body: str, spacing: float, font: str = "") -> Item:
+    """Draw ``body`` inside q/Q with a character spacing set.
+
+    Word does this to squeeze a justified line. The spacing belongs to the
+    graphics state, so Q must put back whatever it was before.
+    """
+    return ("kerned", x, y, size, body, font, spacing)
+
+
 #: Raw RGB samples for a 4x4 image -- the smallest thing worth extracting.
 _PIXELS = zlib.compress(bytes([200, 30, 30] * 16))
 
@@ -156,6 +165,13 @@ def _page(
             )
             xobjects.append((name, number))
             parts.append(f"q {item_width} 0 0 {item_height} {x} {y} cm /{name} Do Q")
+        elif kind == "kerned":
+            _, x, y, size, body, suffix, spacing = item
+            escaped = body.replace("\\", r"\\").replace("(", r"\(").replace(")", r"\)")
+            name = f"F{list(FONTS).index(suffix)}"
+            parts.append(
+                f"q BT /{name} {size} Tf {spacing} Tc 1 0 0 1 {x} {y} Tm ({escaped}) Tj ET Q"
+            )
         elif kind == "rule":
             _, x, y, item_width, item_height, _ = item
             parts.append(f"{x} {y} {item_width} {item_height} re S")

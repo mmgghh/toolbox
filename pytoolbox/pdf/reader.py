@@ -13,6 +13,7 @@ is written, so putting the words back in reading order is
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -262,7 +263,7 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
             font = str(getattr(shown.font, "name", "") or "")
             runs.append(
                 TextRun(
-                    text=shown.text,
+                    text=_ligatures(shown),
                     x=shown.tx,
                     y=shown.ty,
                     size=abs(shown.font_height) or abs(float(shown.font_size)),
@@ -288,7 +289,9 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
                 return
             if operator == b"q":
                 state.add_q()
+                spacing = _spacing(state)
                 walk(ops, fonts, resources, b"Q", depth)
+                _respace(state, spacing)
             elif operator == b"BT":
                 walk(ops, fonts, resources, b"ET", depth)
             elif operator == b"cm":
@@ -348,10 +351,60 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
     return runs, placements, rules
 
 
+#: Bidirectional classes whose letters are painted right to left.
+_ARABIC = ("AL", "R")
+
+
+def _ligatures(shown: Any) -> str:
+    """The run's text, with multi-letter glyphs turned to face the same way.
+
+    One glyph can stand for several letters -- ``لا`` is drawn as a single
+    shape -- and the file says which letters those are, in *reading* order.
+    Everything around them is in paint order, so a ligature dropped in as-is
+    is the one piece of the line already the right way round, and comes out
+    backwards once the line is reversed. Turning it here costs nothing and
+    means nothing downstream has to know which glyph it came from.
+
+    Only Arabic ligatures are turned. A Latin one is in a line that will not
+    be reversed at all, so it is already right.
+    """
+    codes = getattr(shown, "_decoded_value", "")
+    mapping = getattr(shown.font, "character_map", None)
+    if not codes or not mapping:
+        return shown.text
+
+    pieces: list[str] = []
+    ligature = False
+    for code in codes:
+        letters = mapping.get(code, code)
+        if len(letters) > 1 and all(unicodedata.bidirectional(one) in _ARABIC for one in letters):
+            letters = letters[::-1]
+            ligature = True
+        pieces.append(letters)
+    return "".join(pieces) if ligature else shown.text
+
+
 def _apply(matrix: Any, x: float, y: float) -> tuple[float, float]:
     """A point through a PDF transformation matrix."""
     a, b, c, d, e, f = (float(value) for value in matrix[:6])
     return a * x + c * y + e, b * x + d * y + f
+
+
+#: Text state parameters that "q" saves and "Q" puts back, like any other part
+#: of the graphics state. pypdf's own stack keeps the fonts and the matrices
+#: but not these, and one line of justified text setting a character spacing of
+#: -2.9 points would otherwise go on squeezing every line after it -- which
+#: leaves each run's measured width short, and the page in the wrong order.
+SPACING = ("Tc", "Tw", "Tz", "TL", "Ts")
+
+
+def _spacing(state: Any) -> tuple:
+    return tuple(getattr(state, name) for name in SPACING)
+
+
+def _respace(state: Any, saved: tuple) -> None:
+    for name, value in zip(SPACING, saved):
+        setattr(state, name, value)
 
 
 #: Form XObjects may nest; stop well before a cyclic file exhausts the stack.
@@ -383,12 +436,14 @@ def _do(name: Any, resources: Any, fonts: dict, placements: list, walk: Any, sta
         pass
 
     state.add_q()
+    spacing = _spacing(state)
     form_matrix = target.get("/Matrix")
     if form_matrix:
         state.add_cm(*[float(value) for value in form_matrix])
     walk(iter(ContentStream(target, target.indirect_reference.pdf).operations),
          inner, own or resources, None, depth + 1)
     state.remove_q()
+    _respace(state, spacing)
 
 
 def _visited(source: Any) -> tuple[list[TextRun], list[Placement]]:

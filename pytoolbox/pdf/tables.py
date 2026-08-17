@@ -26,6 +26,10 @@ MIN_SIDE = 3.0
 #: Two edges this close together are the same edge.
 EDGE_TOLERANCE = 2.0
 
+#: And a row or column narrower than this holds no text at any size, so it is
+#: a border's thickness or a cell's padding rather than a track of its own.
+MIN_TRACK = 6.0
+
 #: A rectangle covering this much of the page is a background, not a table.
 MAX_PAGE_SHARE = 0.6
 
@@ -63,7 +67,7 @@ class Segment:
 def find(page: Page, base: Optional[str] = None) -> tuple[list[Table], list[TextRun]]:
     """Every table drawn on ``page``, and the runs left outside them."""
     segments = [
-        segment for rule in page.rules for segment in _segments(rule, page)
+        segment for rule in _outermost(page.rules) for segment in _segments(rule, page)
     ]
     tables: list[Table] = []
     taken: set[int] = set()
@@ -79,6 +83,38 @@ def find(page: Page, base: Optional[str] = None) -> tuple[list[Table], list[Text
 
     tables.sort(key=lambda table: -table.top)
     return tables, [run for run in page.runs if id(run) not in taken]
+
+
+def _outermost(rules: list[RuleBox]) -> list[RuleBox]:
+    """Drop rectangles drawn inside another rectangle.
+
+    Some writers paint a background behind every *line* of a cell as well as
+    behind the cell itself. Those inner rectangles stack up, and the edge
+    between two of them looks exactly like the edge between two rows -- so the
+    cell comes back split, one row per line of text it holds. A box drawn
+    inside a box says nothing about the grid, so the outer one is kept.
+
+    Only boxes are dropped. A rectangle thin enough to be a drawn line is a
+    grid line wherever it sits, and writers that stroke their borders draw them
+    right along the edge of the cell they have already filled.
+    """
+    largest = sorted(rules, key=lambda rule: -(rule.width * rule.height))
+    kept: list[RuleBox] = []
+    for rule in largest:
+        boxed = rule.width >= MIN_SIDE and rule.height >= MIN_SIDE
+        if not boxed or not any(_contains(outer, rule) for outer in kept):
+            kept.append(rule)
+    return kept
+
+
+def _contains(outer: RuleBox, inner: RuleBox) -> bool:
+    return (
+        outer.x0 <= inner.x0 + EDGE_TOLERANCE
+        and outer.x1 >= inner.x1 - EDGE_TOLERANCE
+        and outer.y0 <= inner.y0 + EDGE_TOLERANCE
+        and outer.y1 >= inner.y1 - EDGE_TOLERANCE
+        and outer.width * outer.height > inner.width * inner.height
+    )
 
 
 def _segments(rule: RuleBox, page: Page) -> list[Segment]:
@@ -144,12 +180,38 @@ def _box(piece: Segment) -> tuple[float, float, float, float]:
 
 
 def _bands(edges: list[float]) -> list[tuple[float, float]]:
-    """Consecutive pairs of the distinct edges, which are the tracks."""
+    """The tracks the distinct edges cut the table into.
+
+    A writer that gives its borders a thickness, and its cells some padding
+    inside that, leaves a pair of edges a few points apart at every rule. The
+    sliver between them is not a column -- nothing could be written in it -- so
+    it is handed to whichever neighbour it abuts, and the row or column it was
+    part of gets its own width back.
+    """
     distinct: list[float] = []
     for edge in sorted(edges):
         if not distinct or edge - distinct[-1] > EDGE_TOLERANCE:
             distinct.append(edge)
-    return list(zip(distinct, distinct[1:]))
+
+    bands = list(zip(distinct, distinct[1:]))
+    while len(bands) > 1:
+        narrowest = min(range(len(bands)), key=lambda index: _span(bands[index]))
+        if _span(bands[narrowest]) >= MIN_TRACK:
+            break
+        low, high = bands.pop(narrowest)
+        if narrowest == 0:
+            bands[0] = (low, bands[0][1])
+        elif narrowest == len(bands):
+            bands[-1] = (bands[-1][0], high)
+        elif _span(bands[narrowest - 1]) >= _span(bands[narrowest]):
+            bands[narrowest - 1] = (bands[narrowest - 1][0], high)
+        else:
+            bands[narrowest] = (low, bands[narrowest][1])
+    return bands
+
+
+def _span(band: tuple[float, float]) -> float:
+    return band[1] - band[0]
 
 
 def _fill(

@@ -106,6 +106,11 @@ one before it leaves behind:
 3. **Presentation forms.** Only then are the shaped glyphs (`ﻣ`, `ﯽ`) folded
    back to the letters someone can search for (`م`, `ی`).
 
+A ligature is turned before any of that. One glyph can stand for several
+letters — `لا` is drawn as a single shape — and the file spells those out in
+*reading* order while everything around them is in paint order, so a ligature
+left as it comes is the one piece of the line already the right way round.
+
 Vowel marks are returned to the letters they sit on — whichever neighbour a
 mark is drawn further over is its letter — and the geometric rules measure from
 the margin the text starts at rather than always from the left, so a Persian
@@ -148,6 +153,14 @@ stderr and the rest still convert, with a non-zero exit code at the end.
 - **A list marker drawn as a shape is lost.** Some writers paint bullets as
   filled circles rather than text, and a marker that is not in the text layer
   cannot be read; those items come through as paragraphs.
+- **Non-joiners need shaped text.** They are recovered from the unjoined shape
+  a letter kept, or from a space drawn with no width. A file whose glyphs map
+  straight to plain letters records neither, and `می‌شود` comes back `میشود`.
+- **A table inside a table loses the inner grid.** Only the outermost boxes are
+  read, which is what keeps a cell's own backgrounds out of the grid.
+- **What the file says about a character is taken at its word.** A font whose
+  own mapping claims its `۱` glyph is an ASCII `1` will produce `1۴0۵`; there
+  is nothing else to go on.
 - **Scanned pages are reported, not read.** There is no OCR. A file whose pages
   are images gets an error naming `ocrmypdf`; a document with only a few such
   pages converts, with a warning.

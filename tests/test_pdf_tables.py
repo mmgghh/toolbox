@@ -103,3 +103,32 @@ def test_a_right_to_left_table_reads_its_columns_from_the_right():
     assert found[0].rtl
     # The rightmost column is the first one read.
     assert [cell[0].text for cell in found[0].rows[0]] == ["نام", "سند"]
+
+
+def test_border_thickness_does_not_become_a_column():
+    # A writer that gives its borders a width, and its cells padding inside
+    # that, leaves a sliver at every rule. Nothing can be written in one.
+    from pytoolbox.pdf.tables import _bands
+
+    bands = _bands([72.0, 76.6, 425.6, 429.9, 434.6, 535.6, 540.0])
+
+    assert [(round(a), round(b)) for a, b in bands] == [(72, 435), (435, 540)]
+
+
+def test_a_background_behind_each_line_does_not_split_the_cell(tmp_path):
+    # Word paints a rectangle behind every line of a cell as well as behind
+    # the cell; the edge between two of those looks just like a row boundary.
+    items = []
+    for row in range(2):
+        for column in range(2):
+            x, y = 72 + column * 120, 700 - (row + 1) * 40
+            items.append(rule(x, y, 120, 40))
+            # Two line backgrounds stacked inside the cell.
+            items.append(rule(x + 2, y + 2, 116, 18))
+            items.append(rule(x + 2, y + 20, 116, 18))
+            items.append(text(x + 6, y + 26, 10, f"r{row}c{column}"))
+
+    found, _ = tables.find(reader.read(write_pdf(tmp_path / "word.pdf", [items])).pages[0])
+
+    assert len(found) == 1
+    assert (len(found[0].rows), len(found[0].rows[0])) == (2, 2)

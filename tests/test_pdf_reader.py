@@ -187,3 +187,40 @@ def test_painted_rectangles_are_reported(tmp_path):
     assert len(rules) == 1
     assert (rules[0].x0, rules[0].y0) == pytest.approx((100, 200))
     assert (rules[0].width, rules[0].height) == pytest.approx((50, 20))
+
+
+def test_character_spacing_does_not_leak_past_its_own_q_block(tmp_path):
+    # Tc belongs to the graphics state, so Q puts back what it was. A writer
+    # squeezing one justified line must not shrink every line after it.
+    from tests.pdf_fixtures import kerned
+
+    plain = write_pdf(tmp_path / "plain.pdf", [[text(72, 700, 12, "Measured")]])
+    after = write_pdf(
+        tmp_path / "after.pdf",
+        [[kerned(72, 720, 12, "Squeezed", -3), text(72, 700, 12, "Measured")]],
+    )
+
+    def width(path):
+        run = next(r for r in reader.read(path).pages[0].runs if r.text == "Measured")
+        return run.end - run.x
+
+    assert width(after) == pytest.approx(width(plain), abs=0.01)
+
+
+def test_a_multi_letter_glyph_is_turned_to_face_paint_order():
+    # One glyph, two letters: the file gives them in reading order while
+    # everything around them is in paint order, so they have to be turned.
+    class _Font:
+        character_map = {"\x01": "لا", "\x02": "ﬁ"}
+
+    class _Shown:
+        _decoded_value = "\x01"
+        font = _Font()
+        text = "لا"
+
+    assert reader._ligatures(_Shown()) == "ال"
+
+    # A Latin ligature sits in a line that is never reversed, so it stands.
+    _Shown._decoded_value = "\x02"
+    _Shown.text = "ﬁ"
+    assert reader._ligatures(_Shown()) == "ﬁ"

@@ -54,6 +54,32 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`pypdf2md` let one line's character spacing squeeze the whole page.**
+  `Tc` belongs to the graphics state, so `Q` puts back whatever it was; neither
+  pypdf's text-state stack nor the walk on top of it did that. A Word document
+  setting `Tc -2.9` inside a `q … Q` to squeeze one justified line went on
+  shrinking every measured width after it, which left runs overlapping, the
+  page in the wrong order and Persian words interleaved letter by letter
+  (`این سند` as `اینس ند`). `Tc`, `Tw`, `Tz`, `TL` and `Ts` are now saved and
+  restored with the rest of the state.
+
+- **`pypdf2md` reversed Arabic ligatures.** One glyph can stand for several
+  letters — `لا` is drawn as a single shape — and the file spells them out in
+  *reading* order while everything around them is in paint order. Reversing the
+  line then turned the one piece that was already right, so `لازم` came back as
+  `الزم` and `تلاش` as `تالش`. Multi-letter Arabic glyphs are now turned to face
+  the same way as their neighbours before anything else looks at them.
+
+- **`pypdf2md` read a bordered table as several empty ones.** Two writer habits
+  broke the grid: giving borders a thickness with padding inside them, which
+  leaves a three-point sliver beside every real row and column; and painting a
+  background behind each *line* of a cell as well as behind the cell, whose
+  edges look exactly like row boundaries. A track too narrow to hold a glyph is
+  now given back to the row or column it was cut from, and a box drawn inside
+  another box is left out of the grid — a drawn *line* still counts wherever it
+  sits, since writers that stroke their borders draw them along the edge of the
+  cell they have already filled.
+
 - **`pypdf2md` had no real position for any word but the first on a line.**
   pypdf's text extraction never advances the text matrix for the glyphs it
   draws, so every run on a line reported the line's own origin — and some
