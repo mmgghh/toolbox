@@ -31,6 +31,7 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "md2pdf": ("pytoolbox.pymd2pdf", "pymd2pdf_cli", "Markdown to PDF (pymd2pdf)"),
     "md2html": ("pytoolbox.pymd2html", "md2html_cli", "Markdown to HTML (pymd2html)"),
     "docx2md": ("pytoolbox.pydocx2md", "docx2md_cli", "Word to Markdown (pydocx2md)"),
+    "docx2pdf": ("pytoolbox.pydocx2pdf", "docx2pdf_cli", "Word to PDF (pydocx2pdf)"),
     "pdf2md": ("pytoolbox.pypdf2md", "pdf2md_cli", "PDF to Markdown (pypdf2md)"),
 }
 
@@ -127,6 +128,7 @@ def toolbox() -> None:
       toolbox md2pdf ...  ==  pymd2pdf ...
       toolbox md2html ... ==  pymd2html ...
       toolbox docx2md ... ==  pydocx2md ...
+      toolbox docx2pdf ... == pydocx2pdf ...
       toolbox pdf2md ...  ==  pypdf2md ...
 
     \b
@@ -182,6 +184,7 @@ def doctor() -> None:
         ("sshpass", "pyssh password authentication"),
         ("rsync", "pyssh rsync-dir"),
         ("ping", "pynet ping (falls back to TCP probes)"),
+        ("soffice", "pydocx2pdf (falls back to the Markdown pipeline)"),
         ("mmdc", "offline Mermaid rendering in pymd2pdf"),
         ("fc-cache", "font cache refresh for pymd2pdf"),
     ):

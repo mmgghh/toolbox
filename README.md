@@ -18,6 +18,7 @@ toolbox time start "write docs"
 toolbox md2pdf notes.md
 toolbox md2html notes.md       # one self-contained page
 toolbox docx2md reviewed.docx  # Word to Markdown, comments and all
+toolbox docx2pdf report.docx   # Word to PDF
 toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 ```
 
@@ -35,6 +36,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 | `pymd2html` | `toolbox md2html` | Markdown to one self-contained HTML page, no dependencies     | [docs/pymd2html.md](docs/pymd2html.md) |
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |
+| `pydocx2pdf` | `toolbox docx2pdf` | Word to PDF, via LibreOffice when it is installed           | [docs/pydocx2pdf.md](docs/pydocx2pdf.md) |
 | `pypdf2md` | `toolbox pdf2md` | PDF to Markdown, structure inferred from the page               | [docs/pypdf2md.md](docs/pypdf2md.md) |
 
 Every command supports `-h/--help` and `-V/--version`, accepts unambiguous
@@ -61,7 +63,7 @@ installs anywhere without a compiler. Add what you need:
 
 | Extra   | Adds                              | Needed for                              |
 | ------- | --------------------------------- | --------------------------------------- |
-| `pdf`   | `fpdf2`, `Pillow`                 | `pymd2pdf`                              |
+| `pdf`   | `fpdf2`, `Pillow`                 | `pymd2pdf`, `pydocx2pdf` without LibreOffice |
 | `pdf2md`| `pypdf`, `python-bidi`            | `pypdf2md`                              |
 | `rtl`   | `arabic-reshaper`, `python-bidi`  | Persian/Arabic shaping in `pymd2pdf`    |
 | `excel` | `openpyxl`                        | `pytime report --format excel`          |

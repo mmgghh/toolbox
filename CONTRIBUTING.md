@@ -36,7 +36,7 @@ pytoolbox/
   docx/           the .docx reader and its Markdown writer
   pdf/            the PDF reader, layout and structure inference
   pyfm.py pystr.py pyjdate.py pytime.py pyssh.py pynet.py pymd2pdf.py
-  pymd2html.py pydocx2md.py pypdf2md.py
+  pymd2html.py pydocx2md.py pydocx2pdf.py pypdf2md.py
   data.py normalize_data.py
 tests/
 docs/

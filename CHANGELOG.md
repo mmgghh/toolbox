@@ -7,6 +7,23 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydocx2pdf` converts Word documents to PDF.** Nothing renders a `.docx`
+  faithfully except software that has read the same specification, and none of
+  that runs on a phone — so there are two engines and the command picks the
+  better one it can find. With LibreOffice installed the file goes to a
+  headless conversion that keeps the document's own layout; without it, the
+  `.docx` reader and `pymd2pdf` typeset the content from scratch, which needs
+  no system binary and therefore works on Termux. `--engine` pins one
+  explicitly, and asking for LibreOffice where there is none is an error
+  rather than a silent downgrade; in `auto` a LibreOffice *failure* still
+  falls back, because a PDF of the content beats no PDF. The output line names
+  the engine that did the work. The headless run gets a throwaway user
+  profile, which is what stops it from quietly converting nothing while you
+  have LibreOffice open, and success is judged by the file on disk rather than
+  by an exit code LibreOffice sets to 0 either way. Comments are left out by
+  default — a PDF is the copy you send, not the copy you review — and
+  `--comments` puts them back; `--keep-md` keeps the intermediate Markdown.
+
 - **`pymd2html` converts Markdown to HTML.** One self-contained page per
   input: the stylesheet is embedded and nothing is fetched from the network,
   so the file opens the same from an email attachment, a USB stick or a phone

@@ -21,6 +21,7 @@ ENTRY_POINTS = [
     ("pytoolbox.pynet", "net_cli"),
     ("pytoolbox.pymd2pdf", "pymd2pdf_cli"),
     ("pytoolbox.pymd2html", "md2html_cli"),
+    ("pytoolbox.pydocx2pdf", "docx2pdf_cli"),
     ("pytoolbox.cli", "toolbox"),
 ]
 
