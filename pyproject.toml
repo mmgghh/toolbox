@@ -78,6 +78,7 @@ pyssh = "pytoolbox.pyssh:ssh_management"
 pynet = "pytoolbox.pynet:net_cli"
 pyps = "pytoolbox.pyps:ps_cli"
 pymd2pdf = "pytoolbox.pymd2pdf:pymd2pdf_cli"
+pymd2html = "pytoolbox.pymd2html:md2html_cli"
 pydocx2md = "pytoolbox.pydocx2md:docx2md_cli"
 pypdf2md = "pytoolbox.pypdf2md:pdf2md_cli"
 

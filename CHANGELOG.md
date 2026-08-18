@@ -7,6 +7,22 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pymd2html` converts Markdown to HTML.** One self-contained page per
+  input: the stylesheet is embedded and nothing is fetched from the network,
+  so the file opens the same from an email attachment, a USB stick or a phone
+  with no signal. It follows the reader's light/dark preference and lays out
+  in either direction from the same rules. The parser is part of pytoolbox
+  rather than a Markdown library, so this needs no optional dependency and
+  runs on Termux: headings with anchors, emphasis, code spans and fences,
+  tables with per-column alignment, nested and task lists, blockquotes, rules,
+  images, links, autolinks and raw HTML passthrough. A document with more
+  Persian, Arabic or Hebrew letters than Latin ones becomes a right-to-left
+  page on its own; `--rtl`/`--ltr` and `--lang` override that. `--fragment`
+  emits the body alone for a template, `--css`/`--no-css` replace the
+  stylesheet, `-o -` writes to stdout, and `--escape-html` shows raw HTML as
+  text for documents you did not write. Link targets that would run code
+  (`javascript:` and friends) never become links.
+
 - **`pynet ip` can say where an address is.** `pynet ip --geo` adds city,
   region, country, coordinates, timezone and network to the public address,
   and `pynet ip 1.1.1.1` (or a hostname, which is resolved first) locates any
