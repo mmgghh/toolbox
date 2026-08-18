@@ -342,8 +342,11 @@ def _split_row(line: str) -> list[str]:
     while index < len(line):
         char = line[index]
         if char == "\\" and index + 1 < len(line):
-            buffer.append(char)
-            buffer.append(line[index + 1])
+            # An escaped pipe belongs to the table's syntax, not to the cell's
+            # text: `\|` is the only way to put one inside a cell, code span
+            # included, so it is resolved here rather than left to the inline
+            # pass. Every other escape is the text's own and stays intact.
+            buffer.append("|" if line[index + 1] == "|" else char + line[index + 1])
             index += 2
             continue
         if char == "|":

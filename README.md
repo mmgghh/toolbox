@@ -2,8 +2,8 @@
 
 A set of small, dependency-light command-line tools for everyday local work —
 files, text, Jalali/Gregorian dates, time tracking, SSH tunnels, network
-checks, process/memory management and conversion between Markdown, Word, PDF
-and HTML.
+checks, process/memory management, arithmetic and conversion between Markdown,
+Word, PDF and HTML.
 
 Runs on Linux, macOS, Windows and **Termux**. Anything that needs a system
 tool degrades to a pure-Python fallback when that tool is missing, so the same
@@ -14,6 +14,7 @@ toolbox jdate now              # today in both calendars
 toolbox fm duplicates ~/photos # find identical files
 toolbox net port example.com 443
 toolbox ps top                 # processes eating the most memory/swap
+toolbox calc '2^10 / 8'
 toolbox time start "write docs"
 toolbox md2pdf notes.md
 toolbox md2html notes.md       # one self-contained page
@@ -33,6 +34,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pyssh`    | `toolbox ssh`    | SOCKS tunnels (single and chained) and an rsync wrapper          | [docs/pyssh.md](docs/pyssh.md) |
 | `pynet`    | `toolbox net`    | IP and its location, DNS, ports, ping, HTTP, WHOIS, quick file server | [docs/pynet.md](docs/pynet.md) |
 | `pyps`     | `toolbox ps`     | Top memory/swap consumers, search and kill by name, `free`-like summary (Linux/Termux) | [docs/pyps.md](docs/pyps.md) |
+| `pycalc`   | `toolbox calc`   | Arithmetic from the shell, with `^` as a power and no `eval`     | [docs/pycalc.md](docs/pycalc.md) |
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 | `pymd2html` | `toolbox md2html` | Markdown to one self-contained HTML page, no dependencies     | [docs/pymd2html.md](docs/pymd2html.md) |
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |
@@ -148,7 +150,7 @@ instead of the XDG ones.
 
 ```shell
 pip install -e ".[all,dev]"
-pytest              # 517 tests
+pytest              # 864 tests
 ruff check .
 ```
 

@@ -7,6 +7,28 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pycalc` does arithmetic from the shell.** `pycalc '2**5+56-1'` prints
+  `87`. `^` means "to the power of", as it does on a calculator and in a
+  spreadsheet rather than in Python, with `--caret xor` and an always-present
+  `xor(a, b)` for the other meaning. It takes `+ - * / // % **`, bitwise
+  operators, comparisons, parentheses, decimal, hex, binary, octal and
+  scientific numbers, `pi`/`e`/`tau`, and the usual library of functions —
+  `sqrt`, `log`, `factorial`, the trigonometric family and the rest — with a
+  "did you mean" for a name you misremember.
+
+  Whole answers stay exact (`2**100` prints all of it), and everything else is
+  rounded to twelve significant digits, so `0.1 + 0.2` prints `0.3` instead of
+  the true-but-useless `0.30000000000000004`; `--precision 17` shows the exact
+  binary value and `--base hex|bin|oct` re-bases a whole one. With no
+  expression it reads one per line from stdin, where `ans` is the previous
+  answer.
+
+  The expression is parsed with Python's parser and then walked node by node,
+  evaluating only the arithmetic listed above: no `eval`, no attributes, no
+  indexing, no imports. Two calculations that are quick to type and impossible
+  to finish — a power with more than 100,000 digits, a factorial over 10,000 —
+  are refused rather than attempted.
+
 - **`pydocx2pdf` converts Word documents to PDF.** Nothing renders a `.docx`
   faithfully except software that has read the same specification, and none of
   that runs on a phone — so there are two engines and the command picks the

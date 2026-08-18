@@ -147,6 +147,12 @@ def test_escaped_pipe_stays_inside_its_cell():
     assert "<td>x | y</td>" in rendered
 
 
+def test_escaped_pipe_inside_a_code_span_is_a_pipe():
+    """`\\|` is the only way to write one in a cell, backticks or not."""
+    rendered = body("| op | means |\n|---|---|\n| `\\|` | or |")
+    assert "<td><code>|</code></td>" in rendered
+
+
 def test_raw_html_passes_through_but_can_be_escaped():
     assert body('<div class="x">hi</div>') == '<div class="x">hi</div>'
     assert "&lt;div" in render_body('<div class="x">hi</div>', escape_html=True)
