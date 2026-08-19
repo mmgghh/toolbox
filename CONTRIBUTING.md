@@ -35,6 +35,14 @@ pytoolbox/
     markdown.py   Markdown escaping and emphasis, shared by both writers
   docx/           the .docx reader and its Markdown writer
   pdf/            the PDF reader, layout and structure inference
+  mdpdf/          the Markdown-to-PDF typesetter
+    state.py      settings one conversion shares (body size, offline, glyphs)
+    shaping.py    Persian/Arabic reshaping and bidi reordering
+    fonts.py      DejaVu, Persian and symbol-fallback face discovery
+    document.py   the fpdf2 subclass, colour palette and page metrics
+    render.py     headings, paragraphs, lists, quotes, inline markers
+    tables.py     column measurement and grid drawing
+    media.py      images, SVG and Mermaid diagrams
   pyfm.py pystr.py pyjdate.py pytime.py pyssh.py pynet.py pycalc.py pymd2pdf.py
   pymd2html.py pydocx2md.py pydocx2pdf.py pypdf2md.py
   data.py normalize_data.py

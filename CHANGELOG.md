@@ -122,6 +122,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`pymd2pdf` is now a package rather than one 1500-line module.** Font
+  discovery, Persian shaping, the fpdf2 subclass, the block renderers, tables
+  and images/Mermaid each live in their own module under `pytoolbox/mdpdf/`,
+  matching how `pydocx2md` and `pypdf2md` were already laid out; `pymd2pdf`
+  itself is left with the conversion loop and the command line. The settings a
+  conversion shares — body size, offline mode, the glyph substitution table —
+  moved to `mdpdf.state`, because a value written in one module and read in
+  another has to live somewhere both can see it rebound. Rendered output is
+  unchanged, byte for byte.
+
 - **`pyjdate interval` and `pynet whois` learned `--json`.** They were the
   last two commands in their tools that printed a result without one —
   `interval` gives `start` and `end` in the shape `convert --json` already
