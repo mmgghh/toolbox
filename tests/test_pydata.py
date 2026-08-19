@@ -1,0 +1,517 @@
+"""Tests for the pydata CLI: the four subcommands, end to end."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import sqlite3
+
+import pytest
+
+from pytoolbox.pydata import data_cli
+
+openpyxl = pytest.importorskip("openpyxl", reason="Excel support is an optional extra")
+
+USERS = [
+    {"id": 1, "First Name": "ann", "age": 34, "tags": ["a", "b"], "active": True},
+    {"id": 2, "First Name": "bob", "age": 28.5, "tags": [], "active": False, "note": "hi"},
+    {"id": 3, "First Name": "cy", "age": None, "tags": ["c"], "active": True},
+]
+
+
+@pytest.fixture
+def api(tmp_path):
+    path = tmp_path / "api.json"
+    path.write_text(json.dumps({"meta": {"page": 1}, "data": {"users": USERS}}), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def flat(tmp_path):
+    path = tmp_path / "users.json"
+    path.write_text(json.dumps(USERS), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def sales(tmp_path):
+    path = tmp_path / "sales.csv"
+    path.write_text(
+        "id,name,joined,zip,amount\n1,ann,2024-01-05,01730,120.50\n2,bob,2024-03-11,10115,7\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def book(tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "Staff"
+    sheet.append(["ID", "Full Name", "Hired"])
+    sheet.append([1, "ann", dt.datetime(2024, 1, 5)])
+    sheet.append([2, "bob", None])
+    path = tmp_path / "staff.xlsx"
+    wb.save(path)
+    return path
+
+
+def run(runner, *args, **kwargs):
+    return runner.invoke(data_cli, [str(arg) for arg in args], **kwargs)
+
+
+# ── tree ────────────────────────────────────────────────────────────
+
+
+def test_tree_finds_the_records_inside_an_envelope(runner, api):
+    result = run(runner, "tree", api)
+    assert result.exit_code == 0
+    assert "--root data.users" in result.stdout
+    assert "list of 3 objects" in result.stdout
+    assert "list[str]" in result.stdout
+
+
+def test_tree_reports_the_root_it_chose_on_stderr(runner, api):
+    result = run(runner, "tree", api)
+    assert "Using --root data.users" in result.stderr
+
+
+def test_tree_reads_a_csv(runner, sales):
+    result = run(runner, "tree", sales)
+    assert result.exit_code == 0
+    assert "joined" in result.stdout
+    assert "date" in result.stdout
+
+
+def test_tree_reads_an_xlsx(runner, book):
+    result = run(runner, "tree", book)
+    assert result.exit_code == 0
+    assert "Full Name" in result.stdout
+
+
+def test_tree_reads_stdin_with_from(runner):
+    result = run(runner, "tree", "-", "--from", "json", input='[{"a": 1}]')
+    assert result.exit_code == 0
+    assert "stdin" in result.stdout
+
+
+def test_tree_depth_limits_the_descent(runner, tmp_path):
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps([{"a": {"b": {"c": 1}}}]), encoding="utf-8")
+    output = run(runner, "tree", path, "--depth", "2").stdout
+    assert "-- b" in output
+    assert "-- c" not in output
+
+
+# ── summary ─────────────────────────────────────────────────────────
+
+
+def test_summary_prints_a_row_per_field(runner, api):
+    result = run(runner, "summary", api)
+    assert result.exit_code == 0
+    assert "First Name" in result.stdout
+    assert "first_name" in result.stdout
+    assert "non_null" in result.stdout
+
+
+def test_summary_as_json_stays_parseable(runner, api):
+    result = run(runner, "summary", api, "--format", "json")
+    assert result.exit_code == 0
+    rows = json.loads(result.stdout)
+    assert [row["field"] for row in rows][:2] == ["id", "First Name"]
+
+
+def test_summary_writes_a_file(runner, api, tmp_path):
+    out = tmp_path / "s.csv"
+    result = run(runner, "summary", api, "--format", "csv", "-o", out)
+    assert result.exit_code == 0
+    assert "field,column,type" in out.read_text()
+
+
+# ── filter ──────────────────────────────────────────────────────────
+
+
+def test_filter_by_type(runner, api):
+    result = run(runner, "filter", api, "--type", "int", "--type", "float")
+    assert result.exit_code == 0
+    assert "id" in result.stdout
+    assert "age" in result.stdout
+    assert "first_name" not in result.stdout
+
+
+def test_filter_by_key_glob(runner, api):
+    result = run(runner, "filter", api, "-k", "first*")
+    assert "first_name" in result.stdout
+    assert "tags" not in result.stdout
+
+
+def test_filter_renders_containers_as_json(runner, api):
+    assert '["a","b"]' in run(runner, "filter", api, "-k", "tags").stdout
+
+
+def test_filter_rows_caps_the_output(runner, api):
+    result = run(runner, "filter", api, "-k", "id", "--rows", "2")
+    assert "3" not in result.stdout
+
+
+def test_filter_with_no_match_fails_clearly(runner, api):
+    result = run(runner, "filter", api, "-k", "zzz")
+    assert result.exit_code == 1
+    assert "No field matched" in result.stderr
+
+
+# ── sql: scripts ────────────────────────────────────────────────────
+
+
+def test_sql_writes_a_postgres_script_to_stdout(runner, api):
+    result = run(runner, "sql", api, "-t", "users", "--dialect", "postgres", "--sql", "-")
+    assert result.exit_code == 0
+    assert 'CREATE TABLE "users"' in result.stdout
+    assert "jsonb" in result.stdout
+    assert "TRUE" in result.stdout
+
+
+def test_sql_defaults_to_sqlite(runner, api):
+    result = run(runner, "sql", api, "-t", "users", "--sql", "-")
+    assert "INTEGER" in result.stdout
+    assert "jsonb" not in result.stdout
+
+
+def test_sql_writes_a_script_file(runner, api, tmp_path):
+    out = tmp_path / "users.sql"
+    result = run(runner, "sql", api, "-t", "users", "--sql", out)
+    assert result.exit_code == 0
+    assert "CREATE TABLE" in out.read_text()
+    assert "SQL written to" in result.stderr
+
+
+def test_sql_renames_a_column(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "-c", "first_name=full_name", "--sql", "-")
+    assert '"full_name"' in result.stdout
+    assert '"first_name"' not in result.stdout
+
+
+def test_sql_adds_a_primary_key_and_indexes(runner, api):
+    result = run(
+        runner, "sql", api, "-t", "u", "--pk", "id", "--index", "active", "--unique-index", "first_name",
+        "--sql", "-",
+    )
+    assert 'PRIMARY KEY ("id")' in result.stdout
+    assert 'CREATE INDEX "idx_u_active"' in result.stdout
+    assert 'CREATE UNIQUE INDEX "idx_u_first_name"' in result.stdout
+
+
+def test_sql_supports_a_compound_primary_key(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--pk", "id", "--pk", "first_name", "--sql", "-")
+    assert 'PRIMARY KEY ("id", "first_name")' in result.stdout
+
+
+def test_sql_supports_a_composite_index(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--index", "id,active", "--sql", "-")
+    assert '("id", "active")' in result.stdout
+
+
+def test_sql_batches_inserts(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--batch", "1", "--sql", "-")
+    assert result.stdout.count("INSERT INTO") == 3
+
+
+def test_dry_run_prints_without_writing(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    result = run(runner, "sql", api, "-t", "u", "--db", db, "--dry-run")
+    assert result.exit_code == 0
+    assert "CREATE TABLE" in result.stdout
+    assert not db.exists()
+
+
+# ── non-Latin headers ───────────────────────────────────────────────
+
+
+PERSIAN_HEADERS = [
+    "نام واحد",
+    "ای دی واحد",
+    "نوع ساختمان",
+    "انبار/سردخانه",
+    "ظرفیت",
+    "کد پستی",
+    "تاریخ ایجاد",
+    "استان",
+]
+
+
+@pytest.fixture
+def persian(tmp_path):
+    """A spreadsheet whose header row is entirely Persian."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "واحدها"
+    sheet.append(PERSIAN_HEADERS)
+    sheet.append(["انبار مرکزی", 1042, "فلزی", "انبار", 1200, "1968815453", dt.datetime(2024, 1, 5), "تهران"])
+    sheet.append(["سردخانه شمال", 1043, "بتنی", "سردخانه", 800, "4671234567", dt.datetime(2023, 11, 2), "گیلان"])
+    path = tmp_path / "vahed.xlsx"
+    wb.save(path)
+    return path
+
+
+def test_persian_headers_are_not_flattened_to_column_1(runner, persian):
+    """Every non-Latin header used to sanitize away to the same fallback name."""
+    result = run(runner, "summary", persian, "--format", "json")
+    assert result.exit_code == 0
+    columns = [row["column"] for row in json.loads(result.stdout)]
+    assert "column" not in columns
+    assert not any(name.startswith("column_") for name in columns)
+    assert len(set(columns)) == len(PERSIAN_HEADERS)
+
+
+def test_persian_headers_keep_their_letters(runner, persian):
+    rows = {row["field"]: row["column"] for row in json.loads(
+        run(runner, "summary", persian, "--format", "json").stdout
+    )}
+    assert rows["نام واحد"] == "نام_واحد"
+    assert rows["انبار/سردخانه"] == "انبار_سردخانه"
+    assert rows["ظرفیت"] == "ظرفیت"
+
+
+def test_a_persian_table_reaches_sqlite(runner, persian, tmp_path):
+    db = tmp_path / "v.db"
+    result = run(runner, "sql", persian, "-t", "واحدها", "--pk", "ای_دی_واحد", "--db", db)
+    assert result.exit_code == 0
+
+    connection = sqlite3.connect(db)
+    names = [row[1] for row in connection.execute('PRAGMA table_info("واحدها")')]
+    rows = connection.execute(
+        'SELECT "نام_واحد", "استان", "ظرفیت" FROM "واحدها" ORDER BY "ای_دی_واحد"'
+    ).fetchall()
+    connection.close()
+    assert len(names) == len(PERSIAN_HEADERS)
+    assert rows == [("انبار مرکزی", "تهران", 1200), ("سردخانه شمال", "گیلان", 800)]
+
+
+def test_a_persian_postal_code_stays_text(runner, persian):
+    """A leading-zero-free numeric string is still an identifier, not a number."""
+    rows = {row["field"]: row["type"] for row in json.loads(
+        run(runner, "summary", persian, "--format", "json").stdout
+    )}
+    assert rows["کد پستی"] == "str"
+
+
+def test_the_tree_shows_persian_keys(runner, persian):
+    assert "نام واحد" in run(runner, "tree", persian).stdout
+
+
+# ── sql: --raw-names ────────────────────────────────────────────────
+
+
+def test_raw_names_keeps_the_keys_as_columns(runner, api):
+    result = run(runner, "sql", api, "-t", "users", "--dialect", "postgres", "--raw-names", "--sql", "-")
+    assert '"First Name" text' in result.stdout
+    assert "first_name" not in result.stdout
+
+
+def test_folding_is_still_the_default(runner, api):
+    result = run(runner, "sql", api, "-t", "users", "--dialect", "postgres", "--sql", "-")
+    assert '"first_name" text' in result.stdout
+    assert '"First Name"' not in result.stdout
+
+
+def test_raw_names_reach_sqlite(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", api, "-t", "users", "--raw-names", "--db", db)
+    connection = sqlite3.connect(db)
+    names = [row[1] for row in connection.execute("PRAGMA table_info(users)")]
+    value = connection.execute('SELECT "First Name" FROM users LIMIT 1').fetchone()[0]
+    connection.close()
+    assert "First Name" in names
+    assert value == "ann"
+
+
+def test_raw_names_honours_an_explicit_rename_verbatim(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--raw-names", "-c", "First Name=Full Name", "--sql", "-")
+    assert '"Full Name"' in result.stdout
+
+
+def test_raw_names_applies_to_summary(runner, api):
+    result = run(runner, "summary", api, "--raw-names", "--format", "json")
+    rows = {row["field"]: row["column"] for row in json.loads(result.stdout)}
+    assert rows["First Name"] == "First Name"
+
+
+def test_raw_names_applies_to_filter(runner, api):
+    result = run(runner, "filter", api, "--raw-names", "-k", "First*")
+    assert "First Name" in result.stdout
+
+
+def test_a_pk_under_raw_names_uses_the_raw_column(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--raw-names", "--pk", "First Name", "--sql", "-")
+    assert 'PRIMARY KEY ("First Name")' in result.stdout
+
+
+# ── sql: SQLite ─────────────────────────────────────────────────────
+
+
+def test_sql_fills_a_sqlite_file(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    result = run(runner, "sql", api, "-t", "users", "--pk", "id", "--db", db)
+    assert result.exit_code == 0
+    assert "Wrote 3 rows" in result.stderr
+
+    connection = sqlite3.connect(db)
+    rows = connection.execute("SELECT id, first_name, tags, note FROM users ORDER BY id").fetchall()
+    connection.close()
+    assert rows[0] == (1, "ann", '["a","b"]', None)
+    assert rows[1][3] == "hi"
+
+
+def test_a_missing_key_becomes_a_nullable_column(runner, api, tmp_path):
+    """'note' is present in one record out of three."""
+    db = tmp_path / "app.db"
+    run(runner, "sql", api, "-t", "users", "--db", db)
+    connection = sqlite3.connect(db)
+    notnull = {row[1]: row[3] for row in connection.execute("PRAGMA table_info(users)")}
+    connection.close()
+    assert notnull["note"] == 0
+    assert notnull["id"] == 1
+
+
+def test_csv_types_reach_sqlite(runner, sales, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", sales, "-t", "sales", "--db", db)
+    connection = sqlite3.connect(db)
+    types = {row[1]: row[2] for row in connection.execute("PRAGMA table_info(sales)")}
+    zip_value = connection.execute("SELECT zip FROM sales LIMIT 1").fetchone()[0]
+    connection.close()
+    assert types == {"id": "INTEGER", "name": "TEXT", "joined": "TEXT", "zip": "TEXT", "amount": "REAL"}
+    assert zip_value == "01730"
+
+
+def test_excel_reaches_sqlite(runner, book, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", book, "-t", "staff", "--db", db)
+    connection = sqlite3.connect(db)
+    rows = connection.execute("SELECT id, full_name, hired FROM staff ORDER BY id").fetchall()
+    connection.close()
+    assert rows == [(1, "ann", "2024-01-05T00:00:00"), (2, "bob", None)]
+
+
+def test_a_single_object_becomes_one_row(runner, tmp_path):
+    path = tmp_path / "cfg.json"
+    path.write_text(json.dumps({"name": "cfg", "opts": {"x": 1}}), encoding="utf-8")
+    db = tmp_path / "app.db"
+    run(runner, "sql", path, "-t", "cfg", "--db", db)
+    connection = sqlite3.connect(db)
+    rows = connection.execute("SELECT name, opts FROM cfg").fetchall()
+    connection.close()
+    assert rows == [("cfg", '{"x":1}')]
+
+
+def test_if_exists_replace_rebuilds(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", api, "-t", "u", "--db", db)
+    result = run(runner, "sql", api, "-t", "u", "--db", db, "--if-exists", "replace")
+    assert result.exit_code == 0
+
+
+def test_if_exists_append_adds_rows(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", api, "-t", "u", "--db", db)
+    run(runner, "sql", api, "-t", "u", "--db", db, "--if-exists", "append")
+    connection = sqlite3.connect(db)
+    count = connection.execute("SELECT count(*) FROM u").fetchone()[0]
+    connection.close()
+    assert count == 6
+
+
+# ── sql: refusals ───────────────────────────────────────────────────
+
+
+def test_an_existing_table_is_refused_by_default(runner, api, tmp_path):
+    db = tmp_path / "app.db"
+    run(runner, "sql", api, "-t", "u", "--db", db)
+    result = run(runner, "sql", api, "-t", "u", "--db", db)
+    assert result.exit_code == 1
+    assert "already exists" in result.stderr
+
+
+def test_db_and_sql_together_are_refused(runner, api, tmp_path):
+    result = run(runner, "sql", api, "-t", "u", "--db", tmp_path / "a.db", "--sql", tmp_path / "a.sql")
+    assert result.exit_code == 1
+    assert "not both" in result.stderr
+
+
+def test_postgres_cannot_be_written_directly(runner, api, tmp_path):
+    result = run(runner, "sql", api, "-t", "u", "--dialect", "postgres", "--db", tmp_path / "a.db")
+    assert result.exit_code == 1
+    assert "generate a script" in result.stderr
+
+
+def test_a_table_name_is_required(runner, api):
+    result = run(runner, "sql", api, "--sql", "-")
+    assert result.exit_code == 1
+    assert "table name is required" in result.stderr
+
+
+def test_nested_on_sqlite_warns_that_it_does_nothing(runner, api):
+    result = run(runner, "sql", api, "-t", "u", "--nested", "text", "--sql", "-")
+    assert result.exit_code == 0
+    assert "SQLite has no JSON column type" in result.stderr
+
+
+def test_an_ambiguous_document_names_the_candidates(runner, tmp_path):
+    path = tmp_path / "two.json"
+    path.write_text(json.dumps({"users": [{"a": 1}], "orders": [{"b": 2}]}), encoding="utf-8")
+    result = run(runner, "tree", path)
+    assert result.exit_code == 1
+    assert "--root users" in result.stderr
+    assert "--root orders" in result.stderr
+
+
+# ── sql: interactive ────────────────────────────────────────────────
+
+
+def test_interactive_asks_for_the_table_key_and_indexes(runner, flat):
+    answers = "people\nid\nactive\n\ny\n"
+    result = run(runner, "sql", flat, "-i", "--dialect", "postgres", "--sql", "-", input=answers)
+    assert result.exit_code == 0
+    assert 'CREATE TABLE "people"' in result.stdout
+    assert 'PRIMARY KEY ("id")' in result.stdout
+    assert 'CREATE INDEX "idx_people_active"' in result.stdout
+
+
+def test_interactive_shows_the_summary_first(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\ny\n")
+    assert "non_null" in result.stderr
+    assert "distinct" in result.stderr
+
+
+def test_interactive_defaults_the_table_name_to_the_filename(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="\n\n\n\ny\n")
+    assert 'CREATE TABLE "users"' in result.stdout
+
+
+def test_interactive_suggests_only_usable_keys(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\ny\n")
+    suggestions = [line for line in result.stderr.splitlines() if "unique and complete" in line][0]
+    assert "id" in suggestions
+    assert "tags" not in suggestions
+
+
+def test_interactive_re_asks_after_an_unknown_column(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nnope\nid\n\n\ny\n")
+    assert "No column called 'nope'" in result.stderr
+    assert 'PRIMARY KEY ("id")' in result.stdout
+
+
+def test_declining_at_the_end_writes_nothing(runner, flat, tmp_path):
+    db = tmp_path / "app.db"
+    result = run(runner, "sql", flat, "-i", "--db", db, input="t\n\n\n\nn\n")
+    assert result.exit_code == 1
+    assert not db.exists()
+
+
+def test_interactive_composite_index(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\nid+active\n\ny\n")
+    assert '("id", "active")' in result.stdout

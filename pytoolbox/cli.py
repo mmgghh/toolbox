@@ -29,6 +29,7 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "net": ("pytoolbox.pynet", "net_cli", "Network diagnostics (pynet)"),
     "ps": ("pytoolbox.pyps", "ps_cli", "Process and memory management (pyps)"),
     "calc": ("pytoolbox.pycalc", "calc_cli", "Arithmetic from the shell (pycalc)"),
+    "data": ("pytoolbox.pydata", "data_cli", "JSON/CSV/Excel to schema, summary and SQL (pydata)"),
     "md2pdf": ("pytoolbox.pymd2pdf", "pymd2pdf_cli", "Markdown to PDF (pymd2pdf)"),
     "md2html": ("pytoolbox.pymd2html", "md2html_cli", "Markdown to HTML (pymd2html)"),
     "docx2md": ("pytoolbox.pydocx2md", "docx2md_cli", "Word to Markdown (pydocx2md)"),
