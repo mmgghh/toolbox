@@ -9,7 +9,7 @@ import pytest
 
 from pytoolbox import pymd2pdf
 from pytoolbox.core import paths
-from pytoolbox.mdpdf import shaping, state
+from pytoolbox.mdpdf import fonts, shaping, state
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
@@ -154,14 +154,14 @@ def test_substitute_glyphs_is_a_no_op_before_fonts_are_loaded(monkeypatch):
 def test_colour_emoji_fonts_are_not_offered_as_fallbacks(tmp_path):
     fake = tmp_path / "NotAFont.ttf"
     fake.write_bytes(b"not a font at all")
-    assert not pymd2pdf._has_outlines(fake)
+    assert not fonts.has_outlines(fake)
 
 
 @needs_fonts
 def test_dejavu_is_registered_as_a_fallback_face():
     pdf = pymd2pdf.PDF()
     assert any(
-        key.startswith(pymd2pdf.FONT_SANS.lower()) for key in pdf._fallback_font_ids
+        key.startswith(fonts.FONT_SANS.lower()) for key in pdf._fallback_font_ids
     )
 
 
@@ -340,7 +340,7 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
     orig_set_font = pymd2pdf.PDF.set_font
 
     def spy(self, family, style="", size=0):
-        if family == pymd2pdf.FONT_FA and size == state.BODY_SIZE:
+        if family == fonts.FONT_FA and size == state.BODY_SIZE:
             styles.append(style)
         return orig_set_font(self, family, style, size)
 

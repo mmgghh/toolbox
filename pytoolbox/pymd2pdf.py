@@ -27,45 +27,11 @@ from fpdf import FPDF
 from fpdf.svg import Percent, SVGObject
 from PIL import Image as PILImage
 
-from pytoolbox.core import paths
 from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
-from pytoolbox.mdpdf import shaping, state
-
-# ── Font search paths ───────────────────────────────────────────────
-# paths.font_dirs() covers Linux, macOS, Windows and Termux ($PREFIX/share/fonts
-# and ~/.termux/fonts, which have no /usr/share equivalent on Android).
-FONT_DIRS = paths.font_dirs()
-
-FONT_PERSIAN_DIRS = [
-    Path.home() / ".config/Typora/themes/middle-east",
-    Path("/usr/share/fonts/truetype/vazir"),
-    *FONT_DIRS,
-]
+from pytoolbox.mdpdf import fonts, shaping, state
 
 #: Page geometry presets accepted by ``--page-size``.
 PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
-
-FONT_SANS = "DejaVu"
-FONT_MONO = "DejaVuMono"
-FONT_FA   = "Vazir"
-#: Family prefix for the extra faces registered as per-glyph fallbacks.
-FONT_FALLBACK = "Fallback"
-
-#: Symbol/emoji faces tried, in order, as a last-resort fallback for glyphs
-#: neither DejaVu nor the Persian face can draw (✅ ❌ 💻 …). Monochrome
-#: outline fonts only: fpdf2 draws ``glyf``/``CFF`` outlines, so a colour
-#: emoji font (NotoColorEmoji's CBDT bitmaps, Apple's sbix) would contribute
-#: a cmap entry and then render nothing -- see _has_outlines.
-_SYMBOL_FONTS = (
-    "Symbola.ttf",
-    "Symbola_hint.ttf",
-    "NotoSansSymbols2-Regular.ttf",
-    "NotoSansSymbols-Regular.ttf",
-    "NotoEmoji-Regular.ttf",
-    "OpenSansEmoji.ttf",
-    "seguisym.ttf",        # Windows: Segoe UI Symbol
-    "Apple Symbols.ttf",   # macOS
-)
 
 # A standalone Markdown image line: ![alt](src "optional title")
 _IMG_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+["\'][^"\']*["\'])?\s*\)\s*$')
@@ -99,136 +65,6 @@ LINE_H_MULT = 1.8     # line-height multiplier for body text
 MAX_CODE_COLS = 220    # truncate code lines beyond this
 
 
-# ═══════════════════════════════════════════════════════════════════
-# Font resolution
-# ═══════════════════════════════════════════════════════════════════
-
-#: The five faces the renderer needs, and the DejaVu file that provides each.
-_REQUIRED_FACES = (
-    "DejaVuSans.ttf",
-    "DejaVuSans-Bold.ttf",
-    "DejaVuSerif.ttf",
-    "DejaVuSansMono.ttf",
-    "DejaVuSansMono-Bold.ttf",
-)
-
-
-def _find_dejavu_faces() -> dict[str, Path]:
-    """Locate the DejaVu faces, searching each font directory one level deep.
-
-    Returns a name -> path map. Faces may legitimately come from different
-    directories (Termux, for instance, splits the mono and sans packages).
-    """
-    found: dict[str, Path] = {}
-    for name in _REQUIRED_FACES:
-        match = paths.find_font(name)
-        if match is not None:
-            found[name] = match
-    if "DejaVuSans.ttf" not in found:
-        print(
-            "ERROR: DejaVu fonts not found. Install them:\n"
-            "  Debian/Ubuntu : sudo apt-get install fonts-dejavu-core\n"
-            "  Fedora/RHEL   : sudo dnf install dejavu-sans-fonts dejavu-sans-mono-fonts\n"
-            "  Arch          : sudo pacman -S ttf-dejavu\n"
-            "  Termux        : pkg install fontconfig-utils ttf-dejavu\n"
-            "  macOS (brew)  : brew install --cask font-dejavu\n"
-            "Or point pymd2pdf at a font directory with --font-dir.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    # Fall back to the regular face for any variant that is missing, so a
-    # partial install degrades to plain text instead of crashing.
-    for name in _REQUIRED_FACES:
-        found.setdefault(name, found["DejaVuSans.ttf"])
-    return found
-
-
-def _find_persian_font():
-    """Return (regular_path, bold_path) for the best available Persian face.
-
-    Prefers Vazirmatn (Vazir's successor, broader Unicode coverage) over
-    base Vazir. Whatever is found only has to cover the Arabic script:
-    symbols and Latin it lacks come from the fallback faces registered by
-    ``PDF.__init__``. Returns (None, None) if no family is installed.
-    """
-    candidates = (
-        ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf"),
-        ("Vazirmatn.ttf",         "Vazirmatn-Bold.ttf"),
-        ("Vazir.ttf",             "Vazir-Bold.ttf"),
-        # Noto ships in most distro font packages and on Termux, so it is a
-        # reasonable last resort when no Vazir family is installed.
-        ("NotoNaskhArabic-Regular.ttf", "NotoNaskhArabic-Bold.ttf"),
-    )
-    for d in FONT_PERSIAN_DIRS:
-        for reg_name, bold_name in candidates:
-            reg = d / reg_name
-            if reg.is_file():
-                bold = d / bold_name
-                return reg, (bold if bold.is_file() else reg)
-
-    for reg_name, bold_name in candidates:
-        reg = paths.find_font(reg_name)
-        if reg is not None:
-            bold = paths.find_font(bold_name)
-            return reg, (bold if bold is not None else reg)
-    return None, None
-
-
-def _has_outlines(path):
-    """Whether a font file carries drawable outlines (``glyf`` or ``CFF``).
-
-    Colour emoji fonts store their artwork as embedded bitmaps (``CBDT``) or
-    Apple ``sbix`` tables, which fpdf2 cannot draw: registering one would
-    claim coverage of every emoji and then render blanks, which is worse than
-    substituting text. fontTools is already an fpdf2 dependency.
-    """
-    try:
-        from fontTools.ttLib import TTFont
-
-        font = TTFont(str(path), fontNumber=0, lazy=True)
-        try:
-            return "glyf" in font or "CFF " in font
-        finally:
-            font.close()
-    except Exception:
-        return False
-
-
-def _find_fallback_fonts():
-    """Paths of the extra faces to register as per-glyph fallbacks.
-
-    ``--fallback-font`` entries come first (an explicit choice wins), then the
-    first usable built-in symbol candidate. Unusable files are reported rather
-    than silently ignored, since the user asked for them by name.
-    """
-    found = []
-    for path in state.extra_fallback_fonts:
-        if not _has_outlines(path):
-            print(
-                f"WARN: ignoring --fallback-font '{path}': not a font with drawable "
-                "outlines (colour-bitmap emoji fonts are not supported).",
-                file=sys.stderr,
-            )
-            continue
-        found.append(path)
-    for name in _SYMBOL_FONTS:
-        match = paths.find_font(name)
-        if match is not None and _has_outlines(match):
-            found.append(match)
-            break
-    # An explicitly named font may also be the one auto-detected; loading the
-    # same file twice costs a parse and buys nothing.
-    seen, unique = set(), []
-    for path in found:
-        try:
-            key = path.resolve()
-        except OSError:  # pragma: no cover - unresolvable symlink
-            key = path
-        if key not in seen:
-            seen.add(key)
-            unique.append(path)
-    return unique
-
 
 # ═══════════════════════════════════════════════════════════════════
 # PDF subclass
@@ -238,21 +74,21 @@ class PDF(FPDF):
     def __init__(self, title="", **kw):
         super().__init__(**kw)
         self._doc_title = title
-        faces = _find_dejavu_faces()
-        self.add_font(FONT_SANS, "",  str(faces["DejaVuSans.ttf"]))
-        self.add_font(FONT_SANS, "B", str(faces["DejaVuSans-Bold.ttf"]))
-        self.add_font(FONT_SANS, "I", str(faces["DejaVuSerif.ttf"]))
-        self.add_font(FONT_MONO, "",  str(faces["DejaVuSansMono.ttf"]))
-        self.add_font(FONT_MONO, "B", str(faces["DejaVuSansMono-Bold.ttf"]))
+        faces = fonts.find_dejavu_faces()
+        self.add_font(fonts.FONT_SANS, "",  str(faces["DejaVuSans.ttf"]))
+        self.add_font(fonts.FONT_SANS, "B", str(faces["DejaVuSans-Bold.ttf"]))
+        self.add_font(fonts.FONT_SANS, "I", str(faces["DejaVuSerif.ttf"]))
+        self.add_font(fonts.FONT_MONO, "",  str(faces["DejaVuSansMono.ttf"]))
+        self.add_font(fonts.FONT_MONO, "B", str(faces["DejaVuSansMono-Bold.ttf"]))
 
         # Set by convert() once the document's text is known; see _use_rtl_layout.
         self.doc_is_rtl = False
 
-        fa_reg, fa_bold = _find_persian_font()
+        fa_reg, fa_bold = fonts.find_persian_font()
         self.has_persian = fa_reg is not None
         if self.has_persian:
-            self.add_font(FONT_FA, "",  str(fa_reg))
-            self.add_font(FONT_FA, "B", str(fa_bold))
+            self.add_font(fonts.FONT_FA, "",  str(fa_reg))
+            self.add_font(fonts.FONT_FA, "B", str(fa_bold))
 
         self._register_fallback_fonts()
 
@@ -290,9 +126,9 @@ class PDF(FPDF):
         ``shaping.substitute_glyphs``, so the module-level translation table is
         rebuilt here from their combined coverage.
         """
-        fallbacks = [FONT_SANS]
-        for idx, path in enumerate(_find_fallback_fonts()):
-            family = f"{FONT_FALLBACK}{idx}"
+        fallbacks = [fonts.FONT_SANS]
+        for idx, path in enumerate(fonts.find_fallback_fonts()):
+            family = f"{fonts.FONT_FALLBACK}{idx}"
             try:
                 self.add_font(family, "", str(path))
             except Exception as exc:  # pragma: no cover - malformed font file
@@ -311,16 +147,16 @@ class PDF(FPDF):
             title = self._doc_title
             self.set_text_color(140, 140, 140)
             if shaping.is_rtl(title) and self.has_persian:
-                self.set_font(FONT_FA, "", 8)
+                self.set_font(fonts.FONT_FA, "", 8)
                 self.cell(0, 6, shaping.shape_rtl(title), align="R")
             else:
-                self.set_font(FONT_SANS, "I", 8)
+                self.set_font(fonts.FONT_SANS, "I", 8)
                 self.cell(0, 6, title, align="R")
             self.ln(8)
 
     def footer(self):
         self.set_y(-15)
-        self.set_font(FONT_SANS, "I", 8)
+        self.set_font(fonts.FONT_SANS, "I", 8)
         self.set_text_color(140, 140, 140)
         self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
 
@@ -397,7 +233,7 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
     lh = _body_lh(pdf)
 
     def reset():
-        pdf.set_font(FONT_SANS, base_style, base_size)
+        pdf.set_font(fonts.FONT_SANS, base_style, base_size)
         pdf.set_text_color(*CLR_BODY)
 
     for part in _INLINE_RE.split(text):
@@ -406,19 +242,19 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
         link_match = _LINK_RE.match(part)
         if link_match:
             label, url = link_match.groups()
-            pdf.set_font(FONT_SANS, base_style + "U" if "U" not in base_style else base_style, base_size)
+            pdf.set_font(fonts.FONT_SANS, base_style + "U" if "U" not in base_style else base_style, base_size)
             pdf.set_text_color(*CLR_LINK)
             pdf.write(lh, _strip_md(label), link=url)
             reset()
         elif part.startswith('`') and part.endswith('`'):
-            pdf.set_font(FONT_MONO, "", base_size - 1)
+            pdf.set_font(fonts.FONT_MONO, "", base_size - 1)
             pdf.set_text_color(*CLR_CODE_FG)
             pdf.write(lh, part[1:-1])
             reset()
         elif (part.startswith('**') and part.endswith('**')) or (
             part.startswith('__') and part.endswith('__')
         ):
-            pdf.set_font(FONT_SANS, "B", base_size)
+            pdf.set_font(fonts.FONT_SANS, "B", base_size)
             pdf.set_text_color(*CLR_BOLD)
             pdf.write(lh, part[2:-2])
             reset()
@@ -429,7 +265,7 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
             pdf.write(lh, part[2:-2])
             reset()
         elif part.startswith('*') and part.endswith('*'):
-            pdf.set_font(FONT_SANS, "I", base_size)
+            pdf.set_font(fonts.FONT_SANS, "I", base_size)
             pdf.write(lh, part[1:-1])
             reset()
         else:
@@ -447,16 +283,16 @@ def _add_heading(pdf, level, text):
     pdf.set_text_color(*CLR_HEADING)
     stripped = _strip_md(text)
     if _use_rtl_layout(pdf, stripped):
-        pdf.set_font(FONT_FA, "B", sz)
+        pdf.set_font(fonts.FONT_FA, "B", sz)
         pdf.multi_cell(
             0, sz * 0.6, shaping.shape_rtl(stripped),
             align="R", new_x="LMARGIN", new_y="NEXT",
         )
     else:
-        pdf.set_font(FONT_SANS, "B", sz)
+        pdf.set_font(fonts.FONT_SANS, "B", sz)
         pdf.multi_cell(0, sz * 0.6, stripped)
     pdf.ln(2)
-    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
 
 
@@ -464,18 +300,18 @@ def _add_code_block(pdf, lines):
     pdf.ln(2)
     pdf.set_fill_color(*CLR_CODE_BG)
     pdf.set_text_color(*CLR_CODE_FG)
-    pdf.set_font(FONT_MONO, "", CODE_SIZE)
+    pdf.set_font(fonts.FONT_MONO, "", CODE_SIZE)
     w = pdf.w - pdf.l_margin - pdf.r_margin
     x0 = pdf.l_margin
     for ln in lines:
         _ensure_space(pdf, CODE_LH)
         pdf.set_fill_color(*CLR_CODE_BG)
         pdf.set_text_color(*CLR_CODE_FG)
-        pdf.set_font(FONT_MONO, "", CODE_SIZE)
+        pdf.set_font(fonts.FONT_MONO, "", CODE_SIZE)
         display = ln[:MAX_CODE_COLS] if len(ln) > MAX_CODE_COLS else ln
         pdf.set_x(x0)
         pdf.cell(w, CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
     pdf.ln(2)
 
@@ -523,12 +359,12 @@ def _place_image(pdf, data, alt=""):
     pdf.image(data, x=x, w=w_mm, h=h_mm)
     pdf.ln(2)
     if alt:
-        pdf.set_font(FONT_FA if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else FONT_SANS, "I", 8)
+        pdf.set_font(fonts.FONT_FA if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else fonts.FONT_SANS, "I", 8)
         pdf.set_text_color(120, 120, 120)
         caption = shaping.shape_rtl(alt) if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
         pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*CLR_BODY)
-        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.ln(3)
 
 
@@ -693,7 +529,7 @@ def _add_table(pdf, headers, rows):
         or any(shaping.is_rtl(h) for h in headers)
         or any(shaping.is_rtl(c) for row in rows for c in row)
     )
-    table_font  = FONT_FA if has_persian else FONT_SANS
+    table_font  = fonts.FONT_FA if has_persian else fonts.FONT_SANS
     text_align  = "RIGHT" if has_persian else "LEFT"
 
     if has_persian:
@@ -850,7 +686,7 @@ def _add_paragraph(pdf, text):
     pdf.set_text_color(*CLR_BODY)
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- our wrap width must match
         # that actual usable text width or lines we judge to "just fit" wrap
@@ -861,7 +697,7 @@ def _add_paragraph(pdf, text):
         for line in shaping.shape_rtl_lines(pdf, _strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
         _render_rich(pdf, text)
         pdf.ln(_body_lh(pdf))
 
@@ -871,7 +707,7 @@ def _add_list_item(pdf, prefix, text, indent):
     body = text.strip()
     if _use_rtl_layout(pdf, body):
         bold_m = _WHOLE_BOLD_RE.match(body)
-        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
         lh = _body_lh(pdf)
         # multi_cell reserves its own internal c_margin padding on each side,
@@ -885,7 +721,7 @@ def _add_list_item(pdf, prefix, text, indent):
             pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_x(pdf.l_margin + indent * 2)
-        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
         pdf.write(_body_lh(pdf), prefix)
         _render_rich(pdf, body)
         pdf.ln(_body_lh(pdf))
@@ -905,7 +741,7 @@ def _add_blockquote(pdf, lines):
 
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- our wrap width must match
         # that actual usable text width or lines we judge to "just fit" wrap
@@ -917,7 +753,7 @@ def _add_blockquote(pdf, lines):
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_font(FONT_SANS, "I", state.BODY_SIZE)
+        pdf.set_font(fonts.FONT_SANS, "I", state.BODY_SIZE)
         pdf.set_left_margin(pdf.l_margin + indent)
         pdf.set_x(pdf.l_margin)
         _render_rich(pdf, text, base_style="I")
@@ -931,7 +767,7 @@ def _add_blockquote(pdf, lines):
     bar_x = pdf.w - pdf.r_margin - 1 if _use_rtl_layout(pdf, text) else pdf.l_margin + 1
     pdf.line(bar_x, start_y, bar_x, end_y - 1)
     pdf.set_line_width(0.2)
-    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
+    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
     pdf.ln(2)
 
@@ -1009,13 +845,13 @@ def convert(
         pdf.set_text_color(*CLR_HEADING)
         title_rtl = shaping.is_rtl(title) and pdf.has_persian
         if title_rtl:
-            pdf.set_font(FONT_FA, "B", 24)
+            pdf.set_font(fonts.FONT_FA, "B", 24)
             pdf.multi_cell(
                 0, 14, shaping.shape_rtl(title),
                 align="C", new_x="LMARGIN", new_y="NEXT",
             )
         else:
-            pdf.set_font(FONT_SANS, "B", 24)
+            pdf.set_font(fonts.FONT_SANS, "B", 24)
             # Split long titles across lines
             words = title.split()
             chunk, chunks = [], []
@@ -1028,7 +864,7 @@ def convert(
             for c in chunks:
                 pdf.cell(0, 14, c, align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(10)
-        pdf.set_font(FONT_SANS, "", 11)
+        pdf.set_font(fonts.FONT_SANS, "", 11)
         pdf.set_text_color(100, 100, 100)
         pdf.cell(0, 8, str(Path(md_path).name), align="C", new_x="LMARGIN", new_y="NEXT")
 
