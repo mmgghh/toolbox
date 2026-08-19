@@ -262,12 +262,10 @@ def partition(
 
     \b
     Choose exactly one of --partitions, --split-count or --split-size.
-    Note that -n here means --partitions (kept for compatibility); use the
-    long --dry-run flag for a preview.
 
     \b
     Examples:
-      pyfm partition -n 5 -s ./data --split-based-on size
+      pyfm partition --partitions 5 -s ./data --split-based-on size
       pyfm partition --split-size 700 -s ./photos --dir-prefix disc -v
       pyfm partition --split-count 100 -s ./photos --pattern '.*\\.(jpg|png)$'
     """
