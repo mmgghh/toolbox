@@ -31,6 +31,7 @@ from pytoolbox.core.fs import normalize_extensions as _normalize_extensions
 from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
+    encoding_options,
     json_option,
     version_option,
 )
@@ -499,13 +500,7 @@ def str_cli():
 @click.option("--hidden", is_flag=True, help="Include hidden files and directories.")
 @click.option("--follow-symlinks", is_flag=True, help="Follow symlinks while walking directories.")
 @click.option("--max-size", type=float, default=None, help="Skip files larger than this size (MB).")
-@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 @click.option("--stats", is_flag=True, help="Print summary statistics.")
 @click.option("--count", is_flag=True, help="Print match counts per file instead of just file names.")
 @click.option("--absolute", is_flag=True, help="Print absolute paths.")
@@ -683,13 +678,7 @@ def search(
 @click.option("--hidden", is_flag=True, help="Include hidden files and directories.")
 @click.option("--follow-symlinks", is_flag=True, help="Follow symlinks while walking directories.")
 @click.option("--max-size", type=float, default=None, help="Skip files larger than this size (MB).")
-@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 @click.option("--backup", is_flag=True, help="Write a backup file before replacing.")
 @click.option("--backup-suffix", default=".bak", help="Suffix for backup files (default: .bak).")
 @click.option("--binary", is_flag=True, help="Include binary files (default: skipped).")
@@ -903,13 +892,7 @@ def clip_replace(
 @click.option("--text", "input_text", default=None, help="Normalize the provided text instead of a file.")
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read text to normalize from stdin.")
 @click.option("--inplace", is_flag=True, help="Overwrite the input file in place.")
-@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 def normalize(
     path: Optional[Path],
     input_text: Optional[str],
@@ -936,13 +919,7 @@ def normalize(
 @click.option("--text", "input_text", default=None, help="Translate the provided text instead of a file.")
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read text to translate from stdin.")
 @click.option("--inplace", is_flag=True, help="Overwrite the input file in place.")
-@click.option("--encoding", default="utf-8", help="Text encoding to use when reading files.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 def translate(
     path: Optional[Path],
     dest: str,
@@ -1058,13 +1035,7 @@ CASE_CONVERTERS = {
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
 @click.option("--inplace", is_flag=True, help="Overwrite the input file.")
 @click.option("--per-line", is_flag=True, help="Convert each line separately (keeps line structure).")
-@click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 def case(
     path: Optional[Path],
     target: str,
@@ -1149,13 +1120,7 @@ def _encoding_command(name: str, decode: bool):
     @click.option("--text", "input_text", default=None, help="Use this text instead of a file.")
     @click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
     @click.option("--inplace", is_flag=True, help="Overwrite the input file.")
-    @click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
-    @click.option(
-        "--errors",
-        default="replace",
-        type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-        help="Encoding error handler.",
-    )
+    @encoding_options
     def command(path, scheme, input_text, from_stdin, inplace, encoding, errors):
         text, source_path = _read_text_source(path, input_text, from_stdin, encoding, errors)
         _emit_text_output(_apply_encoding(text, scheme, decode), source_path, inplace, encoding, errors)
@@ -1186,13 +1151,7 @@ decode = _encoding_command("decode", decode=True)
 @click.option("--text", "input_text", default=None, help="Count this text instead of a file.")
 @click.option("--stdin", "from_stdin", is_flag=True, help="Read the text from stdin.")
 @click.option("--top", type=int, default=0, help="Also list the N most frequent words.")
-@click.option("--encoding", default="utf-8", show_default=True, help="Text encoding for file IO.")
-@click.option(
-    "--errors",
-    default="replace",
-    type=click.Choice(["strict", "ignore", "replace"], case_sensitive=False),
-    help="Encoding error handler.",
-)
+@encoding_options
 @json_option
 def count_command(
     path: Optional[Path],

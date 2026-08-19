@@ -32,7 +32,7 @@ from pytoolbox.core.options import (
     version_option,
 )
 from pytoolbox.core.tables import emit as emit_rows
-from pytoolbox.core.tables import render_table, write_excel
+from pytoolbox.core.tables import render_table, suffix_for, write_excel
 from pytoolbox.pyjdate import (
     DateParts,
     TimeParts,
@@ -703,11 +703,10 @@ def report(
             click.echo(table + footer)
         return
 
-    suffixes = {"csv": ".csv", "markdown": ".md", "json": ".json", "excel": ".xlsx"}
     if output_format == "json" and not output:
         emit_rows(rows, headers, "json")
         return
-    path = build_output_path(output, suffixes[output_format])
+    path = build_output_path(output, suffix_for(output_format))
     emit_rows(rows, headers, output_format, path)
 
 

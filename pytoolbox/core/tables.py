@@ -65,6 +65,17 @@ def render_json(rows: Sequence[dict], headers: Sequence[str]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
 
+
+#: Format name -> renderer, for every format except ``excel``, which writes a
+#: workbook rather than text and so cannot go through a string renderer.
+_RENDERERS = {
+    "table": render_table,
+    "csv": render_csv,
+    "markdown": render_markdown,
+    "json": render_json,
+}
+
+
 def write_excel(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> None:
     """Write rows to an ``.xlsx`` file.
 
@@ -119,12 +130,7 @@ def emit(
         if output_format == "excel":
             write_excel(output, rows, headers)
         else:
-            renderer = {
-                "table": render_table,
-                "csv": render_csv,
-                "markdown": render_markdown,
-                "json": render_json,
-            }[output_format]
+            renderer = _RENDERERS[output_format]
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(renderer(rows, headers) + "\n", encoding="utf-8")
         click.echo(f"{output_format.capitalize()} written to {output}", err=True)
@@ -132,10 +138,5 @@ def emit(
 
     if output_format == "excel":
         raise click.ClickException("--format excel requires -o/--output.")
-    renderer = {
-        "table": render_table,
-        "csv": render_csv,
-        "markdown": render_markdown,
-        "json": render_json,
-    }[output_format]
+    renderer = _RENDERERS[output_format]
     click.echo(renderer(rows, headers))
