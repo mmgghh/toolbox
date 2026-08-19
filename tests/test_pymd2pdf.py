@@ -416,3 +416,24 @@ def test_offline_blocks_the_mermaid_web_fallback(monkeypatch):
 
     monkeypatch.setattr(pymd2pdf, "_render_mermaid_ink", explode)
     assert pymd2pdf._render_mermaid("graph TD; A-->B;") is None
+
+
+def test_font_size_reaches_styled_spans(tmp_path, monkeypatch):
+    """--font-size must scale bold/italic runs, not just plain body text."""
+    source = tmp_path / "styled.md"
+    source.write_text("Plain with **bold** and *italic* inside.\n", encoding="utf-8")
+
+    seen: list[tuple[str, float]] = []
+    original = pymd2pdf.PDF.set_font
+
+    def spy(self, family=None, style="", size=0):
+        seen.append((style, size))
+        return original(self, family, style, size)
+
+    monkeypatch.setattr(pymd2pdf.PDF, "set_font", spy)
+    pymd2pdf.convert(source, tmp_path / "styled.pdf", font_size=20, quiet=True)
+
+    body_sizes = {size for style, size in seen if style in ("", "B", "I") and size}
+    assert pymd2pdf.BODY_SIZE not in body_sizes, (
+        f"styled runs fell back to the import-time default: {sorted(body_sizes)}"
+    )

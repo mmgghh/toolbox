@@ -153,6 +153,14 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **`pymd2pdf --font-size` left bold and italic text at the old size.** The
+  helper that draws a line's styled runs took the body size as a default
+  argument, and a default is evaluated once when the module is imported —
+  so it kept the original 10pt while the plain text around it scaled. A
+  document set at `--font-size 20` came out with every bold word rendered at
+  half the size of the sentence containing it. The size is now read when the
+  helper runs.
+
 - **`pypdf2md` dropped every half-space in a word-processor document.** A word
   processor draws the four shapes of an Arabic letter as four different glyphs
   and maps all four back to the one plain letter, so nothing about the shaping

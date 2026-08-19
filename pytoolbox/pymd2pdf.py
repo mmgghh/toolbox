@@ -557,13 +557,20 @@ _INLINE_RE = re.compile(
 _LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
 
 
-def _render_rich(pdf, text, base_size=BODY_SIZE, base_style=""):
+def _render_rich(pdf, text, base_size=None, base_style=""):
     """Write a line honouring inline code, bold, italic, strikethrough and links.
 
     Uses pdf.write() throughout so segments wrap at the right margin instead of
     overflowing. Inline code is distinguished by the mono font; links are drawn
     underlined and carry a real PDF link annotation.
+
+    ``base_size`` defaults to BODY_SIZE at *call* time, not import time:
+    ``convert`` rebinds BODY_SIZE for --font-size, and a default evaluated at
+    import would pin every styled run to the original 10pt while the plain
+    text around it scaled.
     """
+    if base_size is None:
+        base_size = BODY_SIZE
     lh = _body_lh(pdf)
 
     def reset():
