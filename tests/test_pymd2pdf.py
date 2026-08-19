@@ -9,6 +9,7 @@ import pytest
 
 from pytoolbox import pymd2pdf
 from pytoolbox.core import paths
+from pytoolbox.mdpdf import state
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
@@ -141,14 +142,12 @@ def test_colour_status_emoji_are_always_substituted():
 
 
 def test_substitute_glyphs_uses_the_built_table(monkeypatch):
-    monkeypatch.setattr(
-        pymd2pdf, "_glyph_translation", pymd2pdf._build_glyph_translation(set())
-    )
+    monkeypatch.setattr(state, "glyph_translation", pymd2pdf._build_glyph_translation(set()))
     assert pymd2pdf._substitute_glyphs("done ✅️ and 🔴") == "done ✓ and ○"
 
 
 def test_substitute_glyphs_is_a_no_op_before_fonts_are_loaded(monkeypatch):
-    monkeypatch.setattr(pymd2pdf, "_glyph_translation", {})
+    monkeypatch.setattr(state, "glyph_translation", {})
     assert pymd2pdf._substitute_glyphs("✅") == "✅"
 
 
@@ -197,7 +196,7 @@ def test_convert_respects_page_and_font_options(tmp_path):
     assert a4.exists() and a5.exists()
     # The module-level body size must be restored after each conversion.
     pymd2pdf.convert(source, a4, font_size=14, quiet=True)
-    assert pymd2pdf.BODY_SIZE == 10
+    assert state.BODY_SIZE == 10
 
 
 TABLE_LINKS = """# Links
@@ -341,7 +340,7 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
     orig_set_font = pymd2pdf.PDF.set_font
 
     def spy(self, family, style="", size=0):
-        if family == pymd2pdf.FONT_FA and size == pymd2pdf.BODY_SIZE:
+        if family == pymd2pdf.FONT_FA and size == state.BODY_SIZE:
             styles.append(style)
         return orig_set_font(self, family, style, size)
 
@@ -407,9 +406,9 @@ def test_cli_rejects_output_and_output_dir_together(runner, tmp_path):
 
 
 def test_offline_blocks_the_mermaid_web_fallback(monkeypatch):
-    monkeypatch.setattr(pymd2pdf, "_offline", True)
-    monkeypatch.setattr(pymd2pdf, "_HAS_MMDC", False)
-    monkeypatch.setattr(pymd2pdf, "_mermaid_net_warned", False)
+    monkeypatch.setattr(state, "offline", True)
+    monkeypatch.setattr(state, "HAS_MMDC", False)
+    monkeypatch.setattr(state, "mermaid_net_warned", False)
 
     def explode(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("the network was used despite --offline")
@@ -434,6 +433,6 @@ def test_font_size_reaches_styled_spans(tmp_path, monkeypatch):
     pymd2pdf.convert(source, tmp_path / "styled.pdf", font_size=20, quiet=True)
 
     body_sizes = {size for style, size in seen if style in ("", "B", "I") and size}
-    assert pymd2pdf.BODY_SIZE not in body_sizes, (
+    assert state.BODY_SIZE not in body_sizes, (
         f"styled runs fell back to the import-time default: {sorted(body_sizes)}"
     )

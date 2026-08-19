@@ -15,7 +15,6 @@ from __future__ import annotations
 import base64
 import io
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -30,6 +29,7 @@ from PIL import Image as PILImage
 
 from pytoolbox.core import paths
 from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
+from pytoolbox.mdpdf import state
 
 try:
     import arabic_reshaper
@@ -41,16 +41,6 @@ try:
     _reshaper = arabic_reshaper.ArabicReshaper(configuration={"delete_harakat": False})
 except ImportError:
     _HAS_SHAPER = False
-
-# mermaid-cli (`mmdc`), if installed, renders Mermaid diagrams locally and
-# offline. Otherwise diagrams fall back to the mermaid.ink web API, and
-# finally to showing the raw source as a code block.
-_HAS_MMDC = shutil.which("mmdc") is not None
-_mermaid_net_warned = False
-
-#: Set by the CLI: when true, nothing reaches out to the network (no remote
-#: images, no mermaid.ink). Sensible default for offline/metered devices.
-_offline = False
 
 # ── Font search paths ───────────────────────────────────────────────
 # paths.font_dirs() covers Linux, macOS, Windows and Termux ($PREFIX/share/fonts
@@ -90,7 +80,6 @@ _SYMBOL_FONTS = (
 
 #: Set by the CLI from ``--fallback-font``: extra faces to try before the
 #: built-in symbol candidates.
-_extra_fallback_fonts: tuple[Path, ...] = ()
 
 # Characters in the Arabic/Persian Unicode blocks (including presentation forms).
 _RTL_RE = re.compile(r'[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]')
@@ -150,10 +139,6 @@ _GLYPH_SUBSTITUTES = {
     '▪': '*',    # ▪ BLACK SMALL SQUARE (nested list marker)
 }
 
-#: str.translate table built by PDF.__init__ once the loaded faces (and hence
-#: the set of drawable code points) are known.
-_glyph_translation: dict[int, str] = {}
-
 
 def _build_glyph_translation(covered) -> dict[int, str]:
     """Map code points to stand-ins, given the code points the fonts can draw."""
@@ -174,7 +159,7 @@ def _substitute_glyphs(text):
     (RTL and LTR, headings, tables, code blocks) sees the same text. Safe to
     apply twice: substitutes are themselves never keys of the table.
     """
-    return text.translate(_glyph_translation) if _glyph_translation else text
+    return text.translate(state.glyph_translation) if state.glyph_translation else text
 
 
 def _bidi_display(s):
@@ -266,7 +251,6 @@ CLR_QUOTE_BAR     = (170, 190, 220)
 CLR_QUOTE_FG      = (90, 90, 90)
 
 # ── Layout constants ────────────────────────────────────────────────
-BODY_SIZE   = 10
 CODE_SIZE   = 5.5
 CODE_LH     = 3.2
 TABLE_SIZE  = 7
@@ -378,7 +362,7 @@ def _find_fallback_fonts():
     than silently ignored, since the user asked for them by name.
     """
     found = []
-    for path in _extra_fallback_fonts:
+    for path in state.extra_fallback_fonts:
         if not _has_outlines(path):
             print(
                 f"WARN: ignoring --fallback-font '{path}': not a font with drawable "
@@ -466,7 +450,6 @@ class PDF(FPDF):
         ``_substitute_glyphs``, so the module-level translation table is
         rebuilt here from their combined coverage.
         """
-        global _glyph_translation
         fallbacks = [FONT_SANS]
         for idx, path in enumerate(_find_fallback_fonts()):
             family = f"{FONT_FALLBACK}{idx}"
@@ -481,7 +464,7 @@ class PDF(FPDF):
         covered: set[int] = set()
         for font in self.fonts.values():
             covered.update(getattr(font, "cmap", ()) or ())
-        _glyph_translation = _build_glyph_translation(covered)
+        state.glyph_translation = _build_glyph_translation(covered)
 
     def header(self):
         if self.page_no() > 1 and self._doc_title:
@@ -564,13 +547,13 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
     overflowing. Inline code is distinguished by the mono font; links are drawn
     underlined and carry a real PDF link annotation.
 
-    ``base_size`` defaults to BODY_SIZE at *call* time, not import time:
-    ``convert`` rebinds BODY_SIZE for --font-size, and a default evaluated at
+    ``base_size`` defaults to state.BODY_SIZE at *call* time, not import time:
+    ``convert`` rebinds state.BODY_SIZE for --font-size, and a default evaluated at
     import would pin every styled run to the original 10pt while the plain
     text around it scaled.
     """
     if base_size is None:
-        base_size = BODY_SIZE
+        base_size = state.BODY_SIZE
     lh = _body_lh(pdf)
 
     def reset():
@@ -633,7 +616,7 @@ def _add_heading(pdf, level, text):
         pdf.set_font(FONT_SANS, "B", sz)
         pdf.multi_cell(0, sz * 0.6, stripped)
     pdf.ln(2)
-    pdf.set_font(FONT_SANS, "", BODY_SIZE)
+    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
 
 
@@ -652,7 +635,7 @@ def _add_code_block(pdf, lines):
         display = ln[:MAX_CODE_COLS] if len(ln) > MAX_CODE_COLS else ln
         pdf.set_x(x0)
         pdf.cell(w, CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font(FONT_SANS, "", BODY_SIZE)
+    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
     pdf.ln(2)
 
@@ -705,14 +688,14 @@ def _place_image(pdf, data, alt=""):
         caption = _shape_rtl(alt) if _is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
         pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*CLR_BODY)
-        pdf.set_font(FONT_SANS, "", BODY_SIZE)
+        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
     pdf.ln(3)
 
 
 def _add_image(pdf, src, alt, base_dir):
     try:
         if re.match(r'^https?://', src):
-            if _offline:
+            if state.offline:
                 raise RuntimeError("remote images are disabled by --offline")
             resp = requests.get(src, timeout=15)
             resp.raise_for_status()
@@ -753,22 +736,21 @@ def _render_mermaid_ink(source):
 
 def _render_mermaid(source):
     """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
-    global _mermaid_net_warned
-    if _HAS_MMDC:
+    if state.HAS_MMDC:
         try:
             data = _render_mermaid_mmdc(source)
             if data:
                 return data
         except Exception:
             pass
-    if _offline:
-        if not _mermaid_net_warned:
+    if state.offline:
+        if not state.mermaid_net_warned:
             print(
                 "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
                 "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
                 file=sys.stderr,
             )
-            _mermaid_net_warned = True
+            state.mermaid_net_warned = True
         return None
     try:
         try:
@@ -779,15 +761,15 @@ def _render_mermaid(source):
             # falling back to showing the raw source.
             return _render_mermaid_ink(source)
     except Exception as exc:
-        if not _mermaid_net_warned:
+        if not state.mermaid_net_warned:
             print(
                 "WARN: could not render Mermaid diagram "
-                f"({'mmdc failed and ' if _HAS_MMDC else ''}mermaid.ink request "
+                f"({'mmdc failed and ' if state.HAS_MMDC else ''}mermaid.ink request "
                 f"failed: {exc}); showing raw source instead. Install mermaid-cli "
                 "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
                 file=sys.stderr,
             )
-            _mermaid_net_warned = True
+            state.mermaid_net_warned = True
         return None
 
 
@@ -1028,7 +1010,7 @@ def _add_paragraph(pdf, text):
     pdf.set_text_color(*CLR_BODY)
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
+        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- our wrap width must match
         # that actual usable text width or lines we judge to "just fit" wrap
@@ -1039,7 +1021,7 @@ def _add_paragraph(pdf, text):
         for line in _shape_rtl_lines(pdf, _strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_font(FONT_SANS, "", BODY_SIZE)
+        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
         _render_rich(pdf, text)
         pdf.ln(_body_lh(pdf))
 
@@ -1049,7 +1031,7 @@ def _add_list_item(pdf, prefix, text, indent):
     body = text.strip()
     if _use_rtl_layout(pdf, body):
         bold_m = _WHOLE_BOLD_RE.match(body)
-        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
+        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
         lh = _body_lh(pdf)
         # multi_cell reserves its own internal c_margin padding on each side,
@@ -1063,7 +1045,7 @@ def _add_list_item(pdf, prefix, text, indent):
             pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_x(pdf.l_margin + indent * 2)
-        pdf.set_font(FONT_SANS, "", BODY_SIZE)
+        pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
         pdf.write(_body_lh(pdf), prefix)
         _render_rich(pdf, body)
         pdf.ln(_body_lh(pdf))
@@ -1083,7 +1065,7 @@ def _add_blockquote(pdf, lines):
 
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(FONT_FA, "B" if bold_m else "", BODY_SIZE)
+        pdf.set_font(FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- our wrap width must match
         # that actual usable text width or lines we judge to "just fit" wrap
@@ -1095,7 +1077,7 @@ def _add_blockquote(pdf, lines):
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
-        pdf.set_font(FONT_SANS, "I", BODY_SIZE)
+        pdf.set_font(FONT_SANS, "I", state.BODY_SIZE)
         pdf.set_left_margin(pdf.l_margin + indent)
         pdf.set_x(pdf.l_margin)
         _render_rich(pdf, text, base_style="I")
@@ -1109,7 +1091,7 @@ def _add_blockquote(pdf, lines):
     bar_x = pdf.w - pdf.r_margin - 1 if _use_rtl_layout(pdf, text) else pdf.l_margin + 1
     pdf.line(bar_x, start_y, bar_x, end_y - 1)
     pdf.set_line_width(0.2)
-    pdf.set_font(FONT_SANS, "", BODY_SIZE)
+    pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*CLR_BODY)
     pdf.ln(2)
 
@@ -1151,15 +1133,14 @@ def convert(
 ):
     """Render one Markdown file to a PDF.
 
-    ``font_size`` scales body text by rebinding the module-level ``BODY_SIZE``;
+    ``font_size`` scales body text by rebinding the module-level ``state.BODY_SIZE``;
     the block renderers read that constant directly, and threading an explicit
     size through every one of them would add a parameter to a dozen functions
     for one rarely-changed knob.
     """
-    global BODY_SIZE
-    original_body_size = BODY_SIZE
+    original_body_size = state.BODY_SIZE
     if font_size:
-        BODY_SIZE = font_size
+        state.BODY_SIZE = font_size
 
     md_path = Path(md_path)
     # The PDF is built first because loading its faces is what determines
@@ -1335,7 +1316,7 @@ def convert(
     try:
         pdf.output(str(pdf_path))
     finally:
-        BODY_SIZE = original_body_size
+        state.BODY_SIZE = original_body_size
     if not quiet:
         print(f"  {md_path} -> {pdf_path}")
 
@@ -1383,7 +1364,7 @@ def convert(
     "--font-size",
     type=click.FloatRange(4, 24),
     default=None,
-    help=f"Body text size in points (default: {BODY_SIZE}).",
+    help=f"Body text size in points (default: {state.BODY_SIZE}).",
 )
 @click.option(
     "--fallback-font",
@@ -1485,15 +1466,14 @@ def pymd2pdf_cli(
                  pip install 'pytoolbox[rtl]'
                  # or: pip install arabic-reshaper python-bidi
     """
-    global _offline, _extra_fallback_fonts
 
     if output and len(files) > 1:
         raise click.UsageError("-o/--output can only be used with a single input file.")
     if output and output_dir:
         raise click.UsageError("Use either -o/--output or -d/--output-dir, not both.")
 
-    _offline = offline
-    _extra_fallback_fonts = fallback_font
+    state.offline = offline
+    state.extra_fallback_fonts = fallback_font
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 
