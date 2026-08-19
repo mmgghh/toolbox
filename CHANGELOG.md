@@ -7,6 +7,43 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydata` reads JSON, CSV and Excel and turns them into a schema, a
+  summary and a SQL table.** `pydata tree api.json` draws the structure —
+  every key, its types, and how many records actually had a value there;
+  `pydata summary` puts statistics beside it; `pydata filter --key 'addr*'
+  --type int` prints part of it; and `pydata sql -t users --db app.db` creates
+  the table and inserts the rows.
+
+  A JSON document is rarely already a list of rows, so it looks for one: a
+  top-level list is the rows, a single object is one row, and an envelope like
+  `{"data": {"items": [...]}}` is followed to its one list of objects — or, if
+  there are several, refused with each candidate named so `--root data.items`
+  can pick. Records with missing keys are fine: a key present in 80 of 120
+  records becomes a nullable column.
+
+  `--db` writes a real SQLite file through the standard library; `--dialect
+  postgres --sql out.sql` writes a script instead, with `--sql -` piping
+  straight into `psql`. Nested objects and lists are stored whole, as `jsonb`
+  on PostgreSQL and as `TEXT` on SQLite. Column names are folded to lower
+  `snake_case` and quoted — so the table stays comfortable to query, since a
+  verbatim `"userID"` column would have to be quoted in every later query on
+  PostgreSQL. Folding is not transliteration: Latin accents are dropped
+  (`Prénom` to `prenom`), while a script with no ASCII spelling keeps its
+  letters (`نام واحد` to `نام_واحد`, `日本語 の 列` to `日本語_の_列`), and names
+  are cut to PostgreSQL's 63-*byte* limit without splitting a character.
+  `--raw-names` keeps the keys exactly as they are and `--column OLD=NEW`
+  renames one; `--pk`,
+  `--index` and `--unique-index` are validated against the data first, so a
+  primary key that is not unique is refused with the offending value named
+  rather than failing halfway through the insert. `-i/--interactive` shows the
+  summary and asks for the table name, key and indexes, keeping every prompt
+  on stderr so a piped script stays clean.
+
+  CSV types are inferred a column at a time — one unparseable cell keeps the
+  whole column as text, and leading zeros keep `01730` a postcode rather than
+  a number — while Excel keeps the types the sheet recorded. Reading `.xlsx`
+  needs the existing `excel` extra; everything else is standard library.
+
 - **`pycalc` does arithmetic from the shell.** `pycalc '2**5+56-1'` prints
   `87`. `^` means "to the power of", as it does on a calculator and in a
   spreadsheet rather than in Python, with `--caret xor` and an always-present

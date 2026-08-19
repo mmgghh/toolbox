@@ -33,6 +33,17 @@ pytoolbox/
     tables.py     table/markdown/csv/json/excel rendering and export
     options.py    reusable Click options, AliasedGroup, context settings
     markdown.py   Markdown escaping and emphasis, shared by both writers
+  dataset/        reading JSON/CSV/Excel into a schema and into SQL
+    types.py      the value-type lattice and CSV text inference
+    naming.py     keys and headers folded into SQL identifiers
+    readers.py    the JSON, CSV and Excel readers
+    sources.py    finding the rows in a document, and --root
+    schema.py     the inferred structure tree, and its top level as columns
+    render.py     the tree view
+    summarize.py  per-field statistics
+    select.py     filtering fields by name and by value type
+    interactive.py  the --interactive prompts
+    sql/          dialects, the script emitter and the SQLite back end
   docx/           the .docx reader and its Markdown writer
   pdf/            the PDF reader, layout and structure inference
   mdpdf/          the Markdown-to-PDF typesetter
@@ -43,8 +54,8 @@ pytoolbox/
     render.py     headings, paragraphs, lists, quotes, inline markers
     tables.py     column measurement and grid drawing
     media.py      images, SVG and Mermaid diagrams
-  pyfm.py pystr.py pyjdate.py pytime.py pyssh.py pynet.py pycalc.py pymd2pdf.py
-  pymd2html.py pydocx2md.py pydocx2pdf.py pypdf2md.py
+  pyfm.py pystr.py pyjdate.py pytime.py pyssh.py pynet.py pycalc.py pydata.py
+  pymd2pdf.py pymd2html.py pydocx2md.py pydocx2pdf.py pypdf2md.py
   data.py normalize_data.py
 tests/
 docs/
