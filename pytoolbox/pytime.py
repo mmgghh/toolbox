@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -542,6 +542,123 @@ def _list_dimension(field: str, as_json: bool, project: Optional[str] = None) ->
     emit_rows(rows, [field, "entries", "hours", "last_used"], "json" if as_json else "table")
 
 
+
+#: Columns of an ungrouped report, one row per tracked entry.
+_RECORD_HEADERS = [
+    "id",
+    "project",
+    "task",
+    "start_gregorian",
+    "start_jalali",
+    "start_epoch",
+    "end_gregorian",
+    "end_jalali",
+    "end_epoch",
+    "duration_hours",
+]
+
+
+def _entry_filters(
+    entry_id: Optional[int],
+    project: Optional[str],
+    task: Optional[str],
+    regex: bool,
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar_value: Optional[str],
+    allow_fallback: bool,
+) -> tuple[list[str], list[object]]:
+    """Turn the shared entry-selection options into SQL clauses and parameters.
+
+    ``report`` and ``delete`` offer the same filters and must agree on what
+    they select, so they ask the same question here rather than each building
+    the clause list themselves.
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+
+    if entry_id is not None:
+        clauses.append("id = ?")
+        params.append(entry_id)
+
+    if project:
+        _validate_regex(project, regex)
+        if regex:
+            clauses.append("project REGEXP ?")
+            params.append(project)
+        else:
+            clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(f"%{escape_like(project)}%")
+
+    if task:
+        _validate_regex(task, regex)
+        if regex:
+            clauses.append("task REGEXP ?")
+            params.append(task)
+        else:
+            clauses.append("task LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(f"%{escape_like(task)}%")
+
+    if interval_value:
+        delta = parse_pg_interval(interval_value)
+        end_dt = datetime.now().astimezone()
+        start_dt = apply_interval(end_dt, delta, direction=-1)
+        clauses.append("start_ts >= ?")
+        params.append(start_dt.timestamp())
+        clauses.append("start_ts <= ?")
+        params.append(end_dt.timestamp())
+    else:
+        if start_value:
+            start_dt = parse_datetime_value(calendar_value, start_value, allow_fallback)
+            clauses.append("start_ts >= ?")
+            params.append(start_dt.timestamp())
+        if end_value:
+            end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
+            clauses.append("start_ts <= ?")
+            params.append(end_dt.timestamp())
+    return clauses, params
+
+
+def _emit_report(
+    rows: Sequence[dict],
+    headers: Sequence[str],
+    records: Sequence,
+    output_format: str,
+    output: Optional[str],
+    no_total: bool,
+) -> None:
+    """Render a finished report as a table, or export it in another format."""
+    output_format = output_format.lower()
+    total_hours = sum(record.duration_hours for record in records)
+
+    if output_format == "table":
+        table = render_table(rows, headers)
+        footer = (
+            ""
+            if no_total
+            else (
+                f"\nTotal: {format_total_value(round(total_hours, 3))} hours "
+                f"({format_hours_minutes(total_hours)}) "
+                f"across {len(records)} entr{'y' if len(records) == 1 else 'ies'}"
+            )
+        )
+        if output:
+            path = Path(output).expanduser()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(table + footer + "\n", encoding="utf-8")
+            click.echo(f"Report written to {path}", err=True)
+        else:
+            click.echo(table + footer)
+        return
+
+    if output_format == "json" and not output:
+        emit_rows(rows, headers, "json")
+        return
+    path = build_output_path(output, suffix_for(output_format))
+    emit_rows(rows, headers, output_format, path)
+
+
 @time_cli.command()
 @click.option("-i", "--id", "entry_id", type=int, help="Entry id filter (optional).")
 @click.option("-p", "--project", type=str, help="Project filter (optional).")
@@ -612,48 +729,10 @@ def report(
         required=bool(set(group_items) & {"year", "month", "day"}),
     )
 
-    clauses: list[str] = []
-    params: list[object] = []
-
-    if entry_id is not None:
-        clauses.append("id = ?")
-        params.append(entry_id)
-
-    if project:
-        _validate_regex(project, regex)
-        if regex:
-            clauses.append("project REGEXP ?")
-            params.append(project)
-        else:
-            clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
-            params.append(f"%{escape_like(project)}%")
-
-    if task:
-        _validate_regex(task, regex)
-        if regex:
-            clauses.append("task REGEXP ?")
-            params.append(task)
-        else:
-            clauses.append("task LIKE ? ESCAPE '\\' COLLATE NOCASE")
-            params.append(f"%{escape_like(task)}%")
-
-    if interval_value:
-        delta = parse_pg_interval(interval_value)
-        end_dt = datetime.now().astimezone()
-        start_dt = apply_interval(end_dt, delta, direction=-1)
-        clauses.append("start_ts >= ?")
-        params.append(start_dt.timestamp())
-        clauses.append("start_ts <= ?")
-        params.append(end_dt.timestamp())
-    else:
-        if start_value:
-            start_dt = parse_datetime_value(calendar_value, start_value, allow_fallback)
-            clauses.append("start_ts >= ?")
-            params.append(start_dt.timestamp())
-        if end_value:
-            end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
-            clauses.append("start_ts <= ?")
-            params.append(end_dt.timestamp())
+    clauses, params = _entry_filters(
+        entry_id, project, task, regex, interval_value,
+        start_value, end_value, calendar_value, allow_fallback,
+    )
 
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
     with connect(db_path) as conn:
@@ -667,47 +746,9 @@ def report(
         rows, headers = group_records(records, group_items, calendar_value)
     else:
         rows = [record_to_row(record) for record in records]
-        headers = [
-            "id",
-            "project",
-            "task",
-            "start_gregorian",
-            "start_jalali",
-            "start_epoch",
-            "end_gregorian",
-            "end_jalali",
-            "end_epoch",
-            "duration_hours",
-        ]
+        headers = _RECORD_HEADERS
 
-    output_format = output_format.lower()
-    total_hours = sum(record.duration_hours for record in records)
-
-    if output_format == "table":
-        table = render_table(rows, headers)
-        footer = (
-            ""
-            if no_total
-            else (
-                f"\nTotal: {format_total_value(round(total_hours, 3))} hours "
-                f"({format_hours_minutes(total_hours)}) "
-                f"across {len(records)} entr{'y' if len(records) == 1 else 'ies'}"
-            )
-        )
-        if output:
-            path = Path(output).expanduser()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(table + footer + "\n", encoding="utf-8")
-            click.echo(f"Report written to {path}", err=True)
-        else:
-            click.echo(table + footer)
-        return
-
-    if output_format == "json" and not output:
-        emit_rows(rows, headers, "json")
-        return
-    path = build_output_path(output, suffix_for(output_format))
-    emit_rows(rows, headers, output_format, path)
+    _emit_report(rows, headers, records, output_format, output, no_total)
 
 
 @time_cli.command()
@@ -934,48 +975,10 @@ def delete(
 
     calendar_value, allow_fallback = parse_calendar(calendar)
 
-    clauses: list[str] = []
-    params: list[object] = []
-
-    if entry_id is not None:
-        clauses.append("id = ?")
-        params.append(entry_id)
-
-    if project:
-        _validate_regex(project, regex)
-        if regex:
-            clauses.append("project REGEXP ?")
-            params.append(project)
-        else:
-            clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
-            params.append(f"%{escape_like(project)}%")
-
-    if task:
-        _validate_regex(task, regex)
-        if regex:
-            clauses.append("task REGEXP ?")
-            params.append(task)
-        else:
-            clauses.append("task LIKE ? ESCAPE '\\' COLLATE NOCASE")
-            params.append(f"%{escape_like(task)}%")
-
-    if interval_value:
-        delta = parse_pg_interval(interval_value)
-        end_dt = datetime.now().astimezone()
-        start_dt = apply_interval(end_dt, delta, direction=-1)
-        clauses.append("start_ts >= ?")
-        params.append(start_dt.timestamp())
-        clauses.append("start_ts <= ?")
-        params.append(end_dt.timestamp())
-    else:
-        if start_value:
-            start_dt = parse_datetime_value(calendar_value, start_value, allow_fallback)
-            clauses.append("start_ts >= ?")
-            params.append(start_dt.timestamp())
-        if end_value:
-            end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
-            clauses.append("start_ts <= ?")
-            params.append(end_dt.timestamp())
+    clauses, params = _entry_filters(
+        entry_id, project, task, regex, interval_value,
+        start_value, end_value, calendar_value, allow_fallback,
+    )
 
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
     with connect(db_path) as conn:
