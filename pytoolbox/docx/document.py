@@ -24,6 +24,10 @@ _HEADING_ID = re.compile(r"^Heading(\d+)$", re.IGNORECASE)
 
 MAX_HEADING = 6
 
+#: ``w:outlineLvl`` runs 0-8 for the nine heading depths; Word writes 9 to mean
+#: "body text", which is how a style says it is explicitly not a heading.
+_BODY_TEXT_OUTLINE = 9
+
 
 @dataclass
 class Paragraph:
@@ -97,13 +101,16 @@ def _paragraph(element: ET.Element, pkg: Package, numbering: Numbering, styles: 
     items = parse_inline(element, pkg)
     props = element.find(qn("w:pPr"))
 
-    num_id, ilvl = _list_properties(props, styles)
-    if num_id is not None:
-        return ListItem(level=ilvl, ordered=numbering.is_ordered(num_id, ilvl), items=items)
-
+    # Headings are tested first because Word numbers them through the very
+    # same numPr a list uses: a chapter style that writes "Chapter 1" for the
+    # author is a heading carrying a number, not a one-line bulleted list.
     level = _heading_level(props, styles)
     if level is not None:
         return Heading(level=level, items=items)
+
+    num_id, ilvl = _list_properties(props, styles)
+    if num_id is not None:
+        return ListItem(level=ilvl, ordered=numbering.is_ordered(num_id, ilvl), items=items)
 
     return Paragraph(items=items)
 
@@ -113,20 +120,37 @@ def _heading_level(props: Optional[ET.Element], styles: Styles) -> Optional[int]
     if props is None:
         return None
 
+    style_id = _style_id(props)
     # A house style is normally built on a built-in heading rather than used in
     # its place, so the whole basedOn chain counts, not just the style named.
-    for style_id in styles.chain(_style_id(props)):
-        match = _HEADING_ID.match(style_id)
+    for current in styles.chain(style_id):
+        match = _HEADING_ID.match(current)
         if match:
             return min(int(match.group(1)), MAX_HEADING)
 
-    outline = props.find(qn("w:outlineLvl"))
-    if outline is not None:
-        value = attr(outline, "w:val")
-        if value is not None and value.isdigit():
-            # w:outlineLvl is zero-based, Markdown headings are one-based.
-            return min(int(value) + 1, MAX_HEADING)
-    return None
+    # Direct formatting wins over the style, as everywhere else in Word. The
+    # style is where a document written with its own chapter headings, in a
+    # localised Word that never names Heading1, records its depth.
+    outline = _outline_level(props.find(qn("w:outlineLvl")))
+    if outline is None:
+        outline = _valid_outline(styles.outline_level(style_id))
+    if outline is None:
+        return None
+    # w:outlineLvl is zero-based, Markdown headings are one-based.
+    return min(outline + 1, MAX_HEADING)
+
+
+def _outline_level(element: Optional[ET.Element]) -> Optional[int]:
+    """The depth a ``w:outlineLvl`` element asks for, if it asks for one."""
+    if element is None:
+        return None
+    value = attr(element, "w:val")
+    return _valid_outline(int(value)) if value is not None and value.isdigit() else None
+
+
+def _valid_outline(level: Optional[int]) -> Optional[int]:
+    """Keep the nine heading depths and drop Word's "body text" marker."""
+    return level if level is not None and level < _BODY_TEXT_OUTLINE else None
 
 
 def _list_properties(props: Optional[ET.Element], styles: Styles) -> tuple[Optional[str], int]:

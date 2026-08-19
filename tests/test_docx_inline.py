@@ -55,7 +55,7 @@ def test_deleted_text_is_dropped(tmp_path):
 def test_inserted_text_is_kept(tmp_path):
     body = run("a ") + f'<w:ins w:id="1" w:author="a">{run("new")}</w:ins>'
     items = inline_of(tmp_path, para(runs=body))
-    assert texts(items) == ["a ", "new"]
+    assert texts(items) == ["a new"]
 
 
 def test_moved_text_is_kept_once(tmp_path):
@@ -116,3 +116,59 @@ def test_a_line_break_becomes_a_newline(tmp_path):
     body = run("a") + "<w:r><w:br/></w:r>" + run("b")
     items = inline_of(tmp_path, para(runs=body))
     assert "".join(texts(items)) == "a\nb"
+
+
+def test_a_wingdings_tick_becomes_a_ticked_box(tmp_path):
+    body = run("done ") + '<w:r><w:sym w:font="Wingdings" w:char="F0FE"/></w:r>'
+    items = inline_of(tmp_path, para(runs=body))
+    assert "".join(texts(items)) == "done ☑"
+
+
+def test_a_symbol_font_character_becomes_its_greek_letter(tmp_path):
+    body = '<w:r><w:sym w:font="Symbol" w:char="F062"/></w:r>'
+    items = inline_of(tmp_path, para(runs=body))
+    assert "".join(texts(items)) == "β"
+
+
+def test_a_symbol_keeps_the_formatting_of_its_run(tmp_path):
+    body = '<w:r><w:rPr><w:b/></w:rPr><w:sym w:font="Wingdings" w:char="F0FC"/></w:r>'
+    items = inline_of(tmp_path, para(runs=body))
+    assert [(i.text, i.bold) for i in items] == [("✓", True)]
+
+
+def test_an_unknown_symbol_font_falls_back_to_the_plain_character(tmp_path):
+    body = '<w:r><w:sym w:font="Marlett" w:char="F061"/></w:r>'
+    items = inline_of(tmp_path, para(runs=body))
+    assert "".join(texts(items)) == "a"
+
+
+def test_runs_word_split_are_joined_back_into_one(tmp_path):
+    body = run("one ") + run("sentence, ") + run("three runs")
+    items = inline_of(tmp_path, para(runs=body))
+    assert texts(items) == ["one sentence, three runs"]
+
+
+def test_runs_are_only_joined_when_the_formatting_matches(tmp_path):
+    body = run("plain ") + run("bold", bold=True) + run("more", bold=True) + run(" plain")
+    items = inline_of(tmp_path, para(runs=body))
+    assert texts(items) == ["plain ", "boldmore", " plain"]
+
+
+def test_an_empty_run_is_dropped(tmp_path):
+    body = run("a") + '<w:r><w:t></w:t></w:r>' + run("b")
+    items = inline_of(tmp_path, para(runs=body))
+    assert texts(items) == ["ab"]
+
+
+def test_a_mark_between_runs_keeps_them_apart(tmp_path):
+    body = commented("7", run("first")) + run("second")
+    items = inline_of(tmp_path, para(runs=body))
+    assert texts(items) == ["first", "second"]
+
+
+def test_a_hyperlink_split_across_runs_becomes_one_link(tmp_path):
+    """Word shreds a table of contents entry into a run per word."""
+    inner = run("Chapter") + run(" 1 ") + run("Aims")
+    body = f'<w:hyperlink w:anchor="_Toc1">{inner}</w:hyperlink>'
+    items = inline_of(tmp_path, para(runs=body))
+    assert [(i.text, i.link) for i in items] == [("Chapter 1 Aims", "#_Toc1")]

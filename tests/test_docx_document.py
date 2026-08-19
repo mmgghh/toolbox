@@ -200,3 +200,62 @@ def test_an_empty_paragraph_is_kept_as_a_break(tmp_path):
     blocks = blocks_of(tmp_path, para("a") + "<w:p/>" + para("b"))
     assert len(blocks) == 3
     assert text_of(blocks[1]) == ""
+
+
+def test_a_style_that_sets_an_outline_level_makes_a_heading(tmp_path):
+    """A house style names its own level rather than being based on Heading1."""
+    parts = {"word/styles.xml": styles_part(style_def("a0", '<w:outlineLvl w:val="1"/>'))}
+    blocks = blocks_of(tmp_path, para("فصل", style="a0"), parts=parts)
+    assert isinstance(blocks[0], Heading)
+    assert blocks[0].level == 2
+
+
+def test_an_outline_level_is_inherited_through_basedOn(tmp_path):
+    parts = {
+        "word/styles.xml": styles_part(
+            style_def("Chapter", '<w:outlineLvl w:val="0"/>'),
+            style_def("ChapterAlt", based_on="Chapter"),
+        )
+    }
+    blocks = blocks_of(tmp_path, para("t", style="ChapterAlt"), parts=parts)
+    assert isinstance(blocks[0], Heading)
+    assert blocks[0].level == 1
+
+
+def test_outline_level_nine_is_body_text_not_a_heading(tmp_path):
+    """Word writes 9 for "no outline level"; it must not become a heading."""
+    parts = {"word/styles.xml": styles_part(style_def("Quote", '<w:outlineLvl w:val="9"/>'))}
+    blocks = blocks_of(tmp_path, para("body", style="Quote"), parts=parts)
+    assert isinstance(blocks[0], Paragraph)
+
+
+def test_a_paragraph_outline_level_beats_the_style(tmp_path):
+    parts = {"word/styles.xml": styles_part(style_def("Chapter", '<w:outlineLvl w:val="0"/>'))}
+    body = (
+        '<w:p><w:pPr><w:pStyle w:val="Chapter"/><w:outlineLvl w:val="2"/></w:pPr>'
+        "<w:r><w:t>t</w:t></w:r></w:p>"
+    )
+    blocks = blocks_of(tmp_path, body, parts=parts)
+    assert blocks[0].level == 3
+
+
+def test_a_numbered_heading_is_a_heading_not_a_list_item(tmp_path):
+    """Word numbers chapter headings through the style; they stay headings."""
+    parts = {
+        "word/numbering.xml": numbering_part(fmt="decimal"),
+        "word/styles.xml": styles_part(
+            style_def("Chapter", num_pr(num_id="1", ilvl="0") + '<w:outlineLvl w:val="0"/>')
+        ),
+    }
+    blocks = blocks_of(tmp_path, para("فصل", style="Chapter"), parts=parts)
+    assert isinstance(blocks[0], Heading)
+    assert blocks[0].level == 1
+
+
+def test_a_numbered_paragraph_without_an_outline_level_is_still_a_list(tmp_path):
+    parts = {
+        "word/numbering.xml": numbering_part(),
+        "word/styles.xml": styles_part(style_def("ListBullet", num_pr(num_id="1"))),
+    }
+    blocks = blocks_of(tmp_path, para("point", style="ListBullet"), parts=parts)
+    assert isinstance(blocks[0], ListItem)

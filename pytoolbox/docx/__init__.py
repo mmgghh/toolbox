@@ -8,6 +8,7 @@ to one onto that structure:
 ``styles``     turns ``styles.xml`` into the properties a paragraph inherits
 ``comments``   turns ``comments.xml`` into threaded ``Comment`` objects
 ``omml``       turns Word's equations into LaTeX
+``symbols``    turns a symbol font's glyphs into ordinary Unicode text
 ``document``   walks ``document.xml`` into a flat list of blocks
 ``markdown``   turns those blocks, plus the comments, into Markdown
 

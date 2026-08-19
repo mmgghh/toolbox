@@ -4,7 +4,9 @@ A Word paragraph rarely carries its own formatting. It names a style, and the
 style -- possibly through a chain of ``basedOn`` parents -- supplies the rest.
 List membership is the case that matters here: paragraphs written with the
 built-in *List Bullet* style hold no ``numPr`` at all, so a reader that looks
-only at the paragraph sees body text where the author saw bullets.
+only at the paragraph sees body text where the author saw bullets. Outline
+level is the same story for headings: a document written with its own chapter
+styles, rather than with *Heading 1*, records the depth once in the style.
 """
 
 from __future__ import annotations
@@ -25,9 +27,22 @@ class Styles:
         self,
         parents: dict[str, str],
         lists: dict[str, tuple[Optional[str], Optional[int]]],
+        outlines: Optional[dict[str, int]] = None,
     ) -> None:
         self._parents = parents
         self._lists = lists
+        self._outlines = outlines or {}
+
+    def outline_level(self, style_id: Optional[str]) -> Optional[int]:
+        """The ``w:outlineLvl`` a style contributes, inherited like the rest.
+
+        The value is returned as written, including Word's 9 for "body text";
+        deciding what counts as a heading is the caller's business.
+        """
+        for current in self.chain(style_id):
+            if current in self._outlines:
+                return self._outlines[current]
+        return None
 
     def list_properties(self, style_id: Optional[str]) -> tuple[Optional[str], Optional[int]]:
         """The ``numId`` and nesting depth a style contributes, if any.
@@ -66,6 +81,7 @@ def load_styles(pkg: Package) -> Styles:
 
     parents: dict[str, str] = {}
     lists: dict[str, tuple[Optional[str], Optional[int]]] = {}
+    outlines: dict[str, int] = {}
 
     for style in part.findall(qn("w:style")):
         style_id = attr(style, "w:styleId")
@@ -83,7 +99,12 @@ def load_styles(pkg: Package) -> Styles:
         if num_pr is not None:
             lists[style_id] = (_value(num_pr, "w:numId"), _level(num_pr))
 
-    return Styles(parents, lists)
+        outline = props.find(qn("w:outlineLvl")) if props is not None else None
+        raw = attr(outline, "w:val") if outline is not None else None
+        if raw is not None and raw.isdigit():
+            outlines[style_id] = int(raw)
+
+    return Styles(parents, lists, outlines)
 
 
 def _value(num_pr: ET.Element, tag: str) -> Optional[str]:

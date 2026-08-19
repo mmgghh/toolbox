@@ -5,6 +5,42 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`pydocx2md` dropped every tick, cross and bullet drawn from a symbol
+  font.** Word does not store those as text: a ticked box is
+  `<w:sym w:font="Wingdings" w:char="F0FE"/>`, the font name plus a code
+  point, and nothing about it reaches the run's `w:t`. The reader collected
+  only `w:t`, so a contract whose requirements table marks each row as in or
+  out of scope converted to a column of blank cells — and the sentence
+  explaining the convention lost the tick from inside its own brackets.
+  Wingdings and Symbol are now mapped to their Unicode equivalents; a glyph
+  from any other font falls back to the plain character at its code point.
+
+- **`pydocx2md` shredded a table of contents into one link per word.** Word
+  starts a fresh `w:r` wherever its revision tracking needs one, so a single
+  entry arrives as a dozen runs that share every property. Each was rendered
+  on its own, giving `[Chapter](#_Toc1)[ 1](#_Toc1)[Aims](#_Toc1)` and, where
+  a run held only the space between two words, an empty `[](#_Toc1)`. Runs
+  that agree on their formatting are joined back together first, which also
+  ends the `**bold****text**` the same splitting produced in body text.
+
+- **`pydocx2md` lost every heading in a document written with its own chapter
+  styles.** A heading was recognised by its style *id* — `Heading1` and the
+  styles based on it — or by an outline level the paragraph carried directly.
+  A localised Word names those styles in the author's language and gives them
+  generated ids like `a0`, and records the depth once in the style, so neither
+  test found them. Outline level is now inherited through the `basedOn` chain
+  like the other style properties, and Word's 9 is read as "body text" rather
+  than as a tenth heading level.
+
+- **`pydocx2md` turned numbered headings into list items.** Word numbers
+  headings through the same `numPr` a bulleted list uses, and paragraphs were
+  tested for list membership first, so every chapter heading in a document
+  with automatic heading numbers came out as a one-line list. Headings are
+  now tested first: an outline level makes a heading whatever numbering the
+  style also carries.
+
 ### Added
 
 - **`pydata` reads JSON, CSV and Excel and turns them into a schema, a

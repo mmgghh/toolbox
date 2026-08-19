@@ -14,6 +14,7 @@ from xml.etree import ElementTree as ET
 
 from pytoolbox.docx.omml import latex_of
 from pytoolbox.docx.package import Package, attr, qn
+from pytoolbox.docx.symbols import text_of as symbol_text
 
 
 @dataclass
@@ -79,7 +80,38 @@ def parse_inline(paragraph: ET.Element, pkg: Package) -> list[Item]:
     """Flatten one ``w:p`` into an ordered list of runs and marks."""
     items: list[Item] = []
     _walk(paragraph, pkg, items, link=None)
-    return items
+    return _joined(items)
+
+
+def _joined(items: list[Item]) -> list[Item]:
+    """Put back together the runs Word split for its own bookkeeping.
+
+    Word starts a new ``w:r`` wherever its revision and spell-check tracking
+    needs one, so a single sentence arrives as a handful of runs that share
+    every property. Rendered one at a time those come out as ``**a****b**``,
+    or a table of contents shredded into one link per word, so neighbours
+    that agree on their formatting are joined and empty runs dropped. Marks
+    and images stay where they are, and break a join like any difference.
+    """
+    joined: list[Item] = []
+    for item in items:
+        if not isinstance(item, Run):
+            joined.append(item)
+            continue
+        if not item.text:
+            continue
+        previous = joined[-1] if joined else None
+        if isinstance(previous, Run) and _same_style(previous, item):
+            previous.text += item.text
+        else:
+            joined.append(item)
+    return joined
+
+
+def _same_style(one: Run, other: Run) -> bool:
+    """Whether two runs would be written with the same Markdown wrapping."""
+    keys = ("bold", "italic", "strike", "code", "link")
+    return all(getattr(one, key) == getattr(other, key) for key in keys)
 
 
 def _walk(parent: ET.Element, pkg: Package, items: list[Item], link: Optional[str]) -> None:
@@ -142,6 +174,10 @@ def _run_items(element: ET.Element, pkg: Package, link: Optional[str]) -> list[I
             text_parts.append("\n")
         elif tag == qn("w:noBreakHyphen"):
             text_parts.append("-")
+        elif tag == qn("w:sym"):
+            # A glyph from a symbol font; its text lives in the attributes,
+            # so a reader that only collects w:t drops every tick and bullet.
+            text_parts.append(symbol_text(attr(child, "w:font") or "", attr(child, "w:char") or ""))
         elif tag == qn("w:footnoteReference"):
             flush()
             note_id = attr(child, "w:id")

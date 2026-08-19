@@ -57,13 +57,18 @@ about, and the thread is quoted under the paragraph or table that holds it.
 | Table | Pipe table |
 | Embedded image | `![alt](<name>.assets/imageN.png)` |
 | Equation | LaTeX in `$…$`, or `$$…$$` on its own lines |
+| Symbol-font glyph (Wingdings, Symbol) | The Unicode character — `☑`, `✓`, `β` |
 | Footnote and endnote | `[^n]`, defined at the end |
 | Comment | Numbered marker plus a quoted thread |
 | Tracked insertion | Kept |
 | Tracked deletion | Dropped |
 
 Headings are matched on the style **id**, not its display name, so a document
-written in a localised Word still converts. Persian and Arabic text passes
+written in a localised Word still converts. A style that names no built-in
+heading is read from the outline level it sets, which is how a document
+written with its own chapter styles keeps its structure; because Word numbers
+those headings through the same machinery a list uses, an outline level makes
+a heading even when the style also carries numbering. Persian and Arabic text passes
 through untouched — Markdown is plain text, so none of the reshaping
 `pymd2pdf` needs applies here.
 
@@ -72,6 +77,12 @@ Word writes for the toolbar buttons — or takes it from its style, as the
 built-in *List Bullet* and *List Number* do. Styles are followed up their
 `basedOn` chain, so a house style built on `Heading2` is a heading and one
 built on a list style is a list.
+
+A tick in a Word form is not text: it is a glyph named by font and code point,
+which is why converters tend to drop it and leave a column of blank cells.
+Wingdings and Symbol are mapped to their Unicode equivalents, so a ticked box
+converts as `☑` and a Symbol beta as `β`; a glyph from any other font falls
+back to the plain character at that code point.
 
 ## Equations
 
