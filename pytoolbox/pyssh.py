@@ -708,6 +708,41 @@ def split_rsync_target(spec: str) -> tuple[str, Optional[str]]:
     return f"{user}@{host}:{path}", match.group("password") or None
 
 
+
+def _rsync_ssh_command(
+    ssh_port: int, identity: Optional[str], ssh_options: tuple[str, ...], password: Optional[str]
+) -> str:
+    """Build the ``-e`` transport rsync should use, as one shell-quoted string."""
+    parts = ["ssh", "-p", str(ssh_port)]
+    if identity:
+        parts += ["-i", str(Path(identity).expanduser())]
+    for option in ssh_options:
+        parts += ["-o", option]
+    if password:
+        # Host-key prompts cannot be answered when sshpass drives ssh.
+        parts += ["-o", "StrictHostKeyChecking=accept-new"]
+    return shlex.join(parts)
+
+
+def _run_rsync(cmd: list[str], password: Optional[str], verbose: int) -> None:
+    """Run a built rsync command, feeding sshpass a password file when needed."""
+    password_file = None
+    if password:
+        password_file = _password_file(
+            Server(user="rsync", host="rsync", password=password), "rsync"
+        )
+        cmd = ["sshpass", "-f", str(password_file)] + cmd
+
+    console.info(f"$ {' '.join(cmd)}", verbose, threshold=0)
+    try:
+        result = subprocess.run(cmd, check=False)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
+    if result.returncode != 0:
+        raise click.ClickException(f"rsync exited with code {result.returncode}.")
+
+
 @ssh_management.command("rsync-dir", epilog=RSYNC_EPILOG)
 @click.option(
     "-s",
@@ -906,15 +941,6 @@ def rsync_dir(
         )
     password = source_password or destination_password
 
-    ssh_parts = ["ssh", "-p", str(ssh_port)]
-    if identity:
-        ssh_parts += ["-i", str(Path(identity).expanduser())]
-    for option in ssh_options:
-        ssh_parts += ["-o", option]
-    if password:
-        # Host-key prompts cannot be answered when sshpass drives ssh.
-        ssh_parts += ["-o", "StrictHostKeyChecking=accept-new"]
-
     if exclude_from:
         exclude = (*exclude, *rsync.read_pattern_file(Path(exclude_from)))
     if match_from:
@@ -923,7 +949,7 @@ def rsync_dir(
     plan = rsync.RsyncOptions(
         source=source,
         destination=destination,
-        ssh_command=shlex.join(ssh_parts),
+        ssh_command=_rsync_ssh_command(ssh_port, identity, ssh_options, password),
         ignore_existing=ignore_existing,
         existing=existing,
         checksum=checksum,
@@ -954,21 +980,7 @@ def rsync_dir(
         ):
             raise click.Abort()
 
-    password_file = None
-    if password:
-        password_file = _password_file(
-            Server(user="rsync", host="rsync", password=password), "rsync"
-        )
-        cmd = ["sshpass", "-f", str(password_file)] + cmd
-
-    console.info(f"$ {' '.join(cmd)}", verbose, threshold=0)
-    try:
-        result = subprocess.run(cmd, check=False)
-    finally:
-        if password_file is not None:
-            password_file.unlink(missing_ok=True)
-    if result.returncode != 0:
-        raise click.ClickException(f"rsync exited with code {result.returncode}.")
+    _run_rsync(cmd, password, verbose)
 
 
 @ssh_management.command()
