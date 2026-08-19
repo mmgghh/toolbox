@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert Markdown files to PDF using fpdf2 and DejaVu/Vazir fonts.
+"""Convert Markdown files to document.PDF using fpdf2 and DejaVu/Vazir fonts.
 
 Exposes the ``pymd2pdf`` console script (see ``pymd2pdf --help``).
 
@@ -23,12 +23,11 @@ from pathlib import Path
 
 import click
 import requests
-from fpdf import FPDF
 from fpdf.svg import Percent, SVGObject
 from PIL import Image as PILImage
 
 from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
-from pytoolbox.mdpdf import fonts, shaping, state
+from pytoolbox.mdpdf import document, fonts, shaping, state
 
 #: Page geometry presets accepted by ``--page-size``.
 PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
@@ -39,129 +38,6 @@ _IMG_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+["\'][^"\']*["\'])?\s*\)\s
 
 
 
-# ── Colour palette ──────────────────────────────────────────────────
-CLR_HEADING       = (20, 60, 120)
-CLR_BODY          = (30, 30, 30)
-CLR_CODE_BG       = (245, 245, 245)
-CLR_CODE_FG       = (40, 40, 40)
-CLR_TABLE_HDR_BG  = (30, 70, 130)
-CLR_TABLE_HDR_FG  = (255, 255, 255)
-CLR_TABLE_ALT     = (235, 240, 250)
-CLR_TABLE_BORDER  = (180, 180, 180)
-CLR_INLINE_CODE   = (230, 230, 230)
-CLR_HR            = (180, 180, 180)
-CLR_BOLD          = (0, 0, 0)
-CLR_LINK          = (20, 80, 180)
-CLR_STRIKE        = (140, 140, 140)
-CLR_QUOTE_BAR     = (170, 190, 220)
-CLR_QUOTE_FG      = (90, 90, 90)
-
-# ── Layout constants ────────────────────────────────────────────────
-CODE_SIZE   = 5.5
-CODE_LH     = 3.2
-TABLE_SIZE  = 7
-TABLE_ROW_H = 6
-LINE_H_MULT = 1.8     # line-height multiplier for body text
-MAX_CODE_COLS = 220    # truncate code lines beyond this
-
-
-
-# ═══════════════════════════════════════════════════════════════════
-# PDF subclass
-# ═══════════════════════════════════════════════════════════════════
-
-class PDF(FPDF):
-    def __init__(self, title="", **kw):
-        super().__init__(**kw)
-        self._doc_title = title
-        faces = fonts.find_dejavu_faces()
-        self.add_font(fonts.FONT_SANS, "",  str(faces["DejaVuSans.ttf"]))
-        self.add_font(fonts.FONT_SANS, "B", str(faces["DejaVuSans-Bold.ttf"]))
-        self.add_font(fonts.FONT_SANS, "I", str(faces["DejaVuSerif.ttf"]))
-        self.add_font(fonts.FONT_MONO, "",  str(faces["DejaVuSansMono.ttf"]))
-        self.add_font(fonts.FONT_MONO, "B", str(faces["DejaVuSansMono-Bold.ttf"]))
-
-        # Set by convert() once the document's text is known; see _use_rtl_layout.
-        self.doc_is_rtl = False
-
-        fa_reg, fa_bold = fonts.find_persian_font()
-        self.has_persian = fa_reg is not None
-        if self.has_persian:
-            self.add_font(fonts.FONT_FA, "",  str(fa_reg))
-            self.add_font(fonts.FONT_FA, "B", str(fa_bold))
-
-        self._register_fallback_fonts()
-
-        if not shaping.HAS_SHAPER:
-            print(
-                "WARN: arabic-reshaper / python-bidi not installed; Persian text "
-                "will not be shaped correctly. Install with:\n"
-                "  pip install arabic-reshaper python-bidi",
-                file=sys.stderr,
-            )
-        if not self.has_persian:
-            print(
-                "WARN: Vazir font not found; Persian text will fall back to DejaVu "
-                "(limited Arabic-script coverage). Place Vazir.ttf / Vazir-Bold.ttf "
-                "in ~/.local/share/fonts or /usr/share/fonts/truetype/vazir.",
-                file=sys.stderr,
-            )
-
-    def set_doc_title(self, title):
-        """Set the running-header title, known only after the text is parsed."""
-        self._doc_title = title
-
-    def _register_fallback_fonts(self):
-        """Register per-glyph fallbacks and rebuild the substitution table.
-
-        fpdf2 draws each character with the current face and, for characters
-        that face has no glyph for, looks through the fallback list instead of
-        dropping them. DejaVu comes first -- it covers the arrows, maths and
-        geometric shapes Vazir lacks in a matching text style -- then a symbol
-        face for the pictographs (✅ ❌ 💻) DejaVu itself lacks.
-        ``exact_match=False`` lets bold text fall back to a regular-weight
-        symbol face rather than losing the glyph over a weight mismatch.
-
-        Whatever the loaded faces still cannot draw is handled as text by
-        ``shaping.substitute_glyphs``, so the module-level translation table is
-        rebuilt here from their combined coverage.
-        """
-        fallbacks = [fonts.FONT_SANS]
-        for idx, path in enumerate(fonts.find_fallback_fonts()):
-            family = f"{fonts.FONT_FALLBACK}{idx}"
-            try:
-                self.add_font(family, "", str(path))
-            except Exception as exc:  # pragma: no cover - malformed font file
-                print(f"WARN: could not load fallback font '{path}': {exc}", file=sys.stderr)
-                continue
-            fallbacks.append(family)
-        self.set_fallback_fonts(fallbacks, exact_match=False)
-
-        covered: set[int] = set()
-        for font in self.fonts.values():
-            covered.update(getattr(font, "cmap", ()) or ())
-        state.glyph_translation = shaping.build_glyph_translation(covered)
-
-    def header(self):
-        if self.page_no() > 1 and self._doc_title:
-            title = self._doc_title
-            self.set_text_color(140, 140, 140)
-            if shaping.is_rtl(title) and self.has_persian:
-                self.set_font(fonts.FONT_FA, "", 8)
-                self.cell(0, 6, shaping.shape_rtl(title), align="R")
-            else:
-                self.set_font(fonts.FONT_SANS, "I", 8)
-                self.cell(0, 6, title, align="R")
-            self.ln(8)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font(fonts.FONT_SANS, "I", 8)
-        self.set_text_color(140, 140, 140)
-        self.cell(0, 10, f"Page {self.page_no()}/{{nb}}", align="C")
-
-
-# ═══════════════════════════════════════════════════════════════════
 # Text helpers
 # ═══════════════════════════════════════════════════════════════════
 
@@ -189,20 +65,11 @@ def _strip_md(text):
 #: shaped and bidi-reordered before fpdf2 sees them, so its own markdown
 #: parser can no longer find markers inside the text -- this is the one case
 #: (whole-block, not partial/inline) still worth honouring for RTL text.
-_WHOLE_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
-
-
-def _body_lh(pdf):
-    return pdf.font_size * LINE_H_MULT
-
-
-def _ensure_space(pdf, needed_mm):
-    if pdf.get_y() + needed_mm > pdf.h - pdf.b_margin - 5:
-        pdf.add_page()
-
 
 # Inline spans, longest markers first so ``**`` wins over ``*`` and ``__``
 # over ``_``. Links come first because their label may itself contain markers.
+_WHOLE_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
+
 _INLINE_RE = re.compile(
     r'(\[[^\]]+\]\([^)\s]+\)'
     r'|`[^`]+`'
@@ -221,7 +88,7 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
 
     Uses pdf.write() throughout so segments wrap at the right margin instead of
     overflowing. Inline code is distinguished by the mono font; links are drawn
-    underlined and carry a real PDF link annotation.
+    underlined and carry a real document.PDF link annotation.
 
     ``base_size`` defaults to state.BODY_SIZE at *call* time, not import time:
     ``convert`` rebinds state.BODY_SIZE for --font-size, and a default evaluated at
@@ -230,11 +97,11 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
     """
     if base_size is None:
         base_size = state.BODY_SIZE
-    lh = _body_lh(pdf)
+    lh = document.body_lh(pdf)
 
     def reset():
         pdf.set_font(fonts.FONT_SANS, base_style, base_size)
-        pdf.set_text_color(*CLR_BODY)
+        pdf.set_text_color(*document.CLR_BODY)
 
     for part in _INLINE_RE.split(text):
         if not part:
@@ -243,25 +110,25 @@ def _render_rich(pdf, text, base_size=None, base_style=""):
         if link_match:
             label, url = link_match.groups()
             pdf.set_font(fonts.FONT_SANS, base_style + "U" if "U" not in base_style else base_style, base_size)
-            pdf.set_text_color(*CLR_LINK)
+            pdf.set_text_color(*document.CLR_LINK)
             pdf.write(lh, _strip_md(label), link=url)
             reset()
         elif part.startswith('`') and part.endswith('`'):
             pdf.set_font(fonts.FONT_MONO, "", base_size - 1)
-            pdf.set_text_color(*CLR_CODE_FG)
+            pdf.set_text_color(*document.CLR_CODE_FG)
             pdf.write(lh, part[1:-1])
             reset()
         elif (part.startswith('**') and part.endswith('**')) or (
             part.startswith('__') and part.endswith('__')
         ):
             pdf.set_font(fonts.FONT_SANS, "B", base_size)
-            pdf.set_text_color(*CLR_BOLD)
+            pdf.set_text_color(*document.CLR_BOLD)
             pdf.write(lh, part[2:-2])
             reset()
         elif part.startswith('~~') and part.endswith('~~'):
             # fpdf2 has no strikethrough style; grey text reads as "struck out"
             # well enough without drawing manual lines under wrapped runs.
-            pdf.set_text_color(*CLR_STRIKE)
+            pdf.set_text_color(*document.CLR_STRIKE)
             pdf.write(lh, part[2:-2])
             reset()
         elif part.startswith('*') and part.endswith('*'):
@@ -280,7 +147,7 @@ def _add_heading(pdf, level, text):
     sizes = {1: 18, 2: 14, 3: 12, 4: 11, 5: 10, 6: 10}
     sz = sizes.get(level, 10)
     pdf.ln(4 if level > 1 else 6)
-    pdf.set_text_color(*CLR_HEADING)
+    pdf.set_text_color(*document.CLR_HEADING)
     stripped = _strip_md(text)
     if _use_rtl_layout(pdf, stripped):
         pdf.set_font(fonts.FONT_FA, "B", sz)
@@ -293,26 +160,26 @@ def _add_heading(pdf, level, text):
         pdf.multi_cell(0, sz * 0.6, stripped)
     pdf.ln(2)
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_text_color(*document.CLR_BODY)
 
 
 def _add_code_block(pdf, lines):
     pdf.ln(2)
-    pdf.set_fill_color(*CLR_CODE_BG)
-    pdf.set_text_color(*CLR_CODE_FG)
-    pdf.set_font(fonts.FONT_MONO, "", CODE_SIZE)
+    pdf.set_fill_color(*document.CLR_CODE_BG)
+    pdf.set_text_color(*document.CLR_CODE_FG)
+    pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
     w = pdf.w - pdf.l_margin - pdf.r_margin
     x0 = pdf.l_margin
     for ln in lines:
-        _ensure_space(pdf, CODE_LH)
-        pdf.set_fill_color(*CLR_CODE_BG)
-        pdf.set_text_color(*CLR_CODE_FG)
-        pdf.set_font(fonts.FONT_MONO, "", CODE_SIZE)
-        display = ln[:MAX_CODE_COLS] if len(ln) > MAX_CODE_COLS else ln
+        document.ensure_space(pdf, document.CODE_LH)
+        pdf.set_fill_color(*document.CLR_CODE_BG)
+        pdf.set_text_color(*document.CLR_CODE_FG)
+        pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
+        display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
         pdf.set_x(x0)
-        pdf.cell(w, CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(w, document.CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_text_color(*document.CLR_BODY)
     pdf.ln(2)
 
 
@@ -354,7 +221,7 @@ def _place_image(pdf, data, alt=""):
     w_mm, h_mm = max_w, max_w * px_h / px_w
     if h_mm > max_h:
         w_mm, h_mm = max_h * px_w / px_h, max_h
-    _ensure_space(pdf, h_mm + 8)
+    document.ensure_space(pdf, h_mm + 8)
     x = pdf.l_margin + (max_w - w_mm) / 2
     pdf.image(data, x=x, w=w_mm, h=h_mm)
     pdf.ln(2)
@@ -363,7 +230,7 @@ def _place_image(pdf, data, alt=""):
         pdf.set_text_color(120, 120, 120)
         caption = shaping.shape_rtl(alt) if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
         pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(*CLR_BODY)
+        pdf.set_text_color(*document.CLR_BODY)
         pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.ln(3)
 
@@ -478,7 +345,7 @@ def _strip_code_ticks(text):
 
 
 #: A cell that is nothing but a single link, which can therefore become a real
-#: PDF link annotation on the whole cell rather than plain label text.
+#: document.PDF link annotation on the whole cell rather than plain label text.
 _CELL_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
 
 
@@ -579,7 +446,7 @@ def _add_table(pdf, headers, rows):
             # (bold for headings) fpdf2 will actually render the cell in, so
             # our line breaks match its usable width and it doesn't re-wrap
             # (and re-scramble) any of them.
-            pdf.set_font(table_font, "B" if (bold_m or is_header) else "", TABLE_SIZE)
+            pdf.set_font(table_font, "B" if (bold_m or is_header) else "", document.TABLE_SIZE)
             usable_width = col_width - 2 * CELL_PADDING
             shaped = "\n".join(shaping.shape_rtl_lines(pdf, body, usable_width))
         else:
@@ -589,14 +456,14 @@ def _add_table(pdf, headers, rows):
             "link": link,
             "style": FontFace(
                 emphasis=emphasis or None,
-                color=CLR_LINK if link else None,
+                color=document.CLR_LINK if link else None,
             ) if emphasis else None,
         }
 
     # Natural widths (with backticks/markdown stripped, since they don't render).
-    pdf.set_font(table_font, "B", TABLE_SIZE)
+    pdf.set_font(table_font, "B", document.TABLE_SIZE)
     natural = [pdf.get_string_width(_strip_md(h)) + 4 for h in headers]
-    pdf.set_font(table_font, "", TABLE_SIZE)
+    pdf.set_font(table_font, "", document.TABLE_SIZE)
     for row in rows:
         for i in range(min(n, len(row))):
             natural[i] = max(natural[i], pdf.get_string_width(_strip_md(row[i])) + 4)
@@ -631,22 +498,22 @@ def _add_table(pdf, headers, rows):
 
     headings_style = FontFace(
         emphasis="BOLD",
-        color=CLR_TABLE_HDR_FG,
-        fill_color=CLR_TABLE_HDR_BG,
+        color=document.CLR_TABLE_HDR_FG,
+        fill_color=document.CLR_TABLE_HDR_BG,
     )
 
-    pdf.set_font(table_font, "", TABLE_SIZE)
-    pdf.set_draw_color(*CLR_TABLE_BORDER)
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_font(table_font, "", document.TABLE_SIZE)
+    pdf.set_draw_color(*document.CLR_TABLE_BORDER)
+    pdf.set_text_color(*document.CLR_BODY)
 
     with _isolated_annotations(pdf), pdf.table(
         col_widths=tuple(col_w),
         text_align=text_align,
-        cell_fill_color=CLR_TABLE_ALT,
+        cell_fill_color=document.CLR_TABLE_ALT,
         cell_fill_mode=TableCellFillMode.EVEN_ROWS,
         first_row_as_headings=True,
         headings_style=headings_style,
-        line_height=TABLE_SIZE * 0.55,
+        line_height=document.TABLE_SIZE * 0.55,
         markdown=not has_persian,
         padding=CELL_PADDING,
     ) as table:
@@ -683,7 +550,7 @@ def _use_rtl_layout(pdf, text):
 
 
 def _add_paragraph(pdf, text):
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_text_color(*document.CLR_BODY)
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
         pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
@@ -692,24 +559,24 @@ def _add_paragraph(pdf, text):
         # that actual usable text width or lines we judge to "just fit" wrap
         # again inside multi_cell.
         width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
-        lh = _body_lh(pdf)
+        lh = document.body_lh(pdf)
         body = bold_m.group(1) if bold_m else text
         for line in shaping.shape_rtl_lines(pdf, _strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
         _render_rich(pdf, text)
-        pdf.ln(_body_lh(pdf))
+        pdf.ln(document.body_lh(pdf))
 
 
 def _add_list_item(pdf, prefix, text, indent):
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_text_color(*document.CLR_BODY)
     body = text.strip()
     if _use_rtl_layout(pdf, body):
         bold_m = _WHOLE_BOLD_RE.match(body)
         pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
-        lh = _body_lh(pdf)
+        lh = document.body_lh(pdf)
         # multi_cell reserves its own internal c_margin padding on each side,
         # on top of the cell width we pass it -- wrap using the actual usable
         # text width or lines we judge to "just fit" wrap again inside multi_cell.
@@ -722,9 +589,9 @@ def _add_list_item(pdf, prefix, text, indent):
     else:
         pdf.set_x(pdf.l_margin + indent * 2)
         pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-        pdf.write(_body_lh(pdf), prefix)
+        pdf.write(document.body_lh(pdf), prefix)
         _render_rich(pdf, body)
-        pdf.ln(_body_lh(pdf))
+        pdf.ln(document.body_lh(pdf))
 
 
 def _add_blockquote(pdf, lines):
@@ -737,7 +604,7 @@ def _add_blockquote(pdf, lines):
     pdf.ln(1)
     indent = 6
     start_y = pdf.get_y()
-    pdf.set_text_color(*CLR_QUOTE_FG)
+    pdf.set_text_color(*document.CLR_QUOTE_FG)
 
     if _use_rtl_layout(pdf, text):
         bold_m = _WHOLE_BOLD_RE.match(text.strip())
@@ -751,24 +618,24 @@ def _add_blockquote(pdf, lines):
         body = bold_m.group(1) if bold_m else text
         for line in shaping.shape_rtl_lines(pdf, _strip_md(body), usable_width):
             pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
+            pdf.multi_cell(width, document.body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(fonts.FONT_SANS, "I", state.BODY_SIZE)
         pdf.set_left_margin(pdf.l_margin + indent)
         pdf.set_x(pdf.l_margin)
         _render_rich(pdf, text, base_style="I")
-        pdf.ln(_body_lh(pdf))
+        pdf.ln(document.body_lh(pdf))
         pdf.set_left_margin(pdf.l_margin - indent)
 
     # Draw the bar last, once the quote's height is known.
     end_y = pdf.get_y()
-    pdf.set_draw_color(*CLR_QUOTE_BAR)
+    pdf.set_draw_color(*document.CLR_QUOTE_BAR)
     pdf.set_line_width(0.8)
     bar_x = pdf.w - pdf.r_margin - 1 if _use_rtl_layout(pdf, text) else pdf.l_margin + 1
     pdf.line(bar_x, start_y, bar_x, end_y - 1)
     pdf.set_line_width(0.2)
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*CLR_BODY)
+    pdf.set_text_color(*document.CLR_BODY)
     pdf.ln(2)
 
 
@@ -778,7 +645,7 @@ _TASK_RE = re.compile(r'^\[([ xX])\]\s+(.*)$')
 
 def _add_hr(pdf):
     pdf.ln(2)
-    pdf.set_draw_color(*CLR_HR)
+    pdf.set_draw_color(*document.CLR_HR)
     y = pdf.get_y()
     pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
     pdf.ln(4)
@@ -807,7 +674,7 @@ def convert(
     title_page=True,
     quiet=False,
 ):
-    """Render one Markdown file to a PDF.
+    """Render one Markdown file to a document.PDF.
 
     ``font_size`` scales body text by rebinding the module-level ``state.BODY_SIZE``;
     the block renderers read that constant directly, and threading an explicit
@@ -819,10 +686,10 @@ def convert(
         state.BODY_SIZE = font_size
 
     md_path = Path(md_path)
-    # The PDF is built first because loading its faces is what determines
+    # The document.PDF is built first because loading its faces is what determines
     # which characters can be drawn, and hence which ones shaping.substitute_glyphs
     # has to replace with text stand-ins.
-    pdf = PDF(orientation=orientation, unit="mm", format=page_size)
+    pdf = document.PDF(orientation=orientation, unit="mm", format=page_size)
     md_text = shaping.substitute_glyphs(md_path.read_text(encoding="utf-8"))
     lines = md_text.split('\n')
     title = _extract_title(lines) if title_page else ""
@@ -842,7 +709,7 @@ def convert(
     if title:
         pdf.add_page()
         pdf.ln(40)
-        pdf.set_text_color(*CLR_HEADING)
+        pdf.set_text_color(*document.CLR_HEADING)
         title_rtl = shaping.is_rtl(title) and pdf.has_persian
         if title_rtl:
             pdf.set_font(fonts.FONT_FA, "B", 24)
@@ -1011,7 +878,7 @@ def convert(
 @click.option(
     "-o", "--output",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help="Output PDF path. Only valid with a single input file; "
+    help="Output document.PDF path. Only valid with a single input file; "
          "otherwise each <input>.md is written as <input>.pdf.",
 )
 @click.option(
@@ -1071,7 +938,7 @@ def pymd2pdf_cli(
     offline: bool,
     quiet: bool,
 ):
-    """Convert Markdown file(s) to PDF.
+    """Convert Markdown file(s) to document.PDF.
 
     \b
     Supports headings, bold, italic, strikethrough, links, inline code, code
@@ -1118,7 +985,7 @@ def pymd2pdf_cli(
     Colour emoji fonts (NotoColorEmoji and friends) store bitmaps rather
     than outlines and cannot be embedded. Whatever no installed face can
     draw degrades to a text stand-in (✅ -> ✓, → -> ->); colour-coded
-    status emoji always become ● ◐ ○, since a one-colour PDF would render
+    status emoji always become ● ◐ ○, since a one-colour document.PDF would render
     🟢 and 🔴 as the same black disc.
 
     \b

@@ -9,7 +9,7 @@ import pytest
 
 from pytoolbox import pymd2pdf
 from pytoolbox.core import paths
-from pytoolbox.mdpdf import fonts, shaping, state
+from pytoolbox.mdpdf import document, fonts, shaping, state
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
@@ -159,7 +159,7 @@ def test_colour_emoji_fonts_are_not_offered_as_fallbacks(tmp_path):
 
 @needs_fonts
 def test_dejavu_is_registered_as_a_fallback_face():
-    pdf = pymd2pdf.PDF()
+    pdf = document.PDF()
     assert any(
         key.startswith(fonts.FONT_SANS.lower()) for key in pdf._fallback_font_ids
     )
@@ -337,16 +337,16 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
     longer find markers inside it.
     """
     styles = []
-    orig_set_font = pymd2pdf.PDF.set_font
+    orig_set_font = document.PDF.set_font
 
     def spy(self, family, style="", size=0):
         if family == fonts.FONT_FA and size == state.BODY_SIZE:
             styles.append(style)
         return orig_set_font(self, family, style, size)
 
-    monkeypatch.setattr(pymd2pdf.PDF, "set_font", spy)
+    monkeypatch.setattr(document.PDF, "set_font", spy)
 
-    pdf = pymd2pdf.PDF(orientation="P", unit="mm", format="A4")
+    pdf = document.PDF(orientation="P", unit="mm", format="A4")
     if not pdf.has_persian:
         pytest.skip("no Persian font installed")
     pdf.doc_is_rtl = True
@@ -423,13 +423,13 @@ def test_font_size_reaches_styled_spans(tmp_path, monkeypatch):
     source.write_text("Plain with **bold** and *italic* inside.\n", encoding="utf-8")
 
     seen: list[tuple[str, float]] = []
-    original = pymd2pdf.PDF.set_font
+    original = document.PDF.set_font
 
     def spy(self, family=None, style="", size=0):
         seen.append((style, size))
         return original(self, family, style, size)
 
-    monkeypatch.setattr(pymd2pdf.PDF, "set_font", spy)
+    monkeypatch.setattr(document.PDF, "set_font", spy)
     pymd2pdf.convert(source, tmp_path / "styled.pdf", font_size=20, quiet=True)
 
     body_sizes = {size for style, size in seen if style in ("", "B", "I") and size}
