@@ -29,18 +29,7 @@ from PIL import Image as PILImage
 
 from pytoolbox.core import paths
 from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
-from pytoolbox.mdpdf import state
-
-try:
-    import arabic_reshaper
-    from bidi.algorithm import get_display
-    _HAS_SHAPER = True
-    # The default configuration deletes Harakat (تشکیل/اعراب: فتحه، کسره، ضمه،
-    # تنوین, ...) before shaping, so e.g. "نُه" would reshape as "نه". Keep
-    # them; get_display (below) positions combining marks correctly on its own.
-    _reshaper = arabic_reshaper.ArabicReshaper(configuration={"delete_harakat": False})
-except ImportError:
-    _HAS_SHAPER = False
+from pytoolbox.mdpdf import shaping, state
 
 # ── Font search paths ───────────────────────────────────────────────
 # paths.font_dirs() covers Linux, macOS, Windows and Termux ($PREFIX/share/fonts
@@ -78,159 +67,10 @@ _SYMBOL_FONTS = (
     "Apple Symbols.ttf",   # macOS
 )
 
-#: Set by the CLI from ``--fallback-font``: extra faces to try before the
-#: built-in symbol candidates.
-
-# Characters in the Arabic/Persian Unicode blocks (including presentation forms).
-_RTL_RE = re.compile(r'[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]')
-
 # A standalone Markdown image line: ![alt](src "optional title")
 _IMG_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+["\'][^"\']*["\'])?\s*\)\s*$')
 
 
-def _is_rtl(text):
-    return bool(text) and bool(_RTL_RE.search(text))
-
-
-# Variation selectors: zero-width characters that only pick a glyph *variant*
-# (text vs emoji presentation). No face draws them, so each is reported as a
-# missing glyph; dropping them is lossless. ZWNJ (U+200C) is deliberately not
-# in this set -- it is meaningful in Persian orthography.
-_VARIATION_SELECTORS = "\ufe0e\ufe0f"
-
-# Colour-coded status emoji, substituted even when a symbol face *can* draw
-# them: the PDF draws text in one colour, so 🔴 and 🟢 would come out as two
-# identical black discs, losing exactly the distinction they encode. The
-# stand-ins follow the usual full/half/empty "harvey ball" reading.
-_COLOUR_STATUS_SUBSTITUTES = {
-    '🟢': '●', '🟩': '●',
-    '🟡': '◐', '🟨': '◐', '🟠': '◐', '🟧': '◐',
-    '🔴': '○', '🟥': '○',
-}
-
-# Text stand-ins used only for characters *no* loaded face can draw (see
-# _build_glyph_translation): with DejaVu and a symbol font registered as
-# fallbacks, most of these now render as their real glyph instead.
-# Every substitute must itself be covered by DejaVu.
-_GLYPH_SUBSTITUTES = {
-    '→': '->',
-    '←': '<-',
-    '↔': '<->',
-    '⇢': '-->',
-    '×': 'x',
-    '÷': '/',
-    '☐': '[ ]',  # ☐ BALLOT BOX
-    '☑': '[x]',  # ☑ BALLOT BOX WITH CHECK
-    '☒': '[x]',  # ☒ BALLOT BOX WITH X
-    '✅': '✓',
-    '✔': '✓',
-    '❌': '✗',
-    '✖': '✗',
-    '⚠': '(!)',
-    'ˏ': '/',  # ˏ MODIFIER LETTER LOW ACUTE ACCENT, seen as a numeral separator
-    '⬛': '●', '⚫': '●',
-    '⬜': '○', '⚪': '○',
-    # Substitutes for the nested-bullet markers below must stay in the Unicode
-    # "neutral" bidi classes (punctuation/symbols), not letters: a marker is
-    # folded into RTL text as its first logical word, and unlike a neutral
-    # character, a strong-direction letter (e.g. 'o') doesn't take on the
-    # surrounding RTL run's position -- it renders on the wrong (left) side.
-    '◦': '·',    # ◦ WHITE BULLET (nested list marker)
-    '▪': '*',    # ▪ BLACK SMALL SQUARE (nested list marker)
-}
-
-
-def _build_glyph_translation(covered) -> dict[int, str]:
-    """Map code points to stand-ins, given the code points the fonts can draw."""
-    table: dict[int, str] = {ord(c): '' for c in _VARIATION_SELECTORS}
-    table.update({ord(src): dst for src, dst in _COLOUR_STATUS_SUBSTITUTES.items()})
-    table.update({
-        ord(src): dst
-        for src, dst in _GLYPH_SUBSTITUTES.items()
-        if ord(src) not in covered
-    })
-    return table
-
-
-def _substitute_glyphs(text):
-    """Replace undrawable characters with stand-ins the loaded fonts cover.
-
-    Applied once to the whole document, before parsing, so every renderer
-    (RTL and LTR, headings, tables, code blocks) sees the same text. Safe to
-    apply twice: substitutes are themselves never keys of the table.
-    """
-    return text.translate(state.glyph_translation) if state.glyph_translation else text
-
-
-def _bidi_display(s):
-    """get_display, but only when ``s`` actually has RTL characters.
-
-    Forcing ``base_dir='R'`` (see ``_shape_rtl``'s docstring) is necessary
-    for correct ordering whenever RTL text is present, but doing it to a
-    string with *no* RTL characters at all backfires: with nothing to anchor
-    the forced RTL paragraph level, python-bidi's mirroring pass swaps
-    parentheses it shouldn't (`"(SRS)"` -> `"(SRS ("`). Such strings need no
-    reordering anyway -- right-alignment at the page-layout level already
-    positions them correctly.
-    """
-    return str(get_display(s, base_dir='R')) if _HAS_SHAPER and _is_rtl(s) else s
-
-
-def _shape_rtl(text):
-    """Reshape Arabic/Persian letters and apply the bidi algorithm.
-
-    ``base_dir='R'`` is required: without it, ``get_display`` auto-detects
-    paragraph direction from the first strong-direction character it finds
-    (Unicode's P2/P3 rules), so a string that happens to *start* with a run
-    of Latin text (e.g. a heading or bold term before any Persian) would get
-    treated as an LTR paragraph and come out reordered backwards, even
-    though we already know -- the caller checked -- that this text belongs
-    in an RTL context. See ``_bidi_display`` for why that's still gated on
-    the text actually containing RTL characters.
-    """
-    if not _HAS_SHAPER or not text:
-        return text
-    return _bidi_display(_reshaper.reshape(text))
-
-
-def _shape_rtl_lines(pdf, text, max_width, marker=""):
-    """Reshape RTL text and wrap it to max_width, one bidi-reordered line each.
-
-    Reshaping needs the full logical string so Arabic-script letters join
-    correctly, but bidi reordering (``get_display``) must happen per rendered
-    line: fpdf always draws left-to-right, and ``get_display`` reverses a
-    right-to-left string into visual order, so its first characters are
-    actually the *end* of the sentence. Reordering the whole paragraph before
-    handing it to a greedy left-to-right wrapper (fpdf's multi_cell) puts the
-    tail of the paragraph on the first physical line instead of the start.
-    Wrapping first (in logical order) and reordering each resulting line
-    keeps lines in the right order and each line's glyphs in the right
-    direction.
-
-    ``marker``, if given (e.g. a list-item's "1." or "-"), is treated as the
-    first logical word rather than appended to the output afterward: bidi
-    reordering resolves neutral characters (like a marker's period) based on
-    the strong-direction text around them, so splicing a pre-built marker
-    string onto already-reordered text puts punctuation on the wrong side.
-    Running marker and body through reshape/reorder together as one unit
-    gets that resolution right, and naturally budgets the marker's width
-    against the first line during wrapping.
-    """
-    full_text = f"{marker} {text}" if marker else text
-    if not _HAS_SHAPER or not text:
-        return [full_text]
-    words = _reshaper.reshape(full_text).split(' ')
-    lines, current = [], []
-    for word in words:
-        candidate = ' '.join(current + [word])
-        if current and pdf.get_string_width(candidate) > max_width:
-            lines.append(_bidi_display(' '.join(current)))
-            current = [word]
-        else:
-            current.append(word)
-    if current:
-        lines.append(_bidi_display(' '.join(current)))
-    return lines
 
 
 # ── Colour palette ──────────────────────────────────────────────────
@@ -416,7 +256,7 @@ class PDF(FPDF):
 
         self._register_fallback_fonts()
 
-        if not _HAS_SHAPER:
+        if not shaping.HAS_SHAPER:
             print(
                 "WARN: arabic-reshaper / python-bidi not installed; Persian text "
                 "will not be shaped correctly. Install with:\n"
@@ -447,7 +287,7 @@ class PDF(FPDF):
         symbol face rather than losing the glyph over a weight mismatch.
 
         Whatever the loaded faces still cannot draw is handled as text by
-        ``_substitute_glyphs``, so the module-level translation table is
+        ``shaping.substitute_glyphs``, so the module-level translation table is
         rebuilt here from their combined coverage.
         """
         fallbacks = [FONT_SANS]
@@ -464,15 +304,15 @@ class PDF(FPDF):
         covered: set[int] = set()
         for font in self.fonts.values():
             covered.update(getattr(font, "cmap", ()) or ())
-        state.glyph_translation = _build_glyph_translation(covered)
+        state.glyph_translation = shaping.build_glyph_translation(covered)
 
     def header(self):
         if self.page_no() > 1 and self._doc_title:
             title = self._doc_title
             self.set_text_color(140, 140, 140)
-            if _is_rtl(title) and self.has_persian:
+            if shaping.is_rtl(title) and self.has_persian:
                 self.set_font(FONT_FA, "", 8)
-                self.cell(0, 6, _shape_rtl(title), align="R")
+                self.cell(0, 6, shaping.shape_rtl(title), align="R")
             else:
                 self.set_font(FONT_SANS, "I", 8)
                 self.cell(0, 6, title, align="R")
@@ -609,7 +449,7 @@ def _add_heading(pdf, level, text):
     if _use_rtl_layout(pdf, stripped):
         pdf.set_font(FONT_FA, "B", sz)
         pdf.multi_cell(
-            0, sz * 0.6, _shape_rtl(stripped),
+            0, sz * 0.6, shaping.shape_rtl(stripped),
             align="R", new_x="LMARGIN", new_y="NEXT",
         )
     else:
@@ -683,9 +523,9 @@ def _place_image(pdf, data, alt=""):
     pdf.image(data, x=x, w=w_mm, h=h_mm)
     pdf.ln(2)
     if alt:
-        pdf.set_font(FONT_FA if _is_rtl(alt) and getattr(pdf, "has_persian", False) else FONT_SANS, "I", 8)
+        pdf.set_font(FONT_FA if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else FONT_SANS, "I", 8)
         pdf.set_text_color(120, 120, 120)
-        caption = _shape_rtl(alt) if _is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
+        caption = shaping.shape_rtl(alt) if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
         pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
         pdf.set_text_color(*CLR_BODY)
         pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
@@ -850,8 +690,8 @@ def _add_table(pdf, headers, rows):
 
     has_persian = getattr(pdf, "has_persian", False) and (
         getattr(pdf, "doc_is_rtl", False)
-        or any(_is_rtl(h) for h in headers)
-        or any(_is_rtl(c) for row in rows for c in row)
+        or any(shaping.is_rtl(h) for h in headers)
+        or any(shaping.is_rtl(c) for row in rows for c in row)
     )
     table_font  = FONT_FA if has_persian else FONT_SANS
     text_align  = "RIGHT" if has_persian else "LEFT"
@@ -898,14 +738,14 @@ def _add_table(pdf, headers, rows):
             # Reordering the *whole* cell into visual order and letting fpdf2's
             # plain left-to-right wrapper break it into lines would scatter the
             # paragraph's tail onto the first physical line (see
-            # _shape_rtl_lines's docstring). Wrap here instead, in logical
+            # shaping.shape_rtl_lines's docstring). Wrap here instead, in logical
             # order, one bidi-reordered line per line -- using the same style
             # (bold for headings) fpdf2 will actually render the cell in, so
             # our line breaks match its usable width and it doesn't re-wrap
             # (and re-scramble) any of them.
             pdf.set_font(table_font, "B" if (bold_m or is_header) else "", TABLE_SIZE)
             usable_width = col_width - 2 * CELL_PADDING
-            shaped = "\n".join(_shape_rtl_lines(pdf, body, usable_width))
+            shaped = "\n".join(shaping.shape_rtl_lines(pdf, body, usable_width))
         else:
             shaped = body
         return {
@@ -1003,7 +843,7 @@ def _use_rtl_layout(pdf, text):
     still follows the document's base direction instead of snapping to LTR
     and breaking the list's alignment.
     """
-    return (getattr(pdf, "doc_is_rtl", False) or _is_rtl(text)) and getattr(pdf, "has_persian", False)
+    return (getattr(pdf, "doc_is_rtl", False) or shaping.is_rtl(text)) and getattr(pdf, "has_persian", False)
 
 
 def _add_paragraph(pdf, text):
@@ -1018,7 +858,7 @@ def _add_paragraph(pdf, text):
         width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
         lh = _body_lh(pdf)
         body = bold_m.group(1) if bold_m else text
-        for line in _shape_rtl_lines(pdf, _strip_md(body), width):
+        for line in shaping.shape_rtl_lines(pdf, _strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(FONT_SANS, "", state.BODY_SIZE)
@@ -1039,7 +879,7 @@ def _add_list_item(pdf, prefix, text, indent):
         # text width or lines we judge to "just fit" wrap again inside multi_cell.
         usable_width = width - 2 * pdf.c_margin
         inner = bold_m.group(1) if bold_m else body
-        lines = _shape_rtl_lines(pdf, _strip_md(inner), usable_width, marker=prefix.strip())
+        lines = shaping.shape_rtl_lines(pdf, _strip_md(inner), usable_width, marker=prefix.strip())
         for line in lines:
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
@@ -1073,7 +913,7 @@ def _add_blockquote(pdf, lines):
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent
         usable_width = width - 2 * pdf.c_margin
         body = bold_m.group(1) if bold_m else text
-        for line in _shape_rtl_lines(pdf, _strip_md(body), usable_width):
+        for line in shaping.shape_rtl_lines(pdf, _strip_md(body), usable_width):
             pdf.set_x(pdf.l_margin)
             pdf.multi_cell(width, _body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
@@ -1144,10 +984,10 @@ def convert(
 
     md_path = Path(md_path)
     # The PDF is built first because loading its faces is what determines
-    # which characters can be drawn, and hence which ones _substitute_glyphs
+    # which characters can be drawn, and hence which ones shaping.substitute_glyphs
     # has to replace with text stand-ins.
     pdf = PDF(orientation=orientation, unit="mm", format=page_size)
-    md_text = _substitute_glyphs(md_path.read_text(encoding="utf-8"))
+    md_text = shaping.substitute_glyphs(md_path.read_text(encoding="utf-8"))
     lines = md_text.split('\n')
     title = _extract_title(lines) if title_page else ""
     pdf.set_doc_title(title)
@@ -1158,7 +998,7 @@ def convert(
     # Document-wide base direction: a block with no RTL characters of its own
     # (e.g. an English-only list item in an otherwise-Persian list) still
     # follows this instead of snapping to LTR mid-list. See _use_rtl_layout.
-    rtl_chars = len(_RTL_RE.findall(md_text))
+    rtl_chars = len(shaping.RTL_RE.findall(md_text))
     latin_chars = len(re.findall(r'[A-Za-z]', md_text))
     pdf.doc_is_rtl = rtl_chars > latin_chars
 
@@ -1167,11 +1007,11 @@ def convert(
         pdf.add_page()
         pdf.ln(40)
         pdf.set_text_color(*CLR_HEADING)
-        title_rtl = _is_rtl(title) and pdf.has_persian
+        title_rtl = shaping.is_rtl(title) and pdf.has_persian
         if title_rtl:
             pdf.set_font(FONT_FA, "B", 24)
             pdf.multi_cell(
-                0, 14, _shape_rtl(title),
+                0, 14, shaping.shape_rtl(title),
                 align="C", new_x="LMARGIN", new_y="NEXT",
             )
         else:

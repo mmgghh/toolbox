@@ -9,13 +9,13 @@ import pytest
 
 from pytoolbox import pymd2pdf
 from pytoolbox.core import paths
-from pytoolbox.mdpdf import state
+from pytoolbox.mdpdf import shaping, state
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
 needs_fonts = pytest.mark.skipif(not has_fonts, reason="DejaVu fonts are not installed")
 needs_shaper = pytest.mark.skipif(
-    not pymd2pdf._HAS_SHAPER, reason="arabic-reshaper / python-bidi are not installed"
+    not shaping.HAS_SHAPER, reason="arabic-reshaper / python-bidi are not installed"
 )
 
 SAMPLE = """# Title
@@ -67,17 +67,17 @@ def test_strip_md(text, expected):
 
 
 def test_is_rtl():
-    assert pymd2pdf._is_rtl("سلام")
-    assert not pymd2pdf._is_rtl("hello")
-    assert not pymd2pdf._is_rtl("")
-    assert pymd2pdf._is_rtl("hello سلام")
+    assert shaping.is_rtl("سلام")
+    assert not shaping.is_rtl("hello")
+    assert not shaping.is_rtl("")
+    assert shaping.is_rtl("hello سلام")
 
 
 @needs_shaper
 def test_shape_rtl_keeps_harakat():
     # "نُه" (nine) carries a damma on the noon; arabic_reshaper deletes
     # Harakat by default, which would reshape it as "نه" (no) instead.
-    assert "ُ" in pymd2pdf._shape_rtl("نُه")
+    assert "ُ" in shaping.shape_rtl("نُه")
 
 
 def test_strip_links_keeps_the_label():
@@ -125,7 +125,7 @@ def test_looks_like_svg():
 
 def test_glyph_translation_only_substitutes_what_no_font_draws():
     covered = {ord("→"), ord("✅")}
-    table = pymd2pdf._build_glyph_translation(covered)
+    table = shaping.build_glyph_translation(covered)
     assert ord("→") not in table          # DejaVu can draw it: keep the arrow
     assert ord("✅") not in table
     assert table[ord("←")] == "<-"        # nothing can: fall back to text
@@ -135,20 +135,20 @@ def test_glyph_translation_only_substitutes_what_no_font_draws():
 def test_colour_status_emoji_are_always_substituted():
     # Even when the symbol font covers them: a one-colour PDF would draw
     # 🟢 and 🔴 as the same black disc.
-    table = pymd2pdf._build_glyph_translation({ord("🟢"), ord("🔴"), ord("🟡")})
+    table = shaping.build_glyph_translation({ord("🟢"), ord("🔴"), ord("🟡")})
     assert table[ord("🟢")] == "●"
     assert table[ord("🟡")] == "◐"
     assert table[ord("🔴")] == "○"
 
 
 def test_substitute_glyphs_uses_the_built_table(monkeypatch):
-    monkeypatch.setattr(state, "glyph_translation", pymd2pdf._build_glyph_translation(set()))
-    assert pymd2pdf._substitute_glyphs("done ✅️ and 🔴") == "done ✓ and ○"
+    monkeypatch.setattr(state, "glyph_translation", shaping.build_glyph_translation(set()))
+    assert shaping.substitute_glyphs("done ✅️ and 🔴") == "done ✓ and ○"
 
 
 def test_substitute_glyphs_is_a_no_op_before_fonts_are_loaded(monkeypatch):
     monkeypatch.setattr(state, "glyph_translation", {})
-    assert pymd2pdf._substitute_glyphs("✅") == "✅"
+    assert shaping.substitute_glyphs("✅") == "✅"
 
 
 def test_colour_emoji_fonts_are_not_offered_as_fallbacks(tmp_path):
