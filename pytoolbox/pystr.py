@@ -352,6 +352,65 @@ def _format_path(path: Path, absolute: bool) -> str:
     return str(path.resolve()) if absolute else str(path)
 
 
+def _json_file_hit(formatted_path: str, total: int, matches: Sequence, values: Sequence[str]) -> dict:
+    """One file's hits as plain data, for --json."""
+    return {
+        "path": formatted_path,
+        "matches": total,
+        "lines": [{"line": m.line_no, "text": m.line, "count": m.count} for m in matches],
+        "values": list(values),
+    }
+
+
+def _emit_file_hit(
+    formatted_path: str,
+    total: int,
+    matches: Sequence,
+    values: Sequence[str],
+    *,
+    only_matches: bool,
+    verbose: int,
+    count: bool,
+) -> None:
+    """Print one file's hits in whichever form the flags asked for."""
+    if only_matches:
+        for value in values:
+            click.echo(value)
+    elif verbose > 0:
+        for match in matches:
+            click.echo(f"{formatted_path}:{match.line_no}: {match.line}")
+    elif count:
+        click.echo(f"{formatted_path}:{total}")
+    else:
+        click.echo(formatted_path)
+
+
+def _emit_search_summary(
+    stats_acc: SearchStats,
+    json_results: Sequence[dict],
+    *,
+    as_json: bool,
+    stats: bool,
+) -> None:
+    """Close out a search with either the JSON document or the --stats line."""
+    if as_json:
+        console.emit_json(
+            {
+                "files_scanned": stats_acc.files_scanned,
+                "files_matched": stats_acc.files_matched,
+                "matches": stats_acc.matches,
+                "results": list(json_results),
+            }
+        )
+        return
+    if stats:
+        click.echo(
+            f"Scanned: {stats_acc.files_scanned} files, "
+            f"Matched: {stats_acc.files_matched} files, "
+            f"Matches: {stats_acc.matches}"
+        )
+
+
 def _emit_text_search_results(
     label: str,
     text: str,
@@ -620,44 +679,14 @@ def search(
 
         formatted_path = _format_path(file_path, absolute)
         if as_json:
-            json_results.append(
-                {
-                    "path": formatted_path,
-                    "matches": total,
-                    "lines": [
-                        {"line": m.line_no, "text": m.line, "count": m.count} for m in matches
-                    ],
-                    "values": values,
-                }
-            )
-        elif only_matches:
-            for value in values:
-                click.echo(value)
-        elif verbose > 0:
-            for match in matches:
-                click.echo(f"{formatted_path}:{match.line_no}: {match.line}")
-        elif count:
-            click.echo(f"{formatted_path}:{total}")
+            json_results.append(_json_file_hit(formatted_path, total, matches, values))
         else:
-            click.echo(formatted_path)
+            _emit_file_hit(
+                formatted_path, total, matches, values,
+                only_matches=only_matches, verbose=verbose, count=count,
+            )
 
-    if as_json:
-        console.emit_json(
-            {
-                "files_scanned": stats_acc.files_scanned,
-                "files_matched": stats_acc.files_matched,
-                "matches": stats_acc.matches,
-                "results": json_results,
-            }
-        )
-        return
-
-    if stats:
-        click.echo(
-            f"Scanned: {stats_acc.files_scanned} files, "
-            f"Matched: {stats_acc.files_matched} files, "
-            f"Matches: {stats_acc.matches}"
-        )
+    _emit_search_summary(stats_acc, json_results, as_json=as_json, stats=stats)
 
 
 @str_cli.command("replace")
