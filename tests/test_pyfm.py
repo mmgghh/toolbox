@@ -16,7 +16,7 @@ def test_partition_by_count(runner, tmp_path):
 
     result = runner.invoke(
         file_management,
-        ["partition", "-s", str(source), "-n", "2", "--split-based-on", "count"],
+        ["partition", "-s", str(source), "--partitions", "2", "--split-based-on", "count"],
     )
     assert result.exit_code == 0, result.output
     parts = sorted(p.name for p in source.iterdir() if p.is_dir())
@@ -32,7 +32,7 @@ def test_partition_dry_run_changes_nothing(runner, tmp_path):
 
     result = runner.invoke(
         file_management,
-        ["partition", "-s", str(source), "-n", "2", "--split-based-on", "count", "--dry-run"],
+        ["partition", "-s", str(source), "--partitions", "2", "--split-based-on", "count", "--dry-run"],
     )
     assert result.exit_code == 0
     assert sorted(p.name for p in source.iterdir()) == ["a.txt"]
@@ -253,3 +253,25 @@ def test_extract_links_to_stdout(runner, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert result.output.strip() == "https://example.com/a/page"
+
+
+def test_partition_dash_n_is_dry_run(runner, tmp_path):
+    source = tmp_path / "src"
+    source.mkdir()
+    for index in range(4):
+        (source / f"f{index}.txt").write_text("x", encoding="utf-8")
+
+    result = runner.invoke(
+        file_management,
+        ["partition", "-s", str(source), "--partitions", "2", "--split-based-on", "count", "-n"],
+    )
+    assert result.exit_code == 0, result.output
+    assert sorted(p.name for p in source.iterdir()) == ["f0.txt", "f1.txt", "f2.txt", "f3.txt"]
+
+
+def test_generate_text_file_rejects_snake_case_aliases(runner, tmp_path):
+    result = runner.invoke(
+        file_management, ["generate-text-file", "-d", str(tmp_path), "--num_files", "1"]
+    )
+    assert result.exit_code != 0
+    assert "no such option" in result.output.lower()

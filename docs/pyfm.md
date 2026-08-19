@@ -14,9 +14,8 @@ file-find-replace    Replace a literal string in one file
 generate-text-file   Create text files filled with random sentences
 ```
 
-Every command that changes the filesystem accepts `--dry-run` (`-n`, except in
-`partition` where `-n` means `--partitions`) and prints exactly what it would
-do.
+Every command that changes the filesystem accepts `-n/--dry-run` and prints
+exactly what it would do.
 
 ---
 
@@ -27,7 +26,7 @@ Choose exactly one of `--partitions`, `--split-count` or `--split-size`.
 
 | Option | Meaning |
 | --- | --- |
-| `-n, --partitions N` | Create exactly N directories |
+| `--partitions N` | Create exactly N directories |
 | `-c, --split-count N` | About N entries per directory |
 | `--split-size N` | About N megabytes per directory |
 | `--split-based-on count\|size` | With `--partitions`, how to balance them |

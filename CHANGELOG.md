@@ -120,6 +120,27 @@ This project follows [Semantic Versioning](https://semver.org/).
   disc. Invisible variation selectors (`U+FE0F`) are dropped rather than
   reported as missing.
 
+### Changed
+
+- **`-n` means `--dry-run` in every `pyfm` command that changes files.** It
+  used to mean `--partitions` in `pyfm partition`, which was the one command
+  where the flag everything else uses for "show me what you would do" instead
+  took a number and did the thing — so `partition`'s own dry-run had to be
+  spelled out in full. `--partitions` keeps working; it just no longer has a
+  short form. `pyfm generate-text-file` still takes `-n` as its file count:
+  it creates new files rather than rewriting existing ones, so it has no
+  dry-run for `-n` to collide with.
+
+- **`pyfm generate-text-file` drops the `--num_files`, `--num_lines` and
+  `--name_prefix` spellings** in favour of the hyphenated names that every
+  other option in the project uses. `--num-files`, `--num-lines` and
+  `--name-prefix` are unchanged.
+
+- **`pystr` states its `--encoding` and `--errors` identically everywhere.**
+  The eight commands that take them described the same two options in two
+  different ways and showed the default in half of them; they now share one
+  definition, so `--help` reads the same whichever command you asked about.
+
 ### Fixed
 
 - **`pypdf2md` dropped every half-space in a word-processor document.** A word

@@ -227,7 +227,7 @@ def file_management() -> None:
 )
 @click.option("-c", "--split-count", type=click.IntRange(1), help="Put about this many entries in each directory.")
 @click.option("--split-size", type=click.IntRange(1), help="Fill each directory with about this many megabytes.")
-@click.option("-n", "--partitions", type=click.IntRange(2), help="Create exactly this many directories.")
+@click.option("--partitions", type=click.IntRange(2), help="Create exactly this many directories.")
 @click.option(
     "-s",
     "--source",
@@ -243,7 +243,7 @@ def file_management() -> None:
     help="Where to create the partition directories (default: the source).",
 )
 @click.option("--copy", "copy_files", is_flag=True, help="Copy instead of moving.")
-@click.option("--dry-run", is_flag=True, help="Show what would happen without changing anything.")
+@click.option("-n", "--dry-run", is_flag=True, help="Show what would happen without changing anything.")
 @verbose_option
 def partition(
     pattern: str,
@@ -583,17 +583,16 @@ def batch_rename(
     prompt=True,
     help="Directory to write the files into.",
 )
-@click.option("-n", "--num_files", "--num-files", "num_files", type=click.IntRange(1), prompt=True, help="How many files to create.")
+@click.option("-n", "--num-files", "num_files", type=click.IntRange(1), prompt=True, help="How many files to create.")
 @click.option(
     "-l",
-    "--num_lines",
     "--num-lines",
     "num_lines",
     type=click.IntRange(0),
     default=None,
     help="Lines per file (default: a random 0-100).",
 )
-@click.option("-p", "--name_prefix", "--name-prefix", "name_prefix", default="file", show_default=True, help="File name prefix.")
+@click.option("-p", "--name-prefix", "name_prefix", default="file", show_default=True, help="File name prefix.")
 @verbose_option
 def generate_text_file(
     directory: Path, num_files: int, num_lines: Optional[int], name_prefix: str, verbose: int
