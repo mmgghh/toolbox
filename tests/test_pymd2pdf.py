@@ -9,7 +9,7 @@ import pytest
 
 from pytoolbox import pymd2pdf
 from pytoolbox.core import paths
-from pytoolbox.mdpdf import document, fonts, shaping, state
+from pytoolbox.mdpdf import document, fonts, media, render, shaping, state, tables
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
 has_fonts = paths.find_font("DejaVuSans.ttf") is not None
@@ -63,7 +63,7 @@ print("hi")
     ],
 )
 def test_strip_md(text, expected):
-    assert pymd2pdf._strip_md(text) == expected
+    assert render.strip_md(text) == expected
 
 
 def test_is_rtl():
@@ -81,11 +81,11 @@ def test_shape_rtl_keeps_harakat():
 
 
 def test_strip_links_keeps_the_label():
-    assert pymd2pdf._strip_links("see [Braintrust](https://b.example/) here") == (
+    assert render.strip_links("see [Braintrust](https://b.example/) here") == (
         "see Braintrust here"
     )
-    assert pymd2pdf._strip_links("![alt](img.png)") == "alt"
-    assert pymd2pdf._strip_links("no link here") == "no link here"
+    assert render.strip_links("![alt](img.png)") == "alt"
+    assert render.strip_links("no link here") == "no link here"
 
 
 def test_extract_title():
@@ -94,33 +94,33 @@ def test_extract_title():
 
 
 def test_bullet_char_cycles_by_depth():
-    assert pymd2pdf._bullet_char(0) == "•"
-    assert pymd2pdf._bullet_char(2) == "◦"
-    assert pymd2pdf._bullet_char(4) == "▪"
-    assert pymd2pdf._bullet_char(99) == "▪"
+    assert render.bullet_char(0) == "•"
+    assert render.bullet_char(2) == "◦"
+    assert render.bullet_char(4) == "▪"
+    assert render.bullet_char(99) == "▪"
 
 
 def test_parse_table_row():
-    assert pymd2pdf._parse_table_row("| a | b |") == ["a", "b"]
-    assert pymd2pdf._parse_table_row("a | b") == ["a", "b"]
+    assert tables.parse_table_row("| a | b |") == ["a", "b"]
+    assert tables.parse_table_row("a | b") == ["a", "b"]
 
 
 def test_task_regex():
-    assert pymd2pdf._TASK_RE.match("[ ] todo").groups() == (" ", "todo")
-    assert pymd2pdf._TASK_RE.match("[x] done").groups() == ("x", "done")
-    assert pymd2pdf._TASK_RE.match("not a task") is None
+    assert render.TASK_RE.match("[ ] todo").groups() == (" ", "todo")
+    assert render.TASK_RE.match("[x] done").groups() == ("x", "done")
+    assert render.TASK_RE.match("not a task") is None
 
 
 def test_inline_split_keeps_spans_intact():
-    parts = [p for p in pymd2pdf._INLINE_RE.split("a **b** c `d`") if p]
+    parts = [p for p in render.INLINE_RE.split("a **b** c `d`") if p]
     assert "**b**" in parts
     assert "`d`" in parts
 
 
 def test_looks_like_svg():
-    assert pymd2pdf._looks_like_svg(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
-    assert pymd2pdf._looks_like_svg(b'<?xml version="1.0"?><svg></svg>')
-    assert not pymd2pdf._looks_like_svg(b"\x89PNG\r\n")
+    assert media.looks_like_svg(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    assert media.looks_like_svg(b'<?xml version="1.0"?><svg></svg>')
+    assert not media.looks_like_svg(b"\x89PNG\r\n")
 
 
 def test_glyph_translation_only_substitutes_what_no_font_draws():
@@ -332,7 +332,7 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
     """A paragraph/list-item/blockquote wrapped *entirely* in ``**bold**``
     used to render as plain text: the RTL branches of these renderers
     stripped markdown markers instead of parsing them (unlike the LTR path,
-    which goes through _render_rich), because RTL text has to be shaped and
+    which goes through render.render_rich), because RTL text has to be shaped and
     bidi-reordered before fpdf2 sees it, so its own markdown parser can no
     longer find markers inside it.
     """
@@ -358,11 +358,11 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
         if not line.strip():
             continue
         if line.startswith("> "):
-            pymd2pdf._add_blockquote(pdf, [line[2:]])
+            render.add_blockquote(pdf, [line[2:]])
         elif line.startswith("- "):
-            pymd2pdf._add_list_item(pdf, "  • ", line[2:], 0)
+            render.add_list_item(pdf, "  • ", line[2:], 0)
         else:
-            pymd2pdf._add_paragraph(pdf, line)
+            render.add_paragraph(pdf, line)
 
     assert styles == ["", "B", "B", "", "B"]
 
@@ -413,8 +413,8 @@ def test_offline_blocks_the_mermaid_web_fallback(monkeypatch):
     def explode(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("the network was used despite --offline")
 
-    monkeypatch.setattr(pymd2pdf, "_render_mermaid_ink", explode)
-    assert pymd2pdf._render_mermaid("graph TD; A-->B;") is None
+    monkeypatch.setattr(media, "render_mermaid_ink", explode)
+    assert media.render_mermaid("graph TD; A-->B;") is None
 
 
 def test_font_size_reaches_styled_spans(tmp_path, monkeypatch):

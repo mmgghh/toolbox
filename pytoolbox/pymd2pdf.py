@@ -12,645 +12,21 @@ present.
 
 from __future__ import annotations
 
-import base64
-import io
 import re
-import subprocess
-import sys
-import tempfile
-from contextlib import contextmanager
 from pathlib import Path
 
 import click
-import requests
-from fpdf.svg import Percent, SVGObject
-from PIL import Image as PILImage
 
 from pytoolbox.core.options import CONTEXT_SETTINGS, version_option
-from pytoolbox.mdpdf import document, fonts, shaping, state
+from pytoolbox.mdpdf import document, fonts, media, render, shaping, state, tables
 
 #: Page geometry presets accepted by ``--page-size``.
 PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
-
-# A standalone Markdown image line: ![alt](src "optional title")
-_IMG_RE = re.compile(r'^!\[([^\]]*)\]\(\s*(\S+?)(?:\s+["\'][^"\']*["\'])?\s*\)\s*$')
 
 
 
 
 # Text helpers
-# ═══════════════════════════════════════════════════════════════════
-
-#: An inline link or image: the label is drawn, the target is not.
-_MD_LINK_RE = re.compile(r'!?\[([^\]]*)\]\(([^)]*)\)')
-
-
-def _strip_links(text):
-    """Replace ``[label](url)`` (and ``![alt](src)``) with just its label."""
-    return _MD_LINK_RE.sub(r'\1', text)
-
-
-def _strip_md(text):
-    """Remove inline markdown markers, leaving the text that will be drawn."""
-    text = _strip_links(text)
-    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-    text = re.sub(r'__(.+?)__', r'\1', text)
-    text = re.sub(r'~~(.+?)~~', r'\1', text)
-    text = re.sub(r'\*(.+?)\*', r'\1', text)
-    text = re.sub(r'`(.+?)`', r'\1', text)
-    return text
-
-
-#: A block whose *entire* text is wrapped in ``**bold**``. RTL blocks are
-#: shaped and bidi-reordered before fpdf2 sees them, so its own markdown
-#: parser can no longer find markers inside the text -- this is the one case
-#: (whole-block, not partial/inline) still worth honouring for RTL text.
-
-# Inline spans, longest markers first so ``**`` wins over ``*`` and ``__``
-# over ``_``. Links come first because their label may itself contain markers.
-_WHOLE_BOLD_RE = re.compile(r'^\*\*(.+)\*\*$')
-
-_INLINE_RE = re.compile(
-    r'(\[[^\]]+\]\([^)\s]+\)'
-    r'|`[^`]+`'
-    r'|\*\*[^*]+\*\*'
-    r'|__[^_]+__'
-    r'|~~[^~]+~~'
-    r'|\*[^*\s][^*]*\*'
-    r')'
-)
-
-_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
-
-
-def _render_rich(pdf, text, base_size=None, base_style=""):
-    """Write a line honouring inline code, bold, italic, strikethrough and links.
-
-    Uses pdf.write() throughout so segments wrap at the right margin instead of
-    overflowing. Inline code is distinguished by the mono font; links are drawn
-    underlined and carry a real document.PDF link annotation.
-
-    ``base_size`` defaults to state.BODY_SIZE at *call* time, not import time:
-    ``convert`` rebinds state.BODY_SIZE for --font-size, and a default evaluated at
-    import would pin every styled run to the original 10pt while the plain
-    text around it scaled.
-    """
-    if base_size is None:
-        base_size = state.BODY_SIZE
-    lh = document.body_lh(pdf)
-
-    def reset():
-        pdf.set_font(fonts.FONT_SANS, base_style, base_size)
-        pdf.set_text_color(*document.CLR_BODY)
-
-    for part in _INLINE_RE.split(text):
-        if not part:
-            continue
-        link_match = _LINK_RE.match(part)
-        if link_match:
-            label, url = link_match.groups()
-            pdf.set_font(fonts.FONT_SANS, base_style + "U" if "U" not in base_style else base_style, base_size)
-            pdf.set_text_color(*document.CLR_LINK)
-            pdf.write(lh, _strip_md(label), link=url)
-            reset()
-        elif part.startswith('`') and part.endswith('`'):
-            pdf.set_font(fonts.FONT_MONO, "", base_size - 1)
-            pdf.set_text_color(*document.CLR_CODE_FG)
-            pdf.write(lh, part[1:-1])
-            reset()
-        elif (part.startswith('**') and part.endswith('**')) or (
-            part.startswith('__') and part.endswith('__')
-        ):
-            pdf.set_font(fonts.FONT_SANS, "B", base_size)
-            pdf.set_text_color(*document.CLR_BOLD)
-            pdf.write(lh, part[2:-2])
-            reset()
-        elif part.startswith('~~') and part.endswith('~~'):
-            # fpdf2 has no strikethrough style; grey text reads as "struck out"
-            # well enough without drawing manual lines under wrapped runs.
-            pdf.set_text_color(*document.CLR_STRIKE)
-            pdf.write(lh, part[2:-2])
-            reset()
-        elif part.startswith('*') and part.endswith('*'):
-            pdf.set_font(fonts.FONT_SANS, "I", base_size)
-            pdf.write(lh, part[1:-1])
-            reset()
-        else:
-            pdf.write(lh, part)
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Block renderers
-# ═══════════════════════════════════════════════════════════════════
-
-def _add_heading(pdf, level, text):
-    sizes = {1: 18, 2: 14, 3: 12, 4: 11, 5: 10, 6: 10}
-    sz = sizes.get(level, 10)
-    pdf.ln(4 if level > 1 else 6)
-    pdf.set_text_color(*document.CLR_HEADING)
-    stripped = _strip_md(text)
-    if _use_rtl_layout(pdf, stripped):
-        pdf.set_font(fonts.FONT_FA, "B", sz)
-        pdf.multi_cell(
-            0, sz * 0.6, shaping.shape_rtl(stripped),
-            align="R", new_x="LMARGIN", new_y="NEXT",
-        )
-    else:
-        pdf.set_font(fonts.FONT_SANS, "B", sz)
-        pdf.multi_cell(0, sz * 0.6, stripped)
-    pdf.ln(2)
-    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*document.CLR_BODY)
-
-
-def _add_code_block(pdf, lines):
-    pdf.ln(2)
-    pdf.set_fill_color(*document.CLR_CODE_BG)
-    pdf.set_text_color(*document.CLR_CODE_FG)
-    pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
-    w = pdf.w - pdf.l_margin - pdf.r_margin
-    x0 = pdf.l_margin
-    for ln in lines:
-        document.ensure_space(pdf, document.CODE_LH)
-        pdf.set_fill_color(*document.CLR_CODE_BG)
-        pdf.set_text_color(*document.CLR_CODE_FG)
-        pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
-        display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
-        pdf.set_x(x0)
-        pdf.cell(w, document.CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*document.CLR_BODY)
-    pdf.ln(2)
-
-
-def _looks_like_svg(data):
-    head = data[:512].lstrip(b'\xef\xbb\xbf').lstrip()
-    return head[:5].lower() == b'<?xml' or head[:4].lower() == b'<svg'
-
-
-def _svg_size(data):
-    """Return an SVG's intrinsic (width, height), falling back to a default aspect.
-
-    ``width``/``height`` attributes given as a percentage (e.g. ``width="100%"``)
-    are relative to the embedding container, not an absolute size -- the viewBox
-    is the only reliable source of aspect ratio in that case.
-    """
-    svg = SVGObject(data)
-    w = h = 0.0
-    if svg.viewbox:
-        _, _, w, h = svg.viewbox
-    if svg.width and not isinstance(svg.width, Percent):
-        w = svg.width
-    if svg.height and not isinstance(svg.height, Percent):
-        h = svg.height
-    return (w, h) if w and h else (800.0, 600.0)
-
-
-def _place_image(pdf, data, alt=""):
-    """Embed image bytes, scaled to fit within the page, with an optional caption.
-
-    fpdf2 renders SVGs natively as vector graphics (crisp at any size), but only
-    Pillow can report a raster image's pixel size -- so dimension lookup has to
-    branch on format, even though the final ``pdf.image()`` call doesn't.
-    """
-    if _looks_like_svg(data):
-        px_w, px_h = _svg_size(data)
-    else:
-        px_w, px_h = PILImage.open(io.BytesIO(data)).size
-    max_w, max_h = pdf.epw, pdf.eph - 10
-    w_mm, h_mm = max_w, max_w * px_h / px_w
-    if h_mm > max_h:
-        w_mm, h_mm = max_h * px_w / px_h, max_h
-    document.ensure_space(pdf, h_mm + 8)
-    x = pdf.l_margin + (max_w - w_mm) / 2
-    pdf.image(data, x=x, w=w_mm, h=h_mm)
-    pdf.ln(2)
-    if alt:
-        pdf.set_font(fonts.FONT_FA if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else fonts.FONT_SANS, "I", 8)
-        pdf.set_text_color(120, 120, 120)
-        caption = shaping.shape_rtl(alt) if shaping.is_rtl(alt) and getattr(pdf, "has_persian", False) else alt
-        pdf.cell(0, 5, caption, align="C", new_x="LMARGIN", new_y="NEXT")
-        pdf.set_text_color(*document.CLR_BODY)
-        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.ln(3)
-
-
-def _add_image(pdf, src, alt, base_dir):
-    try:
-        if re.match(r'^https?://', src):
-            if state.offline:
-                raise RuntimeError("remote images are disabled by --offline")
-            resp = requests.get(src, timeout=15)
-            resp.raise_for_status()
-            data = resp.content
-        else:
-            path = Path(src)
-            if not path.is_absolute():
-                path = base_dir / path
-            data = path.read_bytes()
-        _place_image(pdf, data, alt)
-    except Exception as exc:
-        print(f"WARN: could not load image '{src}': {exc}", file=sys.stderr)
-        _add_paragraph(pdf, f"[image: {alt or src}]")
-
-
-def _render_mermaid_mmdc(source):
-    """Render via a local mermaid-cli install. Returns PNG bytes or None."""
-    with tempfile.TemporaryDirectory() as tmp:
-        in_path = Path(tmp) / "diagram.mmd"
-        out_path = Path(tmp) / "diagram.png"
-        in_path.write_text(source, encoding="utf-8")
-        result = subprocess.run(
-            ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "white", "-s", "2"],
-            capture_output=True, timeout=30, check=False,
-        )
-        if result.returncode == 0 and out_path.is_file():
-            return out_path.read_bytes()
-    return None
-
-
-def _render_mermaid_ink(source):
-    """Render via the mermaid.ink web API. Returns PNG bytes; raises on failure."""
-    b64 = base64.urlsafe_b64encode(source.encode("utf-8")).decode("ascii")
-    resp = requests.get(f"https://mermaid.ink/img/{b64}?bgColor=white", timeout=15)
-    resp.raise_for_status()
-    return resp.content
-
-
-def _render_mermaid(source):
-    """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
-    if state.HAS_MMDC:
-        try:
-            data = _render_mermaid_mmdc(source)
-            if data:
-                return data
-        except Exception:
-            pass
-    if state.offline:
-        if not state.mermaid_net_warned:
-            print(
-                "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
-                "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
-                file=sys.stderr,
-            )
-            state.mermaid_net_warned = True
-        return None
-    try:
-        try:
-            return _render_mermaid_ink(source)
-        except requests.exceptions.RequestException:
-            # Transient failures (dropped connections, timeouts) are common
-            # enough on this public endpoint to warrant one retry before
-            # falling back to showing the raw source.
-            return _render_mermaid_ink(source)
-    except Exception as exc:
-        if not state.mermaid_net_warned:
-            print(
-                "WARN: could not render Mermaid diagram "
-                f"({'mmdc failed and ' if state.HAS_MMDC else ''}mermaid.ink request "
-                f"failed: {exc}); showing raw source instead. Install mermaid-cli "
-                "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
-                file=sys.stderr,
-            )
-            state.mermaid_net_warned = True
-        return None
-
-
-def _add_mermaid(pdf, lines):
-    source = '\n'.join(lines).strip()
-    if not source:
-        return
-    data = _render_mermaid(source)
-    if data:
-        try:
-            _place_image(pdf, data)
-            return
-        except Exception as exc:
-            print(f"WARN: could not embed rendered Mermaid diagram: {exc}", file=sys.stderr)
-    _add_code_block(pdf, lines)
-
-
-def _parse_table_row(line):
-    cells = [c.strip() for c in line.split('|')]
-    if cells and cells[0] == '':
-        cells = cells[1:]
-    if cells and cells[-1] == '':
-        cells = cells[:-1]
-    return cells
-
-
-def _strip_code_ticks(text):
-    """Strip only inline-code backticks; leave **bold** for fpdf2 markdown."""
-    return re.sub(r'`(.+?)`', r'\1', text)
-
-
-#: A cell that is nothing but a single link, which can therefore become a real
-#: document.PDF link annotation on the whole cell rather than plain label text.
-_CELL_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
-
-
-@contextmanager
-def _isolated_annotations(pdf):
-    """Keep fpdf2's cell-measuring pass from leaking link annotations.
-
-    Before drawing a table, fpdf2 renders every cell once with output
-    disabled to learn how tall it is, and restores the page's annotation
-    list afterwards -- but it restores the very list object it captured, so
-    whatever the measuring pass appended survives whenever the page already
-    had an annotation on it. Each linked cell then leaves an extra invisible
-    click target at the measuring cursor's position, usually somewhere in
-    the table's first row.
-
-    Starting the table with an *empty* list dodges the aliasing (fpdf2 keeps
-    a fresh list of its own in that case, and drops it along with the
-    measuring pass's additions); the page's real annotations are appended
-    back afterwards, in order.
-    """
-    page = pdf.pages[pdf.page]
-    saved = page.annots
-    if not saved:  # nothing to alias: fpdf2 already discards the additions
-        yield
-        return
-    page.annots = saved.__class__()
-    try:
-        yield
-    finally:
-        # ``page`` is the page the table started on; rows pushed onto later
-        # pages keep their own (initially empty, so unaffected) lists.
-        drawn = page.annots or []
-        page.annots = saved
-        saved.extend(drawn)
-
-
-def _add_table(pdf, headers, rows):
-    from fpdf.enums import TableCellFillMode
-    from fpdf.fonts import FontFace
-
-    pdf.ln(2)
-    n = len(headers)
-    page_w = pdf.w - pdf.l_margin - pdf.r_margin
-    CELL_PADDING = 1
-
-    has_persian = getattr(pdf, "has_persian", False) and (
-        getattr(pdf, "doc_is_rtl", False)
-        or any(shaping.is_rtl(h) for h in headers)
-        or any(shaping.is_rtl(c) for row in rows for c in row)
-    )
-    table_font  = fonts.FONT_FA if has_persian else fonts.FONT_SANS
-    text_align  = "RIGHT" if has_persian else "LEFT"
-
-    if has_persian:
-        # Mirror column order: markdown's first (e.g. label) column should
-        # land on the right, matching RTL reading order, since fpdf2 always
-        # lays table columns out left-to-right regardless of text_align.
-        headers = list(reversed(headers))
-        rows = [list(reversed(row)) for row in rows]
-
-    def _prep_cell(cell, col_width, is_header=False):
-        """Cell payload for table.row(): plain text, or a dict when the cell
-        needs more than fpdf2's own markdown parsing gives us.
-
-        That parser handles ``**bold**`` but knows nothing about links, so a
-        cell left as-is would print its raw ``[label](url)`` source. A cell
-        that is *only* a link becomes the label plus a real link annotation;
-        a link mixed into other text keeps just its label.
-
-        RTL cells always need the dict form: their text is shaped and bidi
-        reordered before fpdf2 sees it, so its markdown markers can no longer
-        be parsed and any bold has to travel as an explicit FontFace.
-        """
-        text = _strip_code_ticks(cell).strip()
-        bold_m = _WHOLE_BOLD_RE.match(text)
-        inner = bold_m.group(1).strip() if bold_m else text
-        link_m = _CELL_LINK_RE.match(inner)
-        link = link_m.group(2) if link_m else None
-
-        if link is None and not has_persian:
-            # Nothing fpdf2 cannot handle itself: leave the ** markers in
-            # place for its markdown parser, having dropped the link syntax
-            # it does not understand.
-            return _strip_links(text)
-
-        emphasis = ("B" if bold_m else "") + ("U" if link else "")
-        # Only an RTL cell reaches here without a link, and its text is shaped
-        # and bidi reordered before fpdf2 sees it -- markdown markers around
-        # part of a cell can no longer be parsed, and would print literally.
-        # Whole-cell bold survives as the FontFace above; the rest is dropped.
-        body = link_m.group(1) if link_m else _strip_md(inner)
-        if has_persian:
-            # Reordering the *whole* cell into visual order and letting fpdf2's
-            # plain left-to-right wrapper break it into lines would scatter the
-            # paragraph's tail onto the first physical line (see
-            # shaping.shape_rtl_lines's docstring). Wrap here instead, in logical
-            # order, one bidi-reordered line per line -- using the same style
-            # (bold for headings) fpdf2 will actually render the cell in, so
-            # our line breaks match its usable width and it doesn't re-wrap
-            # (and re-scramble) any of them.
-            pdf.set_font(table_font, "B" if (bold_m or is_header) else "", document.TABLE_SIZE)
-            usable_width = col_width - 2 * CELL_PADDING
-            shaped = "\n".join(shaping.shape_rtl_lines(pdf, body, usable_width))
-        else:
-            shaped = body
-        return {
-            "text": shaped,
-            "link": link,
-            "style": FontFace(
-                emphasis=emphasis or None,
-                color=document.CLR_LINK if link else None,
-            ) if emphasis else None,
-        }
-
-    # Natural widths (with backticks/markdown stripped, since they don't render).
-    pdf.set_font(table_font, "B", document.TABLE_SIZE)
-    natural = [pdf.get_string_width(_strip_md(h)) + 4 for h in headers]
-    pdf.set_font(table_font, "", document.TABLE_SIZE)
-    for row in rows:
-        for i in range(min(n, len(row))):
-            natural[i] = max(natural[i], pdf.get_string_width(_strip_md(row[i])) + 4)
-
-    # Clamp each column to [min_col, max_col]. min_col guarantees at least a few
-    # characters fit; max_col forces very long cells to wrap rather than starving
-    # narrow columns when totals are scaled down.
-    min_col = max(8.0, pdf.get_string_width("MMM") + 2)
-    max_col = page_w * 0.28
-    col_w = [max(min_col, min(nw, max_col)) for nw in natural]
-    total = sum(col_w)
-
-    if total > page_w:
-        # Shrink only columns above min_col, proportional to their slack.
-        excess = total - page_w
-        slack = [w - min_col for w in col_w]
-        slack_total = sum(slack)
-        if slack_total >= excess:
-            col_w = [w - excess * s / slack_total for w, s in zip(col_w, slack)]
-        else:
-            col_w = [page_w / n] * n
-    elif total < page_w:
-        # Distribute extra space to columns that were capped (the wide ones).
-        leftover = page_w - total
-        capped_idx = [i for i, nw in enumerate(natural) if nw > max_col]
-        if capped_idx:
-            for i in capped_idx:
-                col_w[i] += leftover / len(capped_idx)
-        else:
-            for i in range(n):
-                col_w[i] += leftover / n
-
-    headings_style = FontFace(
-        emphasis="BOLD",
-        color=document.CLR_TABLE_HDR_FG,
-        fill_color=document.CLR_TABLE_HDR_BG,
-    )
-
-    pdf.set_font(table_font, "", document.TABLE_SIZE)
-    pdf.set_draw_color(*document.CLR_TABLE_BORDER)
-    pdf.set_text_color(*document.CLR_BODY)
-
-    with _isolated_annotations(pdf), pdf.table(
-        col_widths=tuple(col_w),
-        text_align=text_align,
-        cell_fill_color=document.CLR_TABLE_ALT,
-        cell_fill_mode=TableCellFillMode.EVEN_ROWS,
-        first_row_as_headings=True,
-        headings_style=headings_style,
-        line_height=document.TABLE_SIZE * 0.55,
-        markdown=not has_persian,
-        padding=CELL_PADDING,
-    ) as table:
-        table.row([_prep_cell(h, col_w[i], is_header=True) for i, h in enumerate(headers)])
-        for row in rows:
-            cells = [
-                _prep_cell(row[i], col_w[i]) if i < len(row) else ""
-                for i in range(n)
-            ]
-            table.row(cells)
-
-    pdf.ln(2)
-
-
-# Cycled by nesting depth, like most markdown editors/viewers, instead of a
-# single hyphen at every level.
-_BULLET_CHARS = ["•", "◦", "▪"]
-
-
-def _bullet_char(indent):
-    return _BULLET_CHARS[min(indent // 2, len(_BULLET_CHARS) - 1)]
-
-
-def _use_rtl_layout(pdf, text):
-    """Whether a block should use RTL shaping/alignment.
-
-    A document-wide RTL flag (``pdf.doc_is_rtl``) is consulted alongside this
-    specific text's own script, so a block with no Persian/Arabic characters
-    at all (e.g. an English-only list item inside an otherwise-Persian list)
-    still follows the document's base direction instead of snapping to LTR
-    and breaking the list's alignment.
-    """
-    return (getattr(pdf, "doc_is_rtl", False) or shaping.is_rtl(text)) and getattr(pdf, "has_persian", False)
-
-
-def _add_paragraph(pdf, text):
-    pdf.set_text_color(*document.CLR_BODY)
-    if _use_rtl_layout(pdf, text):
-        bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
-        # multi_cell reserves its own internal c_margin padding on each side,
-        # on top of the cell width we pass it -- our wrap width must match
-        # that actual usable text width or lines we judge to "just fit" wrap
-        # again inside multi_cell.
-        width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
-        lh = document.body_lh(pdf)
-        body = bold_m.group(1) if bold_m else text
-        for line in shaping.shape_rtl_lines(pdf, _strip_md(body), width):
-            pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
-    else:
-        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-        _render_rich(pdf, text)
-        pdf.ln(document.body_lh(pdf))
-
-
-def _add_list_item(pdf, prefix, text, indent):
-    pdf.set_text_color(*document.CLR_BODY)
-    body = text.strip()
-    if _use_rtl_layout(pdf, body):
-        bold_m = _WHOLE_BOLD_RE.match(body)
-        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
-        width = pdf.w - pdf.l_margin - pdf.r_margin - indent * 2
-        lh = document.body_lh(pdf)
-        # multi_cell reserves its own internal c_margin padding on each side,
-        # on top of the cell width we pass it -- wrap using the actual usable
-        # text width or lines we judge to "just fit" wrap again inside multi_cell.
-        usable_width = width - 2 * pdf.c_margin
-        inner = bold_m.group(1) if bold_m else body
-        lines = shaping.shape_rtl_lines(pdf, _strip_md(inner), usable_width, marker=prefix.strip())
-        for line in lines:
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(width, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
-    else:
-        pdf.set_x(pdf.l_margin + indent * 2)
-        pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-        pdf.write(document.body_lh(pdf), prefix)
-        _render_rich(pdf, body)
-        pdf.ln(document.body_lh(pdf))
-
-
-def _add_blockquote(pdf, lines):
-    """Render consecutive ``> `` lines as an indented, bar-marked quote."""
-    if not lines:
-        return
-    text = " ".join(line.strip() for line in lines if line.strip())
-    if not text:
-        return
-    pdf.ln(1)
-    indent = 6
-    start_y = pdf.get_y()
-    pdf.set_text_color(*document.CLR_QUOTE_FG)
-
-    if _use_rtl_layout(pdf, text):
-        bold_m = _WHOLE_BOLD_RE.match(text.strip())
-        pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)
-        # multi_cell reserves its own internal c_margin padding on each side,
-        # on top of the cell width we pass it -- our wrap width must match
-        # that actual usable text width or lines we judge to "just fit" wrap
-        # again inside multi_cell (see _add_paragraph's docstring).
-        width = pdf.w - pdf.l_margin - pdf.r_margin - indent
-        usable_width = width - 2 * pdf.c_margin
-        body = bold_m.group(1) if bold_m else text
-        for line in shaping.shape_rtl_lines(pdf, _strip_md(body), usable_width):
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(width, document.body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
-    else:
-        pdf.set_font(fonts.FONT_SANS, "I", state.BODY_SIZE)
-        pdf.set_left_margin(pdf.l_margin + indent)
-        pdf.set_x(pdf.l_margin)
-        _render_rich(pdf, text, base_style="I")
-        pdf.ln(document.body_lh(pdf))
-        pdf.set_left_margin(pdf.l_margin - indent)
-
-    # Draw the bar last, once the quote's height is known.
-    end_y = pdf.get_y()
-    pdf.set_draw_color(*document.CLR_QUOTE_BAR)
-    pdf.set_line_width(0.8)
-    bar_x = pdf.w - pdf.r_margin - 1 if _use_rtl_layout(pdf, text) else pdf.l_margin + 1
-    pdf.line(bar_x, start_y, bar_x, end_y - 1)
-    pdf.set_line_width(0.2)
-    pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
-    pdf.set_text_color(*document.CLR_BODY)
-    pdf.ln(2)
-
-
-#: ``- [ ] todo`` / ``- [x] done`` list items.
-_TASK_RE = re.compile(r'^\[([ xX])\]\s+(.*)$')
-
-
-def _add_hr(pdf):
-    pdf.ln(2)
-    pdf.set_draw_color(*document.CLR_HR)
-    y = pdf.get_y()
-    pdf.line(pdf.l_margin, y, pdf.w - pdf.r_margin, y)
-    pdf.ln(4)
-
-
 # ═══════════════════════════════════════════════════════════════════
 # Main converter
 # ═══════════════════════════════════════════════════════════════════
@@ -660,7 +36,7 @@ def _extract_title(lines):
     for ln in lines:
         m = re.match(r'^#\s+(.*)', ln)
         if m:
-            return _strip_md(m.group(1))
+            return render.strip_md(m.group(1))
     return ""
 
 
@@ -700,7 +76,7 @@ def convert(
     pdf.set_title(title or md_path.stem)
     # Document-wide base direction: a block with no RTL characters of its own
     # (e.g. an English-only list item in an otherwise-Persian list) still
-    # follows this instead of snapping to LTR mid-list. See _use_rtl_layout.
+    # follows this instead of snapping to LTR mid-list. See render.use_rtl_layout.
     rtl_chars = len(shaping.RTL_RE.findall(md_text))
     latin_chars = len(re.findall(r'[A-Za-z]', md_text))
     pdf.doc_is_rtl = rtl_chars > latin_chars
@@ -749,7 +125,7 @@ def convert(
     def _flush_table():
         nonlocal in_table, tbl_hdr, tbl_rows
         if in_table:
-            _add_table(pdf, tbl_hdr, tbl_rows)
+            tables.add_table(pdf, tbl_hdr, tbl_rows)
             in_table, tbl_hdr, tbl_rows = False, [], []
 
     while i < len(lines):
@@ -760,9 +136,9 @@ def convert(
         if fence_m:
             if in_code:
                 if code_lang == 'mermaid':
-                    _add_mermaid(pdf, code_buf)
+                    media.add_mermaid(pdf, code_buf)
                 else:
-                    _add_code_block(pdf, code_buf)
+                    render.add_code_block(pdf, code_buf)
                 code_buf, in_code, code_lang = [], False, ""
             else:
                 _flush_table()
@@ -777,7 +153,7 @@ def convert(
 
         # ── table ───────────────────────────────────────────────
         if '|' in line and line.strip().startswith('|'):
-            cells = _parse_table_row(line)
+            cells = tables.parse_table_row(line)
             if not in_table:
                 if i + 1 < len(lines) and re.match(r'^[\s|:-]+$', lines[i + 1]):
                     in_table, tbl_hdr = True, cells
@@ -796,21 +172,21 @@ def convert(
 
         # ── horizontal rule ─────────────────────────────────────
         if re.match(r'^---+\s*$', line.strip()):
-            _add_hr(pdf)
+            render.add_hr(pdf)
             i += 1
             continue
 
         # ── heading ─────────────────────────────────────────────
         m = re.match(r'^(#{1,6})\s+(.*)', line)
         if m:
-            _add_heading(pdf, len(m.group(1)), m.group(2))
+            render.add_heading(pdf, len(m.group(1)), m.group(2))
             i += 1
             continue
 
         # ── numbered list ───────────────────────────────────────
         m = re.match(r'^(\s*)(\d+)\.\s+(.*)', line)
         if m:
-            _add_list_item(pdf, f"  {m.group(2)}. ", m.group(3), len(m.group(1)))
+            render.add_list_item(pdf, f"  {m.group(2)}. ", m.group(3), len(m.group(1)))
             i += 1
             continue
 
@@ -820,7 +196,7 @@ def convert(
             while i < len(lines) and lines[i].lstrip().startswith('>'):
                 quote_lines.append(re.sub(r'^\s*>\s?', '', lines[i]))
                 i += 1
-            _add_blockquote(pdf, quote_lines)
+            render.add_blockquote(pdf, quote_lines)
             continue
 
         # ── bullet list (including task lists) ──────────────────
@@ -828,19 +204,19 @@ def convert(
         if m:
             indent = len(m.group(1))
             body = m.group(2)
-            task = _TASK_RE.match(body)
+            task = render.TASK_RE.match(body)
             if task:
                 marker = "  [x] " if task.group(1).lower() == "x" else "  [ ] "
-                _add_list_item(pdf, marker, task.group(2), indent)
+                render.add_list_item(pdf, marker, task.group(2), indent)
             else:
-                _add_list_item(pdf, f"  {_bullet_char(indent)} ", body, indent)
+                render.add_list_item(pdf, f"  {render.bullet_char(indent)} ", body, indent)
             i += 1
             continue
 
         # ── image ───────────────────────────────────────────────
-        m = _IMG_RE.match(line.strip())
+        m = media.IMG_RE.match(line.strip())
         if m:
-            _add_image(pdf, m.group(2), m.group(1), md_path.parent)
+            media.add_image(pdf, m.group(2), m.group(1), md_path.parent)
             i += 1
             continue
 
@@ -851,7 +227,7 @@ def convert(
             continue
 
         # ── paragraph ───────────────────────────────────────────
-        _add_paragraph(pdf, line)
+        render.add_paragraph(pdf, line)
         i += 1
 
     _flush_table()
