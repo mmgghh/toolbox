@@ -75,10 +75,6 @@ class IntervalDelta:
     days: float = 0.0
     seconds: float = 0.0
 
-    def is_zero(self) -> bool:
-        """Whether this delta would leave a datetime unchanged."""
-        return not any((self.years, self.months, self.days, self.seconds))
-
     def with_(self, **changes: float) -> IntervalDelta:
         """Return a copy with the given fields replaced."""
         return IntervalDelta(

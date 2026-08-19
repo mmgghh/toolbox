@@ -364,10 +364,6 @@ def validate_date(calendar: str, year: int, month: int, day: int) -> None:
         raise click.ClickException(f"Day out of range for {calendar} {year}-{month}.")
 
 
-def format_date(calendar: str, year: int, month: int, day: int) -> str:
-    return f"{year:04d}-{month:02d}-{day:02d} ({month_name(calendar, month)})"
-
-
 def format_datetime(
     calendar: str,
     date_parts: DateParts,

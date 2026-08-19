@@ -65,28 +65,6 @@ def render_json(rows: Sequence[dict], headers: Sequence[str]) -> str:
     return json.dumps(payload, indent=2, ensure_ascii=False, default=str)
 
 
-def write_csv(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> None:
-    """Write rows to a CSV file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(headers)
-        for row in rows:
-            writer.writerow([_cell(row.get(header)) for header in headers])
-
-
-def write_markdown(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> None:
-    """Write rows to a Markdown file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_markdown(rows, headers) + "\n", encoding="utf-8")
-
-
-def write_json(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> None:
-    """Write rows to a JSON file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_json(rows, headers) + "\n", encoding="utf-8")
-
-
 def write_excel(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> None:
     """Write rows to an ``.xlsx`` file.
 

@@ -175,11 +175,6 @@ def strip_ansi(text: str) -> str:
     return ANSI_ESCAPE_RE.sub("", text)
 
 
-def normalize_whitespace(text: str) -> str:
-    """Collapse consecutive whitespace into single spaces and trim."""
-    return " ".join(text.split())
-
-
 def slugify(text: str, *, allow_unicode: bool = False) -> str:
     """Convert text to a URL-friendly slug."""
     value = text.strip()

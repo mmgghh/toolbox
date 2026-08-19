@@ -148,10 +148,6 @@ class Document:
         share = sum(1 for page in self.pages if page.scanned) / len(self.pages)
         return share >= SCANNED_DOCUMENT_SHARE
 
-    @property
-    def scanned_pages(self) -> list[int]:
-        return [page.number for page in self.pages if page.scanned]
-
 
 def read(
     source: Path,

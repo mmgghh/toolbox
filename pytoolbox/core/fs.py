@@ -6,7 +6,7 @@ import fnmatch
 import hashlib
 import os
 import re
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from re import Pattern
 from typing import Optional
@@ -181,26 +181,3 @@ def matching_entries(source: Path, pattern: str) -> list[Path]:
         key=lambda entry: entry.name,
     )
 
-
-def compile_regex(pattern: str, label: str = "pattern") -> Pattern[str]:
-    """Compile a regex, raising a friendly error instead of ``re.error``."""
-    import click
-
-    try:
-        return re.compile(pattern)
-    except re.error as exc:
-        raise click.ClickException(f"Invalid {label}: {exc}") from exc
-
-
-def relative_to_cwd(path: Path) -> str:
-    """Render a path relative to the working directory when that is shorter."""
-    try:
-        return str(path.resolve().relative_to(Path.cwd()))
-    except ValueError:
-        return str(path)
-
-
-def iter_dirs(root: Path, depth: int = 0) -> Iterable[Path]:
-    """Yield directories under ``root`` down to ``depth`` extra levels."""
-    for level in range(depth + 1):
-        yield from sorted(p for p in root.glob("*/" * level + "*") if p.is_dir())
