@@ -772,7 +772,8 @@ def serve(directory: Path, port: int, bind: str) -> None:
 @click.argument("domain")
 @click.option("--server", default=None, help="WHOIS server to query (default: follow IANA referrals).")
 @click.option("--raw", is_flag=True, help="Print the first response without following referrals.")
-def whois(domain: str, server: Optional[str], raw: bool) -> None:
+@json_option
+def whois(domain: str, server: Optional[str], raw: bool, as_json: bool) -> None:
     """Look up WHOIS registration data for DOMAIN.
 
     \b
@@ -782,6 +783,7 @@ def whois(domain: str, server: Optional[str], raw: bool) -> None:
     Examples:
       pynet whois example.com
       pynet whois example.com --server whois.verisign-grs.com
+      pynet whois example.com --json
     """
     target = server or IANA_WHOIS
     response = whois_query(domain, target)
@@ -792,6 +794,12 @@ def whois(domain: str, server: Optional[str], raw: bool) -> None:
         if referral and referral != target:
             console.info(f"Referred to {referral}", verbose=1)
             response = whois_query(domain, referral)
+            target = referral
+    if as_json:
+        # A WHOIS record is free-form text, so the response stays one string;
+        # JSON only makes it safe to embed and says which server answered.
+        console.emit_json({"domain": domain, "server": target, "response": response.strip()})
+        return
     console.result(response.strip())
 
 

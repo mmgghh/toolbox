@@ -122,6 +122,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **`pyjdate interval` and `pynet whois` learned `--json`.** They were the
+  last two commands in their tools that printed a result without one —
+  `interval` gives `start` and `end` in the shape `convert --json` already
+  used, and `whois` keeps the free-form record as a single string alongside
+  the server that answered, which is what makes it safe to embed.
+
+- **`pyssh` no longer accepts `--reconnecting` as a second spelling of
+  `--reconnect`.** It was an undocumented alias, not the off-switch of a
+  `--flag/--no-flag` pair, and reading it as one was the natural mistake.
+
 - **`-n` means `--dry-run` in every `pyfm` command that changes files.** It
   used to mean `--partitions` in `pyfm partition`, which was the one command
   where the flag everything else uses for "show me what you would do" instead

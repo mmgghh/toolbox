@@ -168,3 +168,14 @@ def test_unknown_command_suggests_alternatives(runner):
     result = runner.invoke(jdate_cli, ["converrt", "-g", "2026-01-04"])
     assert result.exit_code != 0
     assert "did you mean" in result.stderr.lower()
+
+
+def test_interval_json_output(runner):
+    result = runner.invoke(
+        jdate_cli, ["interval", "-g", "-y", "2026", "-m", "02", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert set(payload) == {"start", "end"}
+    assert payload["start"]["gregorian"]["date"] == "2026-02-01"
+    assert payload["end"]["gregorian"]["date"] == "2026-02-28"

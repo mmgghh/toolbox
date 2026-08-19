@@ -92,7 +92,10 @@ pyjdate interval -g -y 2026 -m 02               # a Gregorian month
 pyjdate interval -j -y 1404 -m mehr -d 12 --fa  # one day
 pyjdate interval -g -s "2026-01-01" --end "2026-01-31"
 pyjdate interval -e -s 1700000000 --end 1700086400
+pyjdate interval -g -y 2026 -m 02 --json
 ```
+
+`--json` gives `start` and `end`, each in the same shape `convert --json` uses.
 
 Jalali month lengths and leap years are handled correctly: months 1–6 have 31
 days, 7–11 have 30, and Esfand has 29 or 30.

@@ -160,12 +160,14 @@ served directory. Use `--bind 127.0.0.1` when that is not what you want.
 pynet whois example.com
 pynet whois example.com --server whois.verisign-grs.com
 pynet whois example.com --raw
+pynet whois example.com --json
 ```
 
 Speaks the port-43 WHOIS protocol directly, so no `whois` binary is needed.
 It queries IANA first and follows one referral to the registry that holds the
 real record; `--raw` stops at the first response. Internationalised domain
-names are punycoded automatically.
+names are punycoded automatically. A WHOIS record is free-form text, so
+`--json` keeps the response as one string and adds the server that answered.
 
 ## `url`
 

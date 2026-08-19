@@ -1133,6 +1133,7 @@ def convert(
 @click.option("-m", "--month", type=str, required=False, help="Month number or name.")
 @click.option("-d", "--day", type=int, required=False, help="Day of month.")
 @_persian_option
+@json_option
 def interval(
     jalali: bool,
     gregorian: bool,
@@ -1143,6 +1144,7 @@ def interval(
     month: Optional[str],
     day: Optional[int],
     persian_script: bool,
+    as_json: bool,
 ):
     """Show the first and last moment of a year, month, day or explicit range.
 
@@ -1168,28 +1170,28 @@ def interval(
             raise click.ClickException("--start and --end are required with -e/--epoch.")
         start_dt = parse_epoch(options.start)
         end_dt = parse_epoch(options.end or "")
-        _emit_datetime_block("Start:", start_dt, persian_script=persian_script)
-        _emit_datetime_block("End:", end_dt, persian_script=persian_script)
+    elif options.start is not None:
+        start_dt, _start_time_provided = parse_calendar_endpoint(kind, options.start)
+        end_dt, _end_time_provided = parse_calendar_endpoint(kind, options.end)  # type: ignore[arg-type]
+    else:
+        if options.year is None:
+            raise click.ClickException("Year is required when start/end are not provided.")
+        if options.month is None and options.day is not None:
+            raise click.ClickException("Day requires month.")
+        start_date, end_date = _resolve_interval_dates(kind, options.year, options.month, options.day)
+        start_dt = build_datetime(kind, start_date, TimeParts(0, 0, 0, 0), local_timezone())
+        end_dt = build_datetime(kind, end_date, TimeParts(23, 59, 59, 0), local_timezone())
+
+    if as_json:
+        console.emit_json(
+            {
+                "start": datetime_payload(start_dt, persian_script),
+                "end": datetime_payload(end_dt, persian_script),
+            }
+        )
         return
-
-    cal = kind
-    if options.start is not None:
-        start_dt, _start_time_provided = parse_calendar_endpoint(cal, options.start)
-        end_dt, _end_time_provided = parse_calendar_endpoint(cal, options.end)  # type: ignore[arg-type]
-        _emit_datetime_block("Start:", start_dt, persian_script=persian_script)
-        _emit_datetime_block("End:", end_dt, persian_script=persian_script)
-        return
-
-    if options.year is None:
-        raise click.ClickException("Year is required when start/end are not provided.")
-    if options.month is None and options.day is not None:
-        raise click.ClickException("Day requires month.")
-
-    start_date, end_date = _resolve_interval_dates(cal, options.year, options.month, options.day)
-    start_ts = build_datetime(cal, start_date, TimeParts(0, 0, 0, 0), local_timezone())
-    end_ts = build_datetime(cal, end_date, TimeParts(23, 59, 59, 0), local_timezone())
-    _emit_datetime_block("Start:", start_ts, persian_script=persian_script)
-    _emit_datetime_block("End:", end_ts, persian_script=persian_script)
+    _emit_datetime_block("Start:", start_dt, persian_script=persian_script)
+    _emit_datetime_block("End:", end_dt, persian_script=persian_script)
 
 
 @click.command()

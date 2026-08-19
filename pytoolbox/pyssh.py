@@ -414,7 +414,6 @@ def _tunnel_options(func):
     )(func)
     func = click.option(
         "--reconnect",
-        "--reconnecting",
         "reconnect",
         is_flag=True,
         help="Watch the proxy and rebuild the tunnel when it stops working.",

@@ -344,3 +344,12 @@ def test_scan_reports_open_ports(runner, open_port):
     )
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)[0]["state"] == "open"
+
+
+def test_whois_json_output(runner, monkeypatch):
+    monkeypatch.setattr(pynet, "whois_query", lambda domain, server: "Domain Name: EXAMPLE.COM\n")
+    result = runner.invoke(net_cli, ["whois", "example.com", "--raw", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["domain"] == "example.com"
+    assert "EXAMPLE.COM" in payload["response"]
