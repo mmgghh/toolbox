@@ -7,11 +7,12 @@ into ``psql`` while the conversation happens on the terminal.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Optional
 
 import click
 
 from pytoolbox.core import tables
-from pytoolbox.dataset import render, summarize
+from pytoolbox.dataset import naming, render, summarize
 from pytoolbox.dataset.errors import DataError
 from pytoolbox.dataset.schema import Column, SchemaNode
 from pytoolbox.dataset.sources import RecordSource
@@ -65,6 +66,44 @@ def choose(
     )
     _confirm(spec, len(source.records))
     return spec
+
+
+def rename_columns(
+    source: RecordSource,
+    root: SchemaNode,
+    columns: Sequence[Column],
+    names: Sequence[str],
+    presets: Optional[dict[int, str]] = None,
+    suggest: bool = False,
+) -> list[tuple[str, str]]:
+    """Ask for every name in turn, and return the ones that changed.
+
+    Enter keeps the name as it is, so walking the whole list without typing
+    anything is a no-op. ``--suggest`` offers the SQL spelling as the default
+    instead, and a rename already given on the command line pre-fills its own.
+    """
+    _show(source, root, columns)
+    click.echo("Enter keeps a name as it is.", err=True)
+
+    presets = presets or {}
+    chosen = list(names)
+    for index, name in enumerate(names):
+        default = presets.get(index) or (naming.sanitize(name) if suggest else name)
+        chosen[index] = _ask_name(f"[{index + 1}/{len(names)}] {name}", default, chosen, index)
+    return [(name, chosen[index]) for index, name in enumerate(names) if chosen[index] != name]
+
+
+def _ask_name(prompt: str, default: str, chosen: Sequence[str], index: int) -> str:
+    """One name, asked until the answer is usable."""
+    taken = {name for position, name in enumerate(chosen) if position != index}
+    while True:
+        answer = click.prompt(prompt, default=default, err=True).strip()
+        if not answer:
+            click.echo("A name cannot be empty. Try again.", err=True)
+        elif answer in taken:
+            click.echo(f"Another column is already called {answer!r}. Try again.", err=True)
+        else:
+            return answer
 
 
 def _show(source: RecordSource, root: SchemaNode, columns: Sequence[Column]) -> None:

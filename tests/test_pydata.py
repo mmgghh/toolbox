@@ -515,3 +515,145 @@ def test_declining_at_the_end_writes_nothing(runner, flat, tmp_path):
 def test_interactive_composite_index(runner, flat):
     result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\nid+active\n\ny\n")
     assert '("id", "active")' in result.stdout
+
+
+# ── edit ────────────────────────────────────────────────────────────
+
+
+def test_edit_renames_a_csv_header(runner, sales):
+    result = run(runner, "edit", sales, "--rename", "name=full_name", "-y")
+    assert result.exit_code == 0
+    assert sales.read_text(encoding="utf-8").splitlines()[0] == "id,full_name,joined,zip,amount"
+
+
+def test_edit_leaves_the_data_rows_of_a_csv_alone(runner, sales):
+    before = sales.read_text(encoding="utf-8").splitlines(keepends=True)[1:]
+    run(runner, "edit", sales, "--rename", "name=full_name", "-y")
+    assert sales.read_text(encoding="utf-8").splitlines(keepends=True)[1:] == before
+
+
+def test_edit_renames_a_json_key_inside_an_envelope(runner, api):
+    result = run(runner, "edit", api, "--root", "data.users", "--rename", "First Name=full_name", "-y")
+    assert result.exit_code == 0
+    document = json.loads(api.read_text(encoding="utf-8"))
+    assert document["meta"] == {"page": 1}
+    assert list(document["data"]["users"][0]) == ["id", "full_name", "age", "tags", "active"]
+
+
+def test_edit_renames_an_xlsx_header(runner, book):
+    result = run(runner, "edit", book, "--rename", "Full Name=name", "-y")
+    assert result.exit_code == 0
+    sheet = openpyxl.load_workbook(book).active
+    assert [cell.value for cell in sheet[1]] == ["ID", "name", "Hired"]
+
+
+def test_edit_accepts_the_sql_spelling_of_a_name(runner, book):
+    result = run(runner, "edit", book, "--rename", "full_name=name", "-y")
+    assert result.exit_code == 0
+    assert openpyxl.load_workbook(book).active["B1"].value == "name"
+
+
+def test_edit_takes_the_column_spelling_sql_uses(runner, sales):
+    result = run(runner, "edit", sales, "-c", "name=full_name", "-y")
+    assert result.exit_code == 0
+    assert "full_name" in sales.read_text(encoding="utf-8")
+
+
+def test_edit_prints_what_it_changed(runner, sales):
+    result = run(runner, "edit", sales, "--rename", "name=full_name", "-y")
+    assert "name" in result.stdout and "full_name" in result.stdout
+
+
+def test_edit_writes_a_backup(runner, sales):
+    original = sales.read_text(encoding="utf-8")
+    run(runner, "edit", sales, "--rename", "name=full_name", "-y")
+    assert (sales.parent / "sales.csv.bak").read_text(encoding="utf-8") == original
+
+
+def test_edit_can_skip_the_backup(runner, sales):
+    run(runner, "edit", sales, "--rename", "name=full_name", "--no-backup", "-y")
+    assert not (sales.parent / "sales.csv.bak").exists()
+
+
+def test_edit_to_an_output_file_leaves_the_source_alone(runner, sales, tmp_path):
+    target = tmp_path / "clean.csv"
+    run(runner, "edit", sales, "--rename", "name=full_name", "-o", target, "-y")
+    assert "full_name" in target.read_text(encoding="utf-8")
+    assert "full_name" not in sales.read_text(encoding="utf-8")
+    assert not (sales.parent / "sales.csv.bak").exists()
+
+
+def test_edit_dry_run_writes_nothing(runner, sales):
+    original = sales.read_text(encoding="utf-8")
+    result = run(runner, "edit", sales, "--rename", "name=full_name", "-n")
+    assert result.exit_code == 0
+    assert "full_name" in result.stdout
+    assert sales.read_text(encoding="utf-8") == original
+    assert not (sales.parent / "sales.csv.bak").exists()
+
+
+def test_edit_without_confirmation_writes_nothing(runner, sales):
+    original = sales.read_text(encoding="utf-8")
+    result = run(runner, "edit", sales, "--rename", "name=full_name")
+    assert result.exit_code != 0
+    assert sales.read_text(encoding="utf-8") == original
+
+
+def test_edit_needs_something_to_do(runner, sales):
+    result = run(runner, "edit", sales)
+    assert result.exit_code != 0
+    assert "--rename" in result.stderr
+
+
+def test_edit_refuses_stdin(runner):
+    result = run(runner, "edit", "-", "--from", "json", "--rename", "a=b", "-y", input='[{"a": 1}]')
+    assert result.exit_code != 0
+    assert "stdin" in result.stderr
+
+
+def test_edit_refuses_an_output_that_is_the_source(runner, sales):
+    result = run(runner, "edit", sales, "--rename", "name=x", "-o", sales, "-y")
+    assert result.exit_code != 0
+    assert "same file" in result.stderr
+
+
+def test_edit_names_a_real_column_when_the_old_one_is_wrong(runner, sales):
+    result = run(runner, "edit", sales, "--rename", "nmae=full_name", "-y")
+    assert result.exit_code != 0
+    assert "Did you mean: name?" in result.stderr
+
+
+def test_edit_says_when_there_is_nothing_to_change(runner, sales):
+    original = sales.read_text(encoding="utf-8")
+    result = run(runner, "edit", sales, "--rename", "name=name", "-y")
+    assert result.exit_code == 0
+    assert "Nothing to change" in result.stderr
+    assert sales.read_text(encoding="utf-8") == original
+
+
+def test_edit_interactive_asks_for_every_name_in_turn(runner, sales):
+    result = run(runner, "edit", sales, "-i", input="user_id\n\n\n\n\ny\n")
+    assert result.exit_code == 0
+    assert sales.read_text(encoding="utf-8").splitlines()[0] == "user_id,name,joined,zip,amount"
+
+
+def test_edit_interactive_keeps_a_name_when_the_answer_is_blank(runner, sales):
+    run(runner, "edit", sales, "-i", input="\n\n\n\n\ny\n")
+    assert "Nothing to change" in run(runner, "edit", sales, "-i", input="\n\n\n\n\ny\n").stderr
+
+
+def test_edit_interactive_can_be_declined(runner, sales):
+    original = sales.read_text(encoding="utf-8")
+    result = run(runner, "edit", sales, "-i", input="user_id\n\n\n\n\nn\n")
+    assert result.exit_code != 0
+    assert sales.read_text(encoding="utf-8") == original
+
+
+def test_edit_interactive_suggests_snake_case_names(runner, book):
+    run(runner, "edit", book, "-i", "--suggest", input="\n\n\ny\n")
+    assert [cell.value for cell in openpyxl.load_workbook(book).active[1]] == ["id", "full_name", "hired"]
+
+
+def test_edit_interactive_starts_from_a_rename_given_on_the_command_line(runner, sales):
+    run(runner, "edit", sales, "-i", "--rename", "name=full_name", input="\n\n\n\n\ny\n")
+    assert sales.read_text(encoding="utf-8").splitlines()[0] == "id,full_name,joined,zip,amount"

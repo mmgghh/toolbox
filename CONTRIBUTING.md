@@ -42,6 +42,8 @@ pytoolbox/
     render.py     the tree view
     summarize.py  per-field statistics
     select.py     filtering fields by name and by value type
+    edit.py       which names a rename touches, and to what
+    writers.py    renamed names written back into the file
     interactive.py  the --interactive prompts
     sql/          dialects, the script emitter and the SQLite back end
   docx/           the .docx reader and its Markdown writer

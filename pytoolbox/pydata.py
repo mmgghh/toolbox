@@ -6,7 +6,8 @@ Exposes the ``pydata`` console script, also available as ``toolbox data``.
 Four subcommands read the same inferred schema: ``tree`` draws it, ``summary``
 puts statistics beside it, ``filter`` selects part of it, and ``sql`` turns its
 top level into a table -- written straight into a SQLite file, or emitted as a
-script for SQLite or PostgreSQL.
+script for SQLite or PostgreSQL. A fifth, ``edit``, writes back: it renames the
+keys, titles and headers of the file itself and changes nothing else.
 
 Nothing here needs a driver or an ORM: SQLite comes from the standard library
 and PostgreSQL is reached by writing a ``.sql`` file you run yourself.
@@ -24,11 +25,23 @@ from pytoolbox.core import console, tables
 from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
+    dry_run_option,
     encoding_options,
     format_option,
     version_option,
+    yes_option,
 )
-from pytoolbox.dataset import interactive, readers, render, schema, select, sources, summarize
+from pytoolbox.dataset import (
+    edit,
+    interactive,
+    readers,
+    render,
+    schema,
+    select,
+    sources,
+    summarize,
+    writers,
+)
 from pytoolbox.dataset.errors import DataError
 from pytoolbox.dataset.sql import dialects, emit
 from pytoolbox.dataset.sql import execute as sql_execute
@@ -116,6 +129,7 @@ def data_cli() -> None:
       pydata summary sales.csv
       pydata filter api.json --type int
       pydata sql sales.csv -t sales --db app.db
+      pydata edit sales.csv --rename "First Name=full_name"
     """
 
 
@@ -218,6 +232,136 @@ def filter_command(
         output_format=output_format,
         output=output,
     )
+
+
+@data_cli.command("edit")
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@click.option(
+    "--root",
+    default=None,
+    help="Dotted path to the records inside a JSON document, e.g. data.items.",
+)
+@click.option(
+    "--from",
+    "kind",
+    type=click.Choice(list(readers.KINDS), case_sensitive=False),
+    default=None,
+    help="Input kind, when the suffix does not say.",
+)
+@click.option("--sheet", default=None, help="Excel sheet name (default: the active sheet).")
+@click.option("--delimiter", default=None, help="CSV delimiter (default: sniffed from the file).")
+@encoding_options
+@click.option(
+    "-c",
+    "--column",
+    "--rename",
+    "renames",
+    multiple=True,
+    metavar="OLD=NEW",
+    help="Rename a column, key or header (repeatable).",
+)
+@click.option("-i", "--interactive", "ask", is_flag=True, help="Ask for every name, one at a time.")
+@click.option("--suggest", is_flag=True, help="Offer the snake_case spelling as each default.")
+@click.option(
+    "-o",
+    "--output",
+    type=click.Path(path_type=Path),
+    help="Write a copy here instead of editing the file in place.",
+)
+@click.option("--no-backup", is_flag=True, help="Do not write FILE.bak before editing in place.")
+@dry_run_option
+@yes_option
+def edit_command(
+    path,
+    root,
+    kind,
+    sheet,
+    delimiter,
+    encoding,
+    errors,
+    renames,
+    ask,
+    suggest,
+    output,
+    no_backup,
+    dry_run,
+    assume_yes,
+) -> None:
+    """Rename the titles, keys or column names of a file, in place.
+
+    Only names change: values, types, row order and -- for a workbook --
+    formulas and formatting are left exactly as they were. A copy is kept as
+    FILE.bak unless --no-backup or --output is given.
+
+    \b
+    Examples:
+      pydata edit sales.csv --rename "First Name=full_name"
+      pydata edit api.json --root data.users -i
+      pydata edit staff.xlsx --sheet Q1 -i --suggest -o staff-clean.xlsx
+    """
+    if str(path) == "-":
+        raise DataError("edit needs a real file; it cannot read from stdin.")
+    if not renames and not ask:
+        raise DataError("Nothing to rename; pass --rename OLD=NEW or -i/--interactive.")
+    if output is not None and output.resolve() == path.resolve():
+        raise DataError("--output names the same file as the input; leave it off to edit in place.")
+
+    source = _load(path, kind, root, sheet, delimiter, encoding, errors, False, None)
+    names = tuple(source.columns)
+    pairs = edit.parse_pairs(renames)
+
+    if ask:
+        root_node, columns = _analyze(source)
+        presets = {edit.resolve(names, old): new for old, new in pairs}
+        pairs = interactive.rename_columns(source, root_node, columns, names, presets, suggest)
+
+    plan = edit.build(names, pairs)
+    if not plan:
+        console.info("Nothing to change.", threshold=0)
+        return
+
+    console.result(_change_table(plan))
+    if dry_run:
+        console.dry_run_notice(True)
+        return
+
+    destination = output or path
+    if not _agreed(plan, destination, ask, assume_yes):
+        raise DataError("Cancelled.")
+
+    backup = writers.apply(
+        plan,
+        path,
+        source.kind,
+        target=output,
+        sheet=sheet,
+        delimiter=source.delimiter or ",",
+        encoding=encoding,
+        errors=errors,
+        root=source.root,
+        backup=not no_backup,
+    )
+    kept = f" (backup: {backup.name})" if backup else ""
+    console.success(
+        f"Renamed {console.plural(len(plan.renames), 'column')} in {destination}{kept}.",
+        threshold=0,
+    )
+
+
+def _change_table(plan) -> str:
+    """The old and new name of every column the plan touches."""
+    rows = [
+        {"column": item.index + 1, "old": item.old, "new": item.new} for item in plan.renames
+    ]
+    return tables.render_table(rows, ["column", "old", "new"])
+
+
+def _agreed(plan, destination: Path, ask: bool, assume_yes: bool) -> bool:
+    """Ask before writing; in interactive mode the user is already there."""
+    if ask:
+        return assume_yes or click.confirm("Go ahead?", default=True, err=True)
+    question = f"Rename {console.plural(len(plan.renames), 'column')} in {destination}?"
+    return console.confirm(question, assume_yes=assume_yes)
 
 
 @data_cli.command()

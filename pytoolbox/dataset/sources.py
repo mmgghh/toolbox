@@ -31,6 +31,8 @@ class RecordSource:
     kind: str
     #: The dotted path the records were taken from; empty for the whole document.
     root: str = ""
+    #: The delimiter a CSV was read with; empty for the other kinds.
+    delimiter: str = ""
     #: True when the source was a single object, so the table gets one row.
     single: bool = False
     #: Human-readable notes about choices made while reading, for stderr.
@@ -166,6 +168,7 @@ def load(
     notes: list[str] = []
     single = False
     used_root = ""
+    used_delimiter = ""
 
     if kind == "excel":
         if str(path) == "-":
@@ -175,9 +178,8 @@ def load(
     elif kind == "csv":
         _reject_root(root, kind)
         text = readers.read_text(path, encoding=encoding, errors=errors)
-        if delimiter is None and path.suffix.lower() == ".tsv":
-            delimiter = "\t"
-        records, columns = readers.read_csv(text, delimiter=delimiter, infer=infer)
+        used_delimiter = readers.resolve_delimiter(text, path, delimiter)
+        records, columns = readers.read_csv(text, delimiter=used_delimiter, infer=infer)
     elif kind == "json":
         text = readers.read_text(path, encoding=encoding, errors=errors)
         document = readers.read_json(text)
@@ -196,6 +198,7 @@ def load(
         origin="stdin" if str(path) == "-" else str(path),
         kind=kind,
         root=used_root,
+        delimiter=used_delimiter,
         single=single,
         notes=notes,
     )

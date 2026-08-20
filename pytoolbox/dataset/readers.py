@@ -82,6 +82,19 @@ def read_json(text: str) -> object:
         ) from whole_document_error
 
 
+def resolve_delimiter(text: str, path: Optional[Path] = None, delimiter: Optional[str] = None) -> str:
+    """The delimiter to read a file with: the given one, the suffix, or a sniff.
+
+    Every caller resolves it here so that a file is never read with one
+    delimiter and written back with another.
+    """
+    if delimiter:
+        return delimiter
+    if path is not None and path.suffix.lower() == ".tsv":
+        return "\t"
+    return _sniff_delimiter(text)
+
+
 def read_csv(
     text: str,
     delimiter: Optional[str] = None,
@@ -90,8 +103,7 @@ def read_csv(
     """Read delimited text into records, inferring column types by default."""
     if not text.strip():
         raise DataError("The input is empty.")
-    if delimiter is None:
-        delimiter = _sniff_delimiter(text)
+    delimiter = resolve_delimiter(text, None, delimiter)
 
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
     try:

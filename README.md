@@ -17,6 +17,7 @@ toolbox ps top                 # processes eating the most memory/swap
 toolbox calc '2^10 / 8'
 toolbox data tree api.json         # what shape is this JSON?
 toolbox data sql sales.csv -t sales --db app.db
+toolbox data edit sales.csv -c 'First Name=full_name'
 toolbox time start "write docs"
 toolbox md2pdf notes.md
 toolbox md2html notes.md       # one self-contained page
@@ -37,7 +38,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pynet`    | `toolbox net`    | IP and its location, DNS, ports, ping, HTTP, WHOIS, quick file server | [docs/pynet.md](docs/pynet.md) |
 | `pyps`     | `toolbox ps`     | Top memory/swap consumers, search and kill by name, `free`-like summary (Linux/Termux) | [docs/pyps.md](docs/pyps.md) |
 | `pycalc`   | `toolbox calc`   | Arithmetic from the shell, with `^` as a power and no `eval`     | [docs/pycalc.md](docs/pycalc.md) |
-| `pydata`   | `toolbox data`   | JSON/CSV/Excel to a struct tree, a summary and a SQL table       | [docs/pydata.md](docs/pydata.md) |
+| `pydata`   | `toolbox data`   | JSON/CSV/Excel to a struct tree, a summary and a SQL table, and renaming their columns | [docs/pydata.md](docs/pydata.md) |
 | `pymd2pdf` | `toolbox md2pdf` | Markdown to PDF, including right-to-left Persian/Arabic          | [docs/pymd2pdf.md](docs/pymd2pdf.md) |
 | `pymd2html` | `toolbox md2html` | Markdown to one self-contained HTML page, no dependencies     | [docs/pymd2html.md](docs/pymd2html.md) |
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |

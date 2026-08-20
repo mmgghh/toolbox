@@ -9,9 +9,11 @@ pydata filter api.json --type int          # show me just the numbers
 pydata sql sales.csv -t sales --db app.db  # load it into SQLite
 pydata sql api.json -t users --dialect postgres --sql users.sql
 pydata sql api.json -i --db app.db         # ask me about the table first
+pydata edit sales.csv -c "First Name=full_name"   # fix a header in place
 ```
 
-Four subcommands read the same inferred structure. Nothing here needs a
+Four subcommands read the same inferred structure, and `edit` writes names
+back into the file. Nothing here needs a
 database driver or an ORM: SQLite comes from the standard library, and
 PostgreSQL is reached by writing a `.sql` file you run yourself.
 
@@ -289,6 +291,103 @@ Index    city, zip
 
 Go ahead? [Y/n]:
 ```
+
+## `edit` — renaming the names
+
+```shell
+pydata edit sales.csv --rename "First Name=full_name"
+pydata edit api.json --root data.users -i
+pydata edit staff.xlsx --sheet Q1 -i --suggest -o staff-clean.xlsx
+```
+
+`edit` changes the titles of a spreadsheet, the keys of a JSON document and
+the header of a CSV, in the file itself. Nothing else moves: values, types,
+row order and the shape of the document are what they were.
+
+```
+$ pydata edit sales.csv --rename "First Name=full_name" --rename id=user_id
+column | old        | new
+-------+------------+-----------
+1      | id         | user_id
+2      | First Name | full_name
+
+Rename 2 columns in sales.csv? [y/N]: y
+Renamed 2 columns in sales.csv (backup: sales.csv.bak).
+```
+
+`--rename` is repeatable and is also spelled `-c/--column`, the same as it is
+in `sql`. `OLD` matches the name as `tree` shows it, in any case, or its SQL
+spelling — `first_name` finds `First Name` — and a name that is not there is
+an error that names a real one rather than a rename that quietly does less
+than you asked:
+
+```
+$ pydata edit sales.csv --rename nmae=full_name
+error: No column called 'nmae'. Did you mean: name?
+```
+
+`NEW` is used exactly as you type it. This is the file, not a SQL identifier,
+so a header that should read `First Name` is allowed to.
+
+Renames are checked as a set before anything is written. Two columns given
+the same new name, or a new name that an untouched column already has, are
+refused; swapping two names is not, because the result is unambiguous.
+
+### What each format keeps
+
+| Format | Rewritten | Kept exactly |
+| --- | --- | --- |
+| CSV | the header line | every data row, byte for byte, including quoting and CRLF |
+| Excel | the header cells | formulas, styles, column widths, other sheets, macros |
+| JSON | the renamed keys | key order, indentation, the envelope around `--root`, trailing newline |
+
+Newline-delimited JSON stays newline-delimited. A workbook is opened for
+writing rather than regenerated, so `--sheet` picks which sheet's header is
+renamed and the rest of the file is not touched.
+
+### Safety
+
+The file is copied to `FILE.bak` first, unless `--no-backup`. `-o/--output`
+writes a copy and leaves the original alone — no backup is made then, because
+nothing is at risk. `-n/--dry-run` prints the change table and writes nothing.
+
+Every write goes to a temporary file beside the destination and is moved into
+place, so an interrupted run leaves either the old file or the new one, never
+half of either.
+
+Anything else asks first. The confirmation defaults to no, and a run that is
+not attached to a terminal takes that default, so `pydata edit` in a script
+needs `-y/--yes` to do anything.
+
+### `-i/--interactive`
+
+Prints the summary, then asks for each name in turn. Enter keeps the name, so
+walking the whole list without typing is a no-op.
+
+```
+$ pydata edit sales.csv -i
+...summary table...
+
+Enter keeps a name as it is.
+[1/5] id [id]: user_id
+[2/5] name [name]: full_name
+[3/5] joined [joined]:
+[4/5] zip [zip]:
+[5/5] amount [amount]:
+
+column | old    | new
+-------+--------+-----------
+1      | id     | user_id
+2      | name   | full_name
+
+Go ahead? [Y/n]:
+```
+
+`--suggest` offers the snake_case spelling as each default instead —
+`[2/5] First Name [first_name]:` — for cleaning up a whole header at once. A
+`--rename` given on the command line pre-fills that column's default, so the
+two ways of saying it work together. A name that is empty, or that another
+column already has, is refused at its own prompt rather than at the end.
 
 ## Reading from stdin
 

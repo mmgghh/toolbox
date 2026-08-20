@@ -259,3 +259,27 @@ def test_value_types_survive_the_round_trip(tmp_path):
     from pytoolbox.dataset.types import classify
 
     assert classify(sources.load(path).records[0]["n"]) is ValueType.FLOAT
+
+
+def test_the_source_records_the_delimiter_it_read_with(tmp_path):
+    path = tmp_path / "semi.csv"
+    path.write_text("id;name\n1;ann\n", encoding="utf-8")
+    assert sources.load(path).delimiter == ";"
+
+
+def test_a_tsv_records_a_tab_as_its_delimiter(tmp_path):
+    path = tmp_path / "rows.tsv"
+    path.write_text("id\tname\n1\tann\n", encoding="utf-8")
+    assert sources.load(path).delimiter == "\t"
+
+
+def test_an_explicit_delimiter_is_the_one_recorded(tmp_path):
+    path = tmp_path / "pipes.csv"
+    path.write_text("id|name\n1|ann\n", encoding="utf-8")
+    assert sources.load(path, delimiter="|").delimiter == "|"
+
+
+def test_json_has_no_delimiter(tmp_path):
+    path = tmp_path / "rows.json"
+    path.write_text('[{"id": 1}]', encoding="utf-8")
+    assert sources.load(path).delimiter == ""

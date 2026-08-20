@@ -43,6 +43,20 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydata edit` renames the titles, keys and column names of a file in
+  place.** `pydata edit sales.csv --rename "First Name=full_name"` fixes a
+  header without opening a spreadsheet, and `pydata edit api.json -i` walks
+  the keys one at a time, offering each current name as the default so Enter
+  keeps it and `--suggest` offers the snake_case spelling instead.
+
+  Only names change. A CSV keeps every data row byte for byte, because just
+  the header line is rewritten; a workbook keeps its formulas, styles, column
+  widths and other sheets, because only the header cells are assigned; a JSON
+  document keeps its key order, its indentation and the envelope around
+  `--root`. A copy is kept as `FILE.bak` unless `--no-backup` or `--output` is
+  given, the new file is moved into place rather than written over the old
+  one, and `--dry-run` shows the change table without touching anything.
+
 - **`pydata` reads JSON, CSV and Excel and turns them into a schema, a
   summary and a SQL table.** `pydata tree api.json` draws the structure —
   every key, its types, and how many records actually had a value there;
