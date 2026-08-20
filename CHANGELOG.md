@@ -43,6 +43,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydata sql` can build a table from some of the fields rather than all of
+  them.** `-k/--key` takes a glob and keeps the columns matching it, spelled
+  and matched exactly as it already is in `pydata filter` — against both the
+  original key and the SQL column name, repeatable and OR-ed together — so an
+  export with thirty fields can become a table with the four that matter.
+  `-i/--interactive` asks the same question by listing the columns and taking
+  numbers, names or a mix of the two, with Enter keeping all of them. A
+  primary key or an index on a column the selection dropped is refused, and
+  says that it was excluded rather than that it is missing.
+
 - **`pydata edit` renames the titles, keys and column names of a file in
   place.** `pydata edit sales.csv --rename "First Name=full_name"` fixes a
   header without opening a spreadsheet, and `pydata edit api.json -i` walks

@@ -383,6 +383,7 @@ def _agreed(plan, destination: Path, ask: bool, assume_yes: bool) -> bool:
     help="SQL dialect for the generated script.",
 )
 @click.option("-c", "--column", "renames", multiple=True, metavar="OLD=NEW", help="Rename a column (repeatable).")
+@click.option("-k", "--key", "keys", multiple=True, metavar="GLOB", help="Keep only the columns matching this glob (repeatable).")
 @click.option("--pk", "primary_key", multiple=True, help="Primary-key column (repeat for a compound key).")
 @click.option("--index", "indexes", multiple=True, metavar="COLS", help="Index on comma-separated columns (repeatable).")
 @click.option("--unique-index", "unique_indexes", multiple=True, metavar="COLS", help="Unique index (repeatable).")
@@ -425,6 +426,7 @@ def sql(
     sql_path,
     dialect,
     renames,
+    keys,
     primary_key,
     indexes,
     unique_indexes,
@@ -444,7 +446,7 @@ def sql(
     Examples:
       pydata sql sales.csv -t sales --db app.db
       pydata sql api.json -t users --pk id --index email --db app.db
-      pydata sql api.json -t users --dialect postgres --sql users.sql
+      pydata sql api.json -t users -k id -k '*name*' --sql users.sql
       pydata sql api.json -i --db app.db
     """
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
@@ -452,19 +454,24 @@ def sql(
     columns = schema.columns_of(
         root_node, table_module.parse_renames(renames, raw_names), raw=raw_names
     )
+    every_name = [column.name for column in columns]
+    if keys:
+        columns = select.select(root_node, columns, keys=keys)
 
     if db_path is not None and sql_path is not None:
         raise DataError("Use either --db or --sql, not both.")
     if dialect == "postgres" and db_path is not None:
         raise DataError("--db writes SQLite; for PostgreSQL use --sql to generate a script.")
 
-    spec = _spec(
+    spec, columns = _spec(
         source, root_node, columns, table_name, primary_key, indexes,
         unique_indexes, if_exists, nested, batch, ask,
     )
     for note in spec.notes:
         console.info(note)
-    table_module.validate(spec, columns, source.records)
+    kept = {column.name for column in columns}
+    excluded = [name for name in every_name if name not in kept]
+    table_module.validate(spec, columns, source.records, excluded=excluded)
 
     engine = dialects.get(dialect)
     if engine.name == "sqlite" and _explicit("nested"):
@@ -488,7 +495,11 @@ def _spec(
     source, root_node, columns, table_name, primary_key, indexes,
     unique_indexes, if_exists, nested, batch, ask,
 ):
-    """Build the table spec, asking for the missing parts when --interactive."""
+    """Build the table spec and its columns, asking when --interactive.
+
+    Only the interactive flow can narrow the columns further, so every other
+    path hands back the ones it was given.
+    """
     defaults = table_module.TableSpec(
         name=table_name or table_module.default_table_name(source.origin, source.root) or "",
         primary_key=tuple(primary_key),
@@ -504,7 +515,7 @@ def _spec(
         return interactive.choose(source, root_node, columns, defaults)
     if not table_name:
         raise DataError("A table name is required; pass -t/--table or use -i/--interactive.")
-    return table_module.build_spec(
+    spec = table_module.build_spec(
         name=table_name,
         primary_key=primary_key,
         indexes=indexes,
@@ -513,6 +524,7 @@ def _spec(
         nested=nested,
         batch=batch,
     )
+    return spec, list(columns)
 
 
 def _explicit(name: str) -> bool:

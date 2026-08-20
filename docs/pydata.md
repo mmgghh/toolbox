@@ -144,6 +144,7 @@ COMMIT;
 | Option | Does |
 | --- | --- |
 | `-t, --table NAME` | names the table |
+| `-k, --key GLOB` | keeps only the columns matching it; repeatable |
 | `-c, --column OLD=NEW` | renames a column; repeatable |
 | `--pk COL` | primary key; repeat it for a compound key |
 | `--index COLS` | index on comma-separated columns; repeatable |
@@ -155,6 +156,26 @@ Keys and indexes are checked against the data before anything is written. An
 unknown column suggests a real one; a primary key that is not actually unique,
 or that has missing values, is refused with the offending value named, rather
 than blowing up halfway through the insert.
+
+### Choosing the columns
+
+A table does not have to have every field in it. `-k/--key` keeps the columns
+matching a glob and drops the rest, spelled and matched exactly as it is in
+`filter` — against both the original key and the SQL column name, so either
+spelling finds the field, and repeats are OR-ed together.
+
+```shell
+pydata sql api.json -t users -k id -k '*name*' --db app.db
+```
+
+Nothing matching is an error rather than an empty table. A key or an index on
+a column the selection dropped is refused, and says which it was, rather than
+claiming the column is missing from data that plainly has it:
+
+```
+$ pydata sql api.json -t users -k active --pk id --sql -
+error: Primary key column 'id' was excluded by --key.
+```
 
 ### Column names
 
@@ -267,8 +288,11 @@ $ pydata tree sales.csv
 
 ### `-i/--interactive`
 
-Prints the summary, then asks for the table name, the primary key and the
-indexes, suggesting columns that are complete and unique enough to be a key.
+Prints the summary, then asks for the table name, which columns to include,
+the primary key and the indexes, suggesting columns that are complete and
+unique enough to be a key. Columns are picked by number, by name or by a mix
+of the two, and Enter keeps all of them; the order typed is the order the
+table gets. Only the columns kept are offered as key candidates.
 Everything it prints goes to stderr, so `--sql -` still pipes a clean script
 into `psql` while the conversation happens on the terminal.
 
@@ -277,6 +301,8 @@ $ pydata sql api.json -i --db app.db
 ...summary table...
 
 Table name [users]:
+Columns: 1 id, 2 first_name, 3 age, 4 email, 5 active
+Columns to include (numbers or names, blank for all): 1,2,email
 Columns unique and complete enough for a key: id, first_name
 Primary key (comma-separated, blank for none) [id]:
 Indexes: comma-separated columns; join with + for a composite.
@@ -285,6 +311,7 @@ Unique indexes (blank for none):
 
 Table    users
 Rows     120
+Columns  3 of 5
 Key      id
 Index    active
 Index    city, zip

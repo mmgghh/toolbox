@@ -105,19 +105,28 @@ def validate(
     spec: TableSpec,
     columns: Sequence[Column],
     records: Sequence[dict],
+    excluded: Sequence[str] = (),
 ) -> None:
     """Check the spec against the data, raising on anything that cannot work.
 
     Unknown column names are an error with a suggestion. A primary key that is
     not actually unique, or that has missing values, is an error too: it would
     fail at insert time anyway, and finding out now costs nothing.
+
+    ``excluded`` names the columns a selection left out, so that a key on one
+    of them is explained by the selection rather than reported as missing from
+    data that plainly has it.
     """
     names = [column.name for column in columns]
     by_name = {column.name: column for column in columns}
+    left_out = set(excluded)
     for group, label in _referenced(spec):
         for name in group:
-            if name not in by_name:
-                raise DataError(f"{label} column {name!r} is not in the data.{_suggest(name, names)}")
+            if name in by_name:
+                continue
+            if name in left_out:
+                raise DataError(f"{label} column {name!r} was excluded by --key.")
+            raise DataError(f"{label} column {name!r} is not in the data.{_suggest(name, names)}")
 
     _check_renames(columns)
     if spec.primary_key:

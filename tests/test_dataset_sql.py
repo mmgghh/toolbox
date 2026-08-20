@@ -353,3 +353,23 @@ def test_a_quote_in_a_value_survives_the_script(tmp_path):
     value = connection.execute("SELECT note FROM t").fetchone()[0]
     connection.close()
     assert value == "it's a 'test'"
+
+
+def test_a_key_on_an_excluded_column_says_it_was_excluded(columns, records):
+    spec = table_module.build_spec("t", primary_key=["name"])
+    kept = [column for column in columns if column.name != "name"]
+    with pytest.raises(DataError, match="excluded by --key"):
+        table_module.validate(spec, kept, records, excluded=["name"])
+
+
+def test_an_index_on_an_excluded_column_says_it_was_excluded(columns, records):
+    spec = table_module.build_spec("t", indexes=["name"])
+    kept = [column for column in columns if column.name != "name"]
+    with pytest.raises(DataError, match="Index column 'name' was excluded by --key"):
+        table_module.validate(spec, kept, records, excluded=["name"])
+
+
+def test_a_column_that_never_existed_still_suggests_a_real_one(columns, records):
+    spec = table_module.build_spec("t", primary_key=["idd"])
+    with pytest.raises(DataError, match="Did you mean: id"):
+        table_module.validate(spec, columns, records, excluded=["name"])

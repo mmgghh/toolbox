@@ -473,7 +473,7 @@ def test_an_ambiguous_document_names_the_candidates(runner, tmp_path):
 
 
 def test_interactive_asks_for_the_table_key_and_indexes(runner, flat):
-    answers = "people\nid\nactive\n\ny\n"
+    answers = "people\n\nid\nactive\n\ny\n"
     result = run(runner, "sql", flat, "-i", "--dialect", "postgres", "--sql", "-", input=answers)
     assert result.exit_code == 0
     assert 'CREATE TABLE "people"' in result.stdout
@@ -482,38 +482,38 @@ def test_interactive_asks_for_the_table_key_and_indexes(runner, flat):
 
 
 def test_interactive_shows_the_summary_first(runner, flat):
-    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\ny\n")
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\n\ny\n")
     assert "non_null" in result.stderr
     assert "distinct" in result.stderr
 
 
 def test_interactive_defaults_the_table_name_to_the_filename(runner, flat):
-    result = run(runner, "sql", flat, "-i", "--sql", "-", input="\n\n\n\ny\n")
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="\n\n\n\n\ny\n")
     assert 'CREATE TABLE "users"' in result.stdout
 
 
 def test_interactive_suggests_only_usable_keys(runner, flat):
-    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\ny\n")
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\n\ny\n")
     suggestions = [line for line in result.stderr.splitlines() if "unique and complete" in line][0]
     assert "id" in suggestions
     assert "tags" not in suggestions
 
 
 def test_interactive_re_asks_after_an_unknown_column(runner, flat):
-    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nnope\nid\n\n\ny\n")
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\nnope\nid\n\n\ny\n")
     assert "No column called 'nope'" in result.stderr
     assert 'PRIMARY KEY ("id")' in result.stdout
 
 
 def test_declining_at_the_end_writes_nothing(runner, flat, tmp_path):
     db = tmp_path / "app.db"
-    result = run(runner, "sql", flat, "-i", "--db", db, input="t\n\n\n\nn\n")
+    result = run(runner, "sql", flat, "-i", "--db", db, input="t\n\n\n\n\nn\n")
     assert result.exit_code == 1
     assert not db.exists()
 
 
 def test_interactive_composite_index(runner, flat):
-    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\nid+active\n\ny\n")
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\nid+active\n\ny\n")
     assert '("id", "active")' in result.stdout
 
 
@@ -657,3 +657,102 @@ def test_edit_interactive_suggests_snake_case_names(runner, book):
 def test_edit_interactive_starts_from_a_rename_given_on_the_command_line(runner, sales):
     run(runner, "edit", sales, "-i", "--rename", "name=full_name", input="\n\n\n\n\ny\n")
     assert sales.read_text(encoding="utf-8").splitlines()[0] == "id,full_name,joined,zip,amount"
+
+
+# ── sql: choosing columns ───────────────────────────────────────────
+
+
+def test_sql_keeps_only_the_columns_asked_for(runner, flat):
+    script = run(runner, "sql", flat, "-t", "users", "-k", "id", "-k", "active", "--sql", "-").stdout
+    assert '"id"' in script and '"active"' in script
+    assert "first_name" not in script
+
+
+def test_sql_key_is_a_glob(runner, flat):
+    script = run(runner, "sql", flat, "-t", "users", "-k", "*name*", "--sql", "-").stdout
+    assert '"first_name"' in script
+    assert '"active"' not in script
+
+
+def test_sql_key_matches_the_original_spelling_too(runner, flat):
+    script = run(runner, "sql", flat, "-t", "users", "-k", "First Name", "--sql", "-").stdout
+    assert '"first_name"' in script
+    assert '"id"' not in script
+
+
+def test_sql_key_narrows_the_inserted_values(runner, flat):
+    script = run(runner, "sql", flat, "-t", "users", "-k", "id", "--sql", "-").stdout
+    insert = [line for line in script.splitlines() if line.strip().startswith("(")][0]
+    assert insert.strip().startswith("(1)")
+
+
+def test_sql_key_narrows_a_real_sqlite_table(runner, flat, tmp_path):
+    db = tmp_path / "app.db"
+    result = run(runner, "sql", flat, "-t", "users", "-k", "id", "-k", "age", "--db", db)
+    assert result.exit_code == 0
+    with sqlite3.connect(db) as connection:
+        names = [row[1] for row in connection.execute("PRAGMA table_info(users)")]
+    assert names == ["id", "age"]
+
+
+def test_sql_key_matching_nothing_is_an_error(runner, flat):
+    result = run(runner, "sql", flat, "-t", "users", "-k", "nope*", "--sql", "-")
+    assert result.exit_code != 0
+    assert "No field matched" in result.stderr
+
+
+def test_sql_key_that_drops_the_primary_key_says_so(runner, flat):
+    result = run(runner, "sql", flat, "-t", "users", "-k", "active", "--pk", "id", "--sql", "-")
+    assert result.exit_code != 0
+    assert "excluded by --key" in result.stderr
+
+
+def test_sql_interactive_picks_columns_by_number(runner, flat):
+    script = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n1,2\n\n\n\ny\n").stdout
+    assert '"id"' in script and '"first_name"' in script
+    assert '"active"' not in script
+
+
+def test_sql_interactive_picks_columns_by_name(runner, flat):
+    script = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nid,active\n\n\n\ny\n").stdout
+    assert '"active"' in script
+    assert '"first_name"' not in script
+
+
+def test_sql_interactive_mixes_numbers_and_names(runner, flat):
+    script = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n1,active\n\n\n\ny\n").stdout
+    assert '"id"' in script and '"active"' in script
+    assert '"first_name"' not in script
+
+
+def test_sql_interactive_keeps_every_column_when_the_answer_is_blank(runner, flat):
+    script = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\n\ny\n").stdout
+    assert '"id"' in script and '"first_name"' in script and '"active"' in script
+
+
+def test_sql_interactive_lists_the_columns_with_their_numbers(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n\n\n\n\ny\n")
+    assert "1 id" in result.stderr and "2 first_name" in result.stderr
+
+
+def test_sql_interactive_re_asks_after_an_unknown_column(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nnope\nid\n\n\n\ny\n")
+    assert result.exit_code == 0
+    assert "No column called 'nope'" in result.stderr
+
+
+def test_sql_interactive_re_asks_after_a_number_out_of_range(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\n99\nid\n\n\n\ny\n")
+    assert result.exit_code == 0
+    assert "99" in result.stderr
+
+
+def test_sql_interactive_shows_how_many_columns_were_kept(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nid,active\n\n\n\ny\n")
+    assert "2 of 6" in result.stderr
+
+
+def test_sql_interactive_suggests_keys_from_the_chosen_columns_only(runner, flat):
+    result = run(runner, "sql", flat, "-i", "--sql", "-", input="t\nfirst_name,active\n\n\n\ny\n")
+    line = [line for line in result.stderr.splitlines() if "unique and complete" in line][0]
+    assert "id" not in line

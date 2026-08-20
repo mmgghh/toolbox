@@ -30,8 +30,12 @@ def choose(
     root: SchemaNode,
     columns: Sequence[Column],
     defaults: TableSpec,
-) -> TableSpec:
-    """Show a summary, then ask for the table name, primary key and indexes."""
+) -> tuple[TableSpec, list[Column]]:
+    """Show a summary, then ask what the table should be.
+
+    Returns the spec and the columns to build it from, which are every column
+    unless the user narrowed them.
+    """
     _show(source, root, columns)
 
     name = click.prompt(
@@ -39,6 +43,9 @@ def choose(
         default=defaults.name or table_module.default_table_name(source.origin, source.root),
         err=True,
     )
+
+    total = len(columns)
+    columns = _ask_included(columns)
 
     candidates = key_candidates(source.records, columns)
     if candidates:
@@ -64,8 +71,55 @@ def choose(
         nested=defaults.nested,
         batch=defaults.batch,
     )
-    _confirm(spec, len(source.records))
-    return spec
+    _confirm(spec, len(source.records), len(columns), total)
+    return spec, list(columns)
+
+
+def _ask_included(columns: Sequence[Column]) -> list[Column]:
+    """Ask which columns the table should have; blank keeps all of them."""
+    listing = ", ".join(f"{index + 1} {column.name}" for index, column in enumerate(columns))
+    click.echo(f"Columns: {listing}", err=True)
+    while True:
+        answer = click.prompt(
+            "Columns to include (numbers or names, blank for all)",
+            default="",
+            show_default=False,
+            err=True,
+        )
+        parts = [part.strip() for part in answer.split(",") if part.strip()]
+        if not parts:
+            return list(columns)
+        try:
+            return _resolve_included(parts, columns)
+        except DataError as problem:
+            click.echo(f"{problem.message} Try again.", err=True)
+
+
+def _resolve_included(parts: Sequence[str], columns: Sequence[Column]) -> list[Column]:
+    """The columns named by numbers, names, or a mix of the two.
+
+    The order typed is the order kept, so a table can be given a column order
+    of its own, and a column named twice is only taken once.
+    """
+    chosen: list[Column] = []
+    for part in parts:
+        column = _one_column(part, columns)
+        if column not in chosen:
+            chosen.append(column)
+    return chosen
+
+
+def _one_column(part: str, columns: Sequence[Column]) -> Column:
+    if part.isdigit():
+        position = int(part)
+        if not 1 <= position <= len(columns):
+            raise DataError(f"There is no column {position}; they are numbered 1 to {len(columns)}.")
+        return columns[position - 1]
+    wanted = part.casefold()
+    for column in columns:
+        if wanted in (column.name.casefold(), column.source.casefold()):
+            return column
+    raise DataError(f"No column called {part!r}.")
 
 
 def rename_columns(
@@ -167,10 +221,12 @@ def _ask_index_groups(
         click.echo(f"No column called {unknown[0]!r}. Try again.", err=True)
 
 
-def _confirm(spec: TableSpec, rows: int) -> None:
+def _confirm(spec: TableSpec, rows: int, kept: int, total: int) -> None:
     click.echo("", err=True)
     click.echo(f"Table    {spec.name}", err=True)
     click.echo(f"Rows     {rows}", err=True)
+    if kept != total:
+        click.echo(f"Columns  {kept} of {total}", err=True)
     click.echo(f"Key      {', '.join(spec.primary_key) or '(none)'}", err=True)
     for group in spec.indexes:
         click.echo(f"Index    {', '.join(group)}", err=True)
