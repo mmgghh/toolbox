@@ -213,3 +213,38 @@ def test_resolve_config_returns_none_on_a_decode_error(monkeypatch):
     monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(hosts.subprocess, "run", raise_decode_error)
     assert hosts.resolve_config("prod") is None
+
+
+# ── config listing ──────────────────────────────────────────────────
+
+def test_config_host_names_lists_concrete_names(tmp_path):
+    config = tmp_path / "config"
+    config.write_text(
+        "# a comment\n"
+        "Host prod staging\n"
+        "    HostName 10.0.0.5\n"
+        "\n"
+        "Host *.example.com\n"
+        "    User me\n"
+        "Host !secret bastion\n",
+        encoding="utf-8",
+    )
+    assert hosts.config_host_names(config) == ["prod", "staging", "bastion"]
+
+
+def test_config_host_names_follows_include(tmp_path):
+    (tmp_path / "conf.d").mkdir()
+    (tmp_path / "conf.d" / "work").write_text("Host work1\nHost work2\n", encoding="utf-8")
+    config = tmp_path / "config"
+    config.write_text("Include conf.d/*\nHost home\n", encoding="utf-8")
+    assert hosts.config_host_names(config) == ["work1", "work2", "home"]
+
+
+def test_config_host_names_deduplicates(tmp_path):
+    config = tmp_path / "config"
+    config.write_text("Host prod\nHost prod\n", encoding="utf-8")
+    assert hosts.config_host_names(config) == ["prod"]
+
+
+def test_config_host_names_without_a_config(tmp_path):
+    assert hosts.config_host_names(tmp_path / "nope") == []

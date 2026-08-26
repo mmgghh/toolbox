@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
@@ -223,3 +223,69 @@ def resolve_config(name: str, options: Sequence[str] = ()) -> Optional[ResolvedC
         return parse_ssh_g(name, completed.stdout)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
+
+
+#: ssh config patterns, which name a class of hosts rather than one host.
+_PATTERN_CHARS = "*?!"
+
+#: Depth limit for ``Include``, so a config that includes itself cannot loop.
+_MAX_INCLUDE_DEPTH = 8
+
+
+def default_config_path() -> Path:
+    """Where ssh looks for the per-user config."""
+    return Path.home() / ".ssh" / "config"
+
+
+def _include_targets(pattern: str, parent: Path) -> list[Path]:
+    """Files an ``Include`` line refers to, relative to the including file."""
+    candidate = Path(pattern).expanduser()
+    if not candidate.is_absolute():
+        candidate = parent.parent / candidate
+    try:
+        return sorted(p for p in candidate.parent.glob(candidate.name) if p.is_file())
+    except OSError:  # pragma: no cover - unreadable directory
+        return []
+
+
+def _config_lines(path: Path, depth: int = 0) -> Iterator[str]:
+    """Yield significant lines from a config file, following ``Include``."""
+    if depth > _MAX_INCLUDE_DEPTH or not path.is_file():
+        return
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:  # pragma: no cover - unreadable file
+        return
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.replace("=", " ").split()
+        if parts[0].lower() == "include":
+            for pattern in parts[1:]:
+                for included in _include_targets(pattern, path):
+                    yield from _config_lines(included, depth + 1)
+            continue
+        yield line
+
+
+def config_host_names(path: Optional[Path] = None) -> list[str]:
+    """Concrete ``Host`` names from ssh config, for display and completion.
+
+    Patterns such as ``*.example.com`` and negations are skipped: they name a
+    class of hosts, not one you can connect to. This scan is never
+    load-bearing -- :func:`resolve_config` works for names it misses.
+    """
+    root = Path(path) if path is not None else default_config_path()
+    names: list[str] = []
+    seen: set[str] = set()
+    for line in _config_lines(root):
+        parts = line.replace("=", " ").split()
+        if len(parts) < 2 or parts[0].lower() != "host":
+            continue
+        for token in parts[1:]:
+            if any(char in token for char in _PATTERN_CHARS) or token in seen:
+                continue
+            seen.add(token)
+            names.append(token)
+    return names
