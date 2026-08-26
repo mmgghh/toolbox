@@ -9,7 +9,7 @@ resolves to.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
@@ -77,4 +77,67 @@ def resolve_server(spec: Optional[str], conf: Optional[str], label: str) -> Serv
         return parse_server(spec)
     if conf:
         return load_server_conf(Path(conf))
+    raise click.ClickException(f"Provide {label} or {label}-conf.")
+
+
+@dataclass(frozen=True)
+class Target:
+    """A destination ssh can be pointed at.
+
+    ``spec`` is handed to ssh as its destination argument: either a
+    ``user@host`` built from an inline spec, or an ``~/.ssh/config`` host name
+    passed through untouched. ``port`` is ``None`` for a config name, so that
+    pyssh never overrides the ``Port`` the config already sets.
+    """
+
+    spec: str
+    port: Optional[int] = None
+    password: Optional[str] = None
+
+    @classmethod
+    def from_server(cls, server: Server) -> Target:
+        """Build a target from a parsed inline spec."""
+        return cls(spec=server.target, port=server.port, password=server.password)
+
+    @classmethod
+    def from_name(cls, name: str) -> Target:
+        """Build a target from an ssh config host name."""
+        return cls(spec=name)
+
+    @property
+    def is_config_name(self) -> bool:
+        """Whether ssh config, rather than pyssh, decides how to connect."""
+        return "@" not in self.spec
+
+    def with_password(self, password: Optional[str]) -> Target:
+        """Return a copy carrying ``password``."""
+        return replace(self, password=password)
+
+    def __str__(self) -> str:  # pragma: no cover - display only
+        return self.spec if self.port is None else f"{self.spec}:{self.port}"
+
+
+def resolve_target(value: str) -> Target:
+    """Resolve a ``-s/--server`` value to a target.
+
+    A value containing ``@`` must parse as an inline spec; anything else is an
+    ssh config host name and is handed to ssh unchanged. The two can never
+    collide, because :data:`SERVER_SPEC_RE` requires an ``@``.
+    """
+    raw = value.strip()
+    if not raw:
+        raise click.ClickException("Provide a server name or a 'user@host' spec.")
+    if "@" in raw:
+        return Target.from_server(parse_server(raw))
+    return Target.from_name(raw)
+
+
+def resolve_connection(spec: Optional[str], conf: Optional[str], label: str) -> Target:
+    """Resolve a target from an inline value or a config file."""
+    if spec and conf:
+        raise click.ClickException(f"Use either {label} or {label}-conf, not both.")
+    if spec:
+        return resolve_target(spec)
+    if conf:
+        return Target.from_server(load_server_conf(Path(conf)))
     raise click.ClickException(f"Provide {label} or {label}-conf.")
