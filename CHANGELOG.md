@@ -5,7 +5,34 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Removed
+
+- **`pymd2pdf` no longer prints the source file's name on the cover page.**
+  It was the one line of the document that went to the page raw — no shaping,
+  no bidi reordering, and in the Latin face — so a file called
+  `نقشه شناخت پروژه.md` came out as unjoined letters running the wrong way
+  under a title that was set correctly. The cover now carries the title alone.
+
 ### Fixed
+
+- **`pymd2pdf` ran a blockquote's indent bar down the side of several
+  sections the quote had nothing to do with.** The bar is drawn last, once
+  the quote's height is known, from the y where it started to the y where it
+  ended. When the quote spilled onto the next page those two ys belonged to
+  different pages, and `pdf.line` — which draws on whichever page is current
+  by then — read the first as a y on the second page, so a quote whose last
+  line landed at the top of a page got a bar running from there to the bottom
+  of it. The bar is now cut into one segment per page the quote covers, each
+  drawn on its own page and starting below that page's running header.
+
+- **`pymd2pdf` drew Persian inside a code fence backwards.** Fenced blocks
+  went straight to the page in the mono face with no shaping and no bidi
+  reordering — the one text-bearing block that skipped both — so Persian came
+  out as unjoined letters in logical order, laid out left to right. A fence
+  whose text is Persian is now shaped, drawn in the Persian face and
+  right-aligned, keeping its indentation on the right. Unlike prose, a fence
+  does not follow the document's base direction: only the characters inside
+  it decide, so an ASCII snippet in a Persian document stays left-aligned.
 
 - **`pydocx2md` dropped every tick, cross and bullet drawn from a symbol
   font.** Word does not store those as text: a ticked box is

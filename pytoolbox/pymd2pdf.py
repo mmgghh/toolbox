@@ -106,10 +106,6 @@ def convert(
             chunks.append(" ".join(chunk))
             for c in chunks:
                 pdf.cell(0, 14, c, align="C", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(10)
-        pdf.set_font(fonts.FONT_SANS, "", 11)
-        pdf.set_text_color(100, 100, 100)
-        pdf.cell(0, 8, str(Path(md_path).name), align="C", new_x="LMARGIN", new_y="NEXT")
 
     pdf.add_page()
 

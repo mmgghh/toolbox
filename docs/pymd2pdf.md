@@ -73,6 +73,9 @@ Handled correctly:
 - List markers are shaped together with the item text, which puts the marker's
   punctuation on the correct side.
 - Table columns are mirrored, so the first Markdown column lands on the right.
+- A code fence whose text is Persian is shaped and right-aligned, with its
+  indentation kept on the right. Only the characters inside the fence decide:
+  an ASCII snippet in a Persian document stays left-aligned.
 - Cell text is shaped before the table is laid out, which means its Markdown
   can no longer be parsed: a whole cell wrapped in `**` still renders bold,
   and emphasis around part of a cell has its markers dropped rather than

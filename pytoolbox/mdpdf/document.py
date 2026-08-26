@@ -52,6 +52,8 @@ class PDF(FPDF):
 
         # Set by convert() once the document's text is known; see _use_rtl_layout.
         self.doc_is_rtl = False
+        # Rewritten by header() for every page; see there.
+        self.content_top = self.t_margin
 
         fa_reg, fa_bold = fonts.find_persian_font()
         self.has_persian = fa_reg is not None
@@ -112,6 +114,10 @@ class PDF(FPDF):
         state.glyph_translation = shaping.build_glyph_translation(covered)
 
     def header(self):
+        # Where the body of this page actually starts. A blockquote that spills
+        # onto the next page has to resume its margin bar below the running
+        # header, not at the top margin; only header() knows how tall it is.
+        self.content_top = self.t_margin
         if self.page_no() > 1 and self._doc_title:
             title = self._doc_title
             self.set_text_color(140, 140, 140)
@@ -122,6 +128,7 @@ class PDF(FPDF):
                 self.set_font(fonts.FONT_SANS, "I", 8)
                 self.cell(0, 6, title, align="R")
             self.ln(8)
+            self.content_top = self.get_y()
 
     def footer(self):
         self.set_y(-15)
@@ -139,3 +146,38 @@ def body_lh(pdf):
 def ensure_space(pdf, needed_mm):
     if pdf.get_y() + needed_mm > pdf.h - pdf.b_margin - 5:
         pdf.add_page()
+
+
+def draw_vertical_rule(pdf, x, start, end, color, width):
+    """Draw a vertical rule at ``x`` from ``start`` to ``end``, both ``(page, y)``.
+
+    A block that broke across a page boundary needs one segment per page it
+    touched. Passing two ys from different pages to a single ``pdf.line`` does
+    not fail -- it just draws the whole span on the page that happens to be
+    current, running a rule down the side of content the block never covered.
+
+    fpdf2 appends to whichever page ``pdf.page`` names, so each segment is
+    drawn with that page selected; the stroke settings are re-applied per
+    segment because they are written into a page's own content stream when
+    they are set, and were set while a different page was current.
+    """
+    start_page, start_y = start
+    end_page, end_y = end
+    bottom = pdf.h - pdf.b_margin
+    if end_page == start_page:
+        spans = [(start_page, start_y, end_y)]
+    else:
+        spans = [(start_page, start_y, bottom)]
+        spans += [(p, pdf.content_top, bottom) for p in range(start_page + 1, end_page)]
+        spans.append((end_page, pdf.content_top, end_y))
+
+    current = pdf.page
+    try:
+        for page, y0, y1 in spans:
+            if y1 <= y0:
+                continue
+            pdf.page = page
+            with pdf.local_context(draw_color=color, line_width=width):
+                pdf.line(x, y0, x, y1)
+    finally:
+        pdf.page = current

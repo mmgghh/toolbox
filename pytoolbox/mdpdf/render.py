@@ -131,21 +131,49 @@ def add_heading(pdf, level, text):
     pdf.set_text_color(*document.CLR_BODY)
 
 
+def code_block_is_rtl(pdf, lines):
+    """Whether a fenced block should be laid out right-to-left.
+
+    Unlike prose, a code fence does not follow the document's base direction:
+    an ASCII snippet in a Persian document is still code, and right-aligning
+    it would be wrong. Only the characters actually inside the fence decide.
+    """
+    return shaping.is_rtl("\n".join(lines)) and getattr(pdf, "has_persian", False)
+
+
+def _code_line(line, rtl):
+    """The string to draw for one code line, and the face to draw it with.
+
+    An RTL line is shaped and bidi-reordered like any other Persian text.
+    Its indent moves to the far side of the reordered string so it still
+    reads as indentation once the line is right-aligned, and it is drawn in
+    the Persian face -- the mono face has no Arabic-script glyphs, so the
+    shaped presentation forms would come out of a fallback face or not at all.
+    """
+    if not rtl or not shaping.is_rtl(line):
+        return line, fonts.FONT_MONO
+    body = line.lstrip(' ')
+    indent = ' ' * (len(line) - len(body))
+    return shaping.shape_rtl(body) + indent, fonts.FONT_FA
+
+
 def add_code_block(pdf, lines):
     pdf.ln(2)
-    pdf.set_fill_color(*document.CLR_CODE_BG)
-    pdf.set_text_color(*document.CLR_CODE_FG)
-    pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
+    rtl = code_block_is_rtl(pdf, lines)
     w = pdf.w - pdf.l_margin - pdf.r_margin
     x0 = pdf.l_margin
     for ln in lines:
         document.ensure_space(pdf, document.CODE_LH)
+        display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
+        display, family = _code_line(display, rtl)
         pdf.set_fill_color(*document.CLR_CODE_BG)
         pdf.set_text_color(*document.CLR_CODE_FG)
-        pdf.set_font(fonts.FONT_MONO, "", document.CODE_SIZE)
-        display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
+        pdf.set_font(family, "", document.CODE_SIZE)
         pdf.set_x(x0)
-        pdf.cell(w, document.CODE_LH, display, fill=True, new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(
+            w, document.CODE_LH, display, fill=True,
+            align="R" if rtl else "L", new_x="LMARGIN", new_y="NEXT",
+        )
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*document.CLR_BODY)
     pdf.ln(2)
@@ -225,7 +253,7 @@ def add_blockquote(pdf, lines):
         return
     pdf.ln(1)
     indent = 6
-    start_y = pdf.get_y()
+    start = (pdf.page, pdf.get_y())
     pdf.set_text_color(*document.CLR_QUOTE_FG)
 
     if use_rtl_layout(pdf, text):
@@ -249,13 +277,13 @@ def add_blockquote(pdf, lines):
         pdf.ln(document.body_lh(pdf))
         pdf.set_left_margin(pdf.l_margin - indent)
 
-    # Draw the bar last, once the quote's height is known.
-    end_y = pdf.get_y()
-    pdf.set_draw_color(*document.CLR_QUOTE_BAR)
-    pdf.set_line_width(0.8)
+    # Draw the bar last, once the quote's height is known -- and, if it spilled
+    # onto further pages, once each page's share of that height is known too.
     bar_x = pdf.w - pdf.r_margin - 1 if use_rtl_layout(pdf, text) else pdf.l_margin + 1
-    pdf.line(bar_x, start_y, bar_x, end_y - 1)
-    pdf.set_line_width(0.2)
+    document.draw_vertical_rule(
+        pdf, bar_x, start, (pdf.page, pdf.get_y() - 1),
+        document.CLR_QUOTE_BAR, 0.8,
+    )
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*document.CLR_BODY)
     pdf.ln(2)

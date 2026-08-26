@@ -5,6 +5,8 @@ The rendering tests need DejaVu installed; they skip cleanly when it is not.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from pytoolbox import pymd2pdf
@@ -367,6 +369,113 @@ def test_whole_bold_rtl_blocks_render_in_bold(monkeypatch):
     assert styles == ["", "B", "B", "", "B"]
 
 
+def _vertical_rules(page, page_height_mm):
+    """The vertical rules on a page, as ``(y_top_mm, y_bottom_mm)`` pairs.
+
+    fpdf2 writes a rule as ``x y m x y l S`` in points, measured up from the
+    bottom of the page; both are converted back to the top-down millimetres
+    the renderers work in.
+    """
+    stream = page.get_contents().get_data().decode("latin-1")
+    rules = []
+    for m in re.finditer(r"([\d.]+) ([\d.]+) m ([\d.]+) ([\d.]+) l S", stream):
+        x1, y1, x2, y2 = (float(g) for g in m.groups())
+        if abs(x1 - x2) < 0.01:
+            top, bottom = sorted(page_height_mm - y / (72 / 25.4) for y in (y1, y2))
+            rules.append((top, bottom))
+    return rules
+
+
+@needs_fonts
+def test_blockquote_bar_is_split_across_a_page_break(tmp_path):
+    """A quote that spills onto the next page used to have its whole bar drawn
+    on that next page: ``pdf.line`` was handed a start y from the page before,
+    which it happily read as a y on the page that was current by then, running
+    the bar down the side of several sections the quote had nothing to do with.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    pdf = document.PDF(orientation="P", unit="mm", format="A4")
+    pdf.set_doc_title("title")
+    pdf.set_margins(20, 20, 20)
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+    # Leave room for one line only, so the rest of the quote breaks over.
+    pdf.set_y(pdf.h - pdf.b_margin - 12)
+    render.add_blockquote(pdf, ["overflowing quote " * 40])
+    assert pdf.page_no() == 2, "the quote was meant to break across pages"
+
+    target = tmp_path / "doc.pdf"
+    pdf.output(str(target))
+    reader = pypdf.PdfReader(target)
+    first, second = (_vertical_rules(page, 297) for page in reader.pages[:2])
+
+    assert len(first) == 1 and len(second) == 1
+    # The first page's share ends at its bottom margin, the second page's
+    # starts below its running header -- not at the top of the page, and not
+    # (as before) at a y borrowed from the page before it.
+    assert first[0][1] == pytest.approx(297 - pdf.b_margin, abs=0.5)
+    assert second[0][0] == pytest.approx(pdf.content_top, abs=0.5)
+    assert second[0][1] < 297 / 2
+
+
+RTL_CODE_FENCE = """# سناریو
+
+```
+\u0633\u0646\u0627\u0631\u06cc\u0648\u06cc \u067e\u0627\u06cc\u0647
+  \u06f1\u06f5 \u0645\u0634\u062a\u0631\u06cc = \u06f2\u06f2\u06f5 \u06a9\u06cc\u0644\u0648
+```
+
+```
+plain_ascii = 1
+```
+"""
+
+
+@needs_fonts
+def test_rtl_code_fence_is_shaped_and_right_aligned(monkeypatch, tmp_path):
+    """Persian inside a fence used to be drawn as-is: unjoined letters in
+    logical order, laid out left to right. Only the fence's own characters
+    decide, so an ASCII snippet in a Persian document stays left-aligned.
+    """
+    drawn = []
+    orig_cell = document.PDF.cell
+
+    def spy(self, w=None, h=None, text="", *args, **kwargs):
+        if kwargs.get("fill"):
+            # fpdf2 lower-cases the family it records against the page state.
+            drawn.append((text, self.font_family, kwargs.get("align")))
+        return orig_cell(self, w, h, text, *args, **kwargs)
+
+    monkeypatch.setattr(document.PDF, "cell", spy)
+
+    source = tmp_path / "doc.md"
+    source.write_text(RTL_CODE_FENCE, encoding="utf-8")
+    pymd2pdf.convert(source, tmp_path / "doc.pdf", title_page=False, quiet=True)
+    if not document.PDF(format="A4").has_persian:
+        pytest.skip("no Persian font installed")
+
+    persian = [d for d in drawn if shaping.is_rtl(d[0])]
+    ascii_only = [d for d in drawn if d[0].strip() == "plain_ascii = 1"]
+    assert persian, "no Persian code line was drawn"
+    assert all(
+        family == fonts.FONT_FA.lower() and align == "R"
+        for _, family, align in persian
+    )
+    assert [d[2] for d in ascii_only] == ["L"]
+    # Shaped text is written in presentation forms, not the source code points.
+    assert all("\u0633\u0646\u0627" not in text for text, _, _ in persian)
+
+
+@needs_fonts
+def test_ascii_code_fence_in_an_rtl_document_stays_ltr():
+    pdf = document.PDF(orientation="P", unit="mm", format="A4")
+    if not pdf.has_persian:
+        pytest.skip("no Persian font installed")
+    pdf.doc_is_rtl = True
+    assert not render.code_block_is_rtl(pdf, ["def f():", "    return 1"])
+    assert render.code_block_is_rtl(pdf, ["# \u0633\u0644\u0627\u0645"])
+
+
 @needs_fonts
 def test_cli_writes_next_to_the_input(runner, tmp_path):
     source = tmp_path / "doc.md"
@@ -436,3 +545,22 @@ def test_font_size_reaches_styled_spans(tmp_path, monkeypatch):
     assert state.BODY_SIZE not in body_sizes, (
         f"styled runs fell back to the import-time default: {sorted(body_sizes)}"
     )
+
+
+@needs_fonts
+def test_cover_page_shows_only_the_title(tmp_path):
+    """The cover used to print the source file's name under the title. It was
+    the one line that skipped shaping and bidi reordering, so a Persian name
+    came out backwards -- and it told the reader nothing the title did not.
+    """
+    pypdf = pytest.importorskip("pypdf")
+
+    source = tmp_path / "\u0646\u0642\u0634\u0647 \u0634\u0646\u0627\u062e\u062a.md"
+    source.write_text("# The Title\n\nBody text.\n", encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+
+    cover = pypdf.PdfReader(target).pages[0].extract_text()
+    assert "The Title" in cover
+    assert ".md" not in cover
+    assert source.stem not in cover
