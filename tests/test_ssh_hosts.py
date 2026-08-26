@@ -59,6 +59,15 @@ def test_resolve_target_rejects_an_empty_value():
         hosts.resolve_target("   ")
 
 
+@pytest.mark.parametrize("name", ["-oProxyCommand=id", "-4", "--version"])
+def test_a_name_starting_with_a_dash_is_refused(name):
+    """ssh would read it as an option, not a host; with a trailing remote
+    command that is how -oProxyCommand=... becomes code execution."""
+    with pytest.raises(click.ClickException) as excinfo:
+        hosts.resolve_target(name)
+    assert "option" in str(excinfo.value)
+
+
 def test_target_carries_a_password_from_a_spec():
     assert hosts.resolve_target("me:hunter2@host").password == "hunter2"
 
@@ -139,7 +148,7 @@ def test_resolve_config_runs_ssh_dash_g(monkeypatch):
     monkeypatch.setattr(hosts.subprocess, "run", fake_run)
 
     resolved = hosts.resolve_config("prod")
-    assert calls["cmd"] == ["ssh", "-G", "prod"]
+    assert calls["cmd"] == ["ssh", "-G", "--", "prod"]
     assert resolved is not None
     assert resolved.hostname == "10.0.0.5"
 
@@ -157,7 +166,24 @@ def test_resolve_config_passes_extra_options(monkeypatch):
         hosts.subprocess, "run", lambda cmd, **kw: (calls.update(cmd=cmd), FakeCompleted())[1]
     )
     hosts.resolve_config("prod", ["Port=2200"])
-    assert calls["cmd"] == ["ssh", "-G", "-o", "Port=2200", "prod"]
+    assert calls["cmd"] == ["ssh", "-G", "-o", "Port=2200", "--", "prod"]
+
+
+def test_resolve_config_ends_option_parsing_before_the_name(monkeypatch):
+    """Without --, a name beginning with - is swallowed by ssh as an option."""
+    calls = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = SSH_G_OUTPUT
+        stderr = ""
+
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        hosts.subprocess, "run", lambda cmd, **kw: (calls.update(cmd=cmd), FakeCompleted())[1]
+    )
+    hosts.resolve_config("prod")
+    assert calls["cmd"][-2:] == ["--", "prod"]
 
 
 def test_resolve_config_returns_none_without_ssh(monkeypatch):
@@ -173,4 +199,17 @@ def test_resolve_config_returns_none_when_ssh_fails(monkeypatch):
 
     monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(hosts.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    assert hosts.resolve_config("prod") is None
+
+
+def test_resolve_config_returns_none_on_a_decode_error(monkeypatch):
+    """subprocess.run(text=True) decodes stdout itself; a non-UTF-8 IdentityFile
+    path can make that raise UnicodeDecodeError, which is a ValueError rather
+    than an OSError or SubprocessError. resolve_config must swallow it too."""
+
+    def raise_decode_error(cmd, **kwargs):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(hosts.subprocess, "run", raise_decode_error)
     assert hosts.resolve_config("prod") is None

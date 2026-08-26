@@ -130,6 +130,12 @@ def resolve_target(value: str) -> Target:
     raw = value.strip()
     if not raw:
         raise click.ClickException("Provide a server name or a 'user@host' spec.")
+    if raw.startswith("-"):
+        # ssh would read this as an option, not a destination.
+        raise click.ClickException(
+            f"{value!r} starts with '-', so ssh would treat it as an option rather than "
+            "a host. Rename the host in ~/.ssh/config, or pass it as 'user@host'."
+        )
     if "@" in raw:
         return Target.from_server(parse_server(raw))
     return Target.from_name(raw)
@@ -206,13 +212,14 @@ def resolve_config(name: str, options: Sequence[str] = ()) -> Optional[ResolvedC
     cmd = ["ssh", "-G"]
     for option in options:
         cmd += ["-o", option]
-    cmd.append(name)
+    # ``--`` stops ssh reading a name that begins with ``-`` as an option.
+    cmd += ["--", name]
     try:
         completed = subprocess.run(
             cmd, capture_output=True, text=True, timeout=CONFIG_TIMEOUT_SECONDS
         )
-    except (OSError, subprocess.SubprocessError):
+        if completed.returncode != 0:
+            return None
+        return parse_ssh_g(name, completed.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    if completed.returncode != 0:
-        return None
-    return parse_ssh_g(name, completed.stdout)
