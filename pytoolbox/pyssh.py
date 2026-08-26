@@ -19,7 +19,6 @@ import subprocess
 import time
 from collections.abc import Sequence
 from contextlib import closing, suppress
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -34,6 +33,13 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
+from pytoolbox.ssh.hosts import (  # noqa: F401 - re-exported for backwards compatibility
+    SERVER_SPEC_RE,
+    Server,
+    load_server_conf,
+    parse_server,
+    resolve_server,
+)
 
 #: Endpoint used to verify that the proxy actually reaches the internet.
 #: Returns HTTP 204 with an empty body, so the check is fast and cheap.
@@ -44,73 +50,6 @@ HEALTH_INTERVAL_SECONDS = 15
 
 #: Seconds to wait for ssh to establish a listener before declaring failure.
 STARTUP_TIMEOUT_SECONDS = 20
-
-SERVER_SPEC_RE = re.compile(r"^(?P<user>[^@:/]+)(?::(?P<password>[^@]*))?@(?P<host>[^@:/]+)(?::(?P<port>\d+))?$")
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Server specs
-# ═══════════════════════════════════════════════════════════════════
-
-
-@dataclass(frozen=True)
-class Server:
-    """A parsed ``user[:password]@host[:port]`` target."""
-
-    user: str
-    host: str
-    port: int = 22
-    password: Optional[str] = None
-
-    @property
-    def target(self) -> str:
-        """The ``user@host`` string ssh expects."""
-        return f"{self.user}@{self.host}"
-
-    def __str__(self) -> str:  # pragma: no cover - display only
-        return f"{self.user}@{self.host}:{self.port}"
-
-
-def parse_server(spec: str) -> Server:
-    """Parse ``user@host``, ``user@host:port`` or ``user:password@host:port``."""
-    raw = spec.strip()
-    match = SERVER_SPEC_RE.match(raw)
-    if not match:
-        raise click.ClickException(
-            f"Invalid server spec: {spec!r}. Expected 'user@host', 'user@host:port', "
-            "or 'user:password@host:port'."
-        )
-    password = match.group("password")
-    return Server(
-        user=match.group("user"),
-        host=match.group("host"),
-        port=int(match.group("port") or 22),
-        password=password or None,
-    )
-
-
-def load_server_conf(path: Path) -> Server:
-    """Read a server spec from the first non-empty, non-comment line of a file."""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError as exc:
-        raise click.ClickException(f"Could not read {path}: {exc}") from exc
-    for line in text.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            return parse_server(line)
-    raise click.ClickException(f"{path} contains no server spec.")
-
-
-def resolve_server(spec: Optional[str], conf: Optional[str], label: str) -> Server:
-    """Resolve a server from either an inline spec or a config file."""
-    if spec and conf:
-        raise click.ClickException(f"Use either {label} or {label}-conf, not both.")
-    if spec:
-        return parse_server(spec)
-    if conf:
-        return load_server_conf(Path(conf))
-    raise click.ClickException(f"Provide {label} or {label}-conf.")
 
 
 # ═══════════════════════════════════════════════════════════════════
