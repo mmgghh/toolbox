@@ -20,7 +20,7 @@ import time
 from collections.abc import Sequence
 from contextlib import closing, suppress
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import click
 
@@ -33,6 +33,7 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
+from pytoolbox.ssh import hosts
 from pytoolbox.ssh.hosts import (  # noqa: F401 - re-exported for backwards compatibility
     SERVER_SPEC_RE,
     Server,
@@ -173,9 +174,9 @@ def _require(binary: str, hint: str) -> None:
         raise click.ClickException(f"`{binary}` was not found on PATH. {hint}")
 
 
-def _password_file(server: Server, slot: str) -> Optional[Path]:
+def _password_file(password: Optional[str], slot: str) -> Optional[Path]:
     """Write a password to an owner-only file for sshpass, or return None."""
-    if not server.password:
+    if not password:
         return None
     _require(
         "sshpass",
@@ -183,30 +184,51 @@ def _password_file(server: Server, slot: str) -> Optional[Path]:
         "Termux: `pkg install sshpass`). Alternatively use key authentication with --identity.",
     )
     path = paths.runtime_dir() / f"pyssh-{slot}-{os.getpid()}.pass"
-    return paths.write_private_file(path, server.password)
+    return paths.write_private_file(path, password)
 
 
 def build_ssh_command(
-    server: Server,
+    server: Union[Server, hosts.Target],
     forward_args: Sequence[str],
     identity: Optional[str] = None,
     password_file: Optional[Path] = None,
     extra_opts: Sequence[str] = (),
     keepalive: bool = True,
+    no_command: bool = True,
 ) -> list[str]:
-    """Assemble the ssh command line for a tunnel."""
-    cmd: list[str] = ["ssh", "-N", *forward_args, "-p", str(server.port), server.target]
+    """Assemble the ssh command line for a tunnel or a session.
+
+    A target built from an ssh config name carries no port, so no ``-p`` is
+    emitted and the config's own ``Port`` survives.
+    """
+    target = server if isinstance(server, hosts.Target) else hosts.Target.from_server(server)
+    cmd: list[str] = ["ssh"]
+    if no_command:
+        cmd.append("-N")
+    cmd.extend(forward_args)
+    if target.port is not None:
+        cmd += ["-p", str(target.port)]
     if keepalive:
         # Without these a dropped link leaves the tunnel silently dead.
-        cmd[1:1] = ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "-o", "ExitOnForwardFailure=yes"]
+        cmd[1:1] = [
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=3",
+            "-o", "ExitOnForwardFailure=yes",
+        ]
     if identity:
         cmd[1:1] = ["-i", str(Path(identity).expanduser())]
     for opt in extra_opts:
         cmd[1:1] = ["-o", opt]
     if password_file is not None:
         # Host-key prompts cannot be answered when sshpass drives ssh non-interactively.
+        cmd[1:1] = ["-o", "StrictHostKeyChecking=accept-new"]
+    # ``--`` ends option parsing. Without it a destination beginning with ``-`` is read
+    # by ssh as an option, and whatever follows becomes the host -- which is how
+    # -oProxyCommand=... turns into remote code execution on the commands that append a
+    # remote command. Nothing may be appended after the destination but that command.
+    cmd += ["--", target.spec]
+    if password_file is not None:
         cmd = ["sshpass", "-f", str(password_file)] + cmd
-        cmd.extend(["-o", "StrictHostKeyChecking=accept-new"])
     return cmd
 
 
@@ -430,7 +452,7 @@ def tunnel(
       pyssh tunnel --server-conf ~/vps.conf --reconnect --public
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
-    target = resolve_server(server, server_conf, "-s/--server")
+    target = hosts.resolve_connection(server, server_conf, "-s/--server")
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
     if not port_is_free(local_port, bind_host):
@@ -442,7 +464,7 @@ def tunnel(
     session = TunnelSession(name=f"tunnel-{local_port}", verbose=verbose)
 
     def start() -> None:
-        password_file = session.track_secret(_password_file(target, "t"))
+        password_file = session.track_secret(_password_file(target.password, "t"))
         cmd = build_ssh_command(
             target,
             ["-D", f"{bind_host}:{local_port}"],
@@ -552,7 +574,7 @@ def double_tunnel(
     session = TunnelSession(name=f"double-{lp2}", verbose=verbose)
 
     def start() -> None:
-        pass1 = session.track_secret(_password_file(first, "d1"))
+        pass1 = session.track_secret(_password_file(first.password, "d1"))
         hop1 = build_ssh_command(
             first,
             ["-L", f"127.0.0.1:{lp1}:{second.host}:{second.port}"],
@@ -565,7 +587,7 @@ def double_tunnel(
 
         # Second hop dials the forwarded local port, so it always talks to localhost.
         via_local = Server(user=second.user, host="127.0.0.1", port=lp1, password=second.password)
-        pass2 = session.track_secret(_password_file(via_local, "d2"))
+        pass2 = session.track_secret(_password_file(via_local.password, "d2"))
         hop2 = build_ssh_command(
             via_local,
             ["-D", f"{bind_host}:{lp2}"],
@@ -667,9 +689,7 @@ def _run_rsync(cmd: list[str], password: Optional[str], verbose: int) -> None:
     """Run a built rsync command, feeding sshpass a password file when needed."""
     password_file = None
     if password:
-        password_file = _password_file(
-            Server(user="rsync", host="rsync", password=password), "rsync"
-        )
+        password_file = _password_file(password, "rsync")
         cmd = ["sshpass", "-f", str(password_file)] + cmd
 
     console.info(f"$ {' '.join(cmd)}", verbose, threshold=0)

@@ -112,14 +112,14 @@ def test_password_never_appears_on_the_command_line(tmp_path):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_password_file_is_owner_only(monkeypatch, tmp_path):
     monkeypatch.setattr(pyssh, "_require", lambda binary, hint: None)
-    path = pyssh._password_file(pyssh.parse_server("me:secret@host"), "test")
+    path = pyssh._password_file("secret", "test")
     assert path is not None
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert path.read_text(encoding="utf-8") == "secret"
 
 
 def test_no_password_file_for_key_authentication():
-    assert pyssh._password_file(pyssh.parse_server("me@host"), "test") is None
+    assert pyssh._password_file(None, "test") is None
 
 
 def test_password_files_live_outside_the_package():
@@ -393,3 +393,78 @@ def test_tunnel_refuses_a_busy_port(runner, monkeypatch):
         )
     assert result.exit_code != 0
     assert "already in use" in result.stderr
+
+
+# ── targets in command construction ─────────────────────────────────
+
+def test_build_ssh_command_accepts_a_config_name_without_forcing_a_port():
+    """-p 22 would override the Port set in ~/.ssh/config."""
+    target = pyssh.hosts.Target.from_name("mpars-bi")
+    cmd = pyssh.build_ssh_command(target, ["-D", "127.0.0.1:9998"])
+    assert cmd[-1] == "mpars-bi"
+    assert "-p" not in cmd
+
+
+def test_build_ssh_command_still_sets_the_port_for_a_spec():
+    cmd = pyssh.build_ssh_command(pyssh.parse_server("me@host:2222"), ["-D", "127.0.0.1:1"])
+    assert cmd[cmd.index("-p") + 1] == "2222"
+
+
+def test_build_ssh_command_ends_option_parsing_before_the_destination():
+    """A destination beginning with '-' must never be parsed as an option, and
+    nothing may follow the destination except a remote command."""
+    cmd = pyssh.build_ssh_command(pyssh.hosts.Target.from_name("prod"), [])
+    assert cmd[-2:] == ["--", "prod"]
+
+
+def test_no_ssh_option_is_appended_after_the_destination(tmp_path):
+    """Everything after -- is host-then-command, so a trailing -o would be sent
+    to the remote shell as the command instead of configuring ssh."""
+    password_file = tmp_path / "pass"
+    password_file.write_text("secret", encoding="utf-8")
+    cmd = pyssh.build_ssh_command(
+        pyssh.hosts.Target.from_name("prod"), [], password_file=password_file
+    )
+    assert cmd[-2:] == ["--", "prod"]
+    assert "StrictHostKeyChecking=accept-new" in cmd
+    assert cmd.index("StrictHostKeyChecking=accept-new") < cmd.index("--")
+
+
+def test_build_ssh_command_can_leave_out_dash_n():
+    cmd = pyssh.build_ssh_command(
+        pyssh.hosts.Target.from_name("prod"), [], no_command=False
+    )
+    assert "-N" not in cmd
+
+
+def test_tunnel_accepts_a_config_name(runner, monkeypatch):
+    """-s prod must reach ssh as 'prod', not be rejected as a bad spec."""
+    captured = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProcess()
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+
+    result = runner.invoke(ssh_management, ["tunnel", "-s", "prod", "-p", "9998", "-b"])
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"][-1] == "prod"
+    assert "-p" not in captured["cmd"]
