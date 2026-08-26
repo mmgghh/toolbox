@@ -7,11 +7,15 @@ around and are not undoable.
 
 from __future__ import annotations
 
+import fnmatch
 import math
 import os
 import random
 import re
+import shlex
 import shutil
+import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, Optional
@@ -43,6 +47,11 @@ from pytoolbox.data import PATTERNS, sentences
 DUPLICATE_MIN_GROUP = 2
 
 ORGANIZE_MODES = ("ext", "date", "name")
+
+OPEN_SORT_KEYS = ("name", "size", "time")
+
+#: Opening more files than this asks first -- every one spawns a window.
+OPEN_CONFIRM_THRESHOLD = 5
 
 
 def compile_find_pattern(find: str) -> re.Pattern:
@@ -214,6 +223,7 @@ def file_management() -> None:
       pyfm batch-rename -d ./downloads -f ' ' -r '_' -v
       pyfm duplicates ./photos --json
       pyfm organize ./downloads --by ext
+      pyfm open ~/downloads '*.pdf'
     """
 
 
@@ -923,6 +933,256 @@ def organize(
         console.info(f"{bucket}/: {count}", verbose, threshold=1)
     verb = "would organize" if dry_run else "organized"
     console.result(f"{verb} {console.plural(moved, 'file')} into {len(buckets)} director{'y' if len(buckets) == 1 else 'ies'}.")
+
+
+def resolve_opener(opener: Optional[str]) -> list[str]:
+    """Return the argv prefix that hands a file to the desktop's default app."""
+    if opener:
+        command = shlex.split(opener)
+        if not command:
+            raise click.ClickException("--opener needs a command to run.")
+        if shutil.which(command[0]) is None:
+            raise click.ClickException(f"{command[0]!r} is not on PATH.")
+        return command
+    if sys.platform == "darwin":
+        return ["open"]
+    if os.name == "nt":
+        # The empty string is start's window-title argument; without it a
+        # quoted path would be taken as the title and nothing would open.
+        return ["cmd", "/c", "start", ""]
+    if shutil.which("xdg-open") is None:
+        raise click.ClickException(
+            "xdg-open is not on PATH. Install xdg-utils, or pass --opener with another command."
+        )
+    return ["xdg-open"]
+
+
+def parse_selection(spec: str, count: int) -> list[int]:
+    """Turn ``"1,4-6"`` into zero-based indices, in the order they were typed.
+
+    Raises ``ValueError`` with a message meant for the user, so the same
+    parser can serve ``--pick`` and the interactive prompt.
+    """
+    indices: list[int] = []
+    for chunk in re.split(r"[,\s]+", spec.strip()):
+        if not chunk:
+            continue
+        match = re.fullmatch(r"(\d+)(?:-(\d+))?", chunk)
+        if not match:
+            raise ValueError(f"{chunk!r} is not a number or a range like 4-6.")
+        first = int(match.group(1))
+        last = int(match.group(2) or first)
+        if first > last:
+            raise ValueError(f"{chunk!r} counts backwards.")
+        if first < 1 or last > count:
+            raise ValueError(f"{chunk!r} is outside 1-{count}.")
+        indices.extend(range(first - 1, last))
+    if not indices:
+        raise ValueError("Nothing selected.")
+    # dict.fromkeys keeps the typed order while dropping repeats.
+    return list(dict.fromkeys(indices))
+
+
+def ask_selection(count: int) -> list[int]:
+    """Prompt until the answer parses, treating EOF and 'q' as "open nothing"."""
+    hint = f"Open which? [1-{count}, ranges like 1-3, 'a' for all, 'q' to quit]"
+    while True:
+        try:
+            answer = click.prompt(hint, default="q", show_default=False, err=True)
+        except (click.Abort, EOFError):
+            return []
+        answer = answer.strip().lower()
+        if answer in ("q", "quit", ""):
+            return []
+        if answer in ("a", "all"):
+            return list(range(count))
+        try:
+            return parse_selection(answer, count)
+        except ValueError as exc:
+            console.warn(str(exc))
+
+
+@file_management.command("open")
+@click.argument(
+    "directory",
+    default=".",
+    type=click.Path(exists=True, readable=True, path_type=Path),
+)
+@click.argument("pattern", default="*")
+@click.option("-x", "--extension", multiple=True, help="Only these extensions (repeatable, or comma-separated).")
+@click.option("--regex", "as_regex", is_flag=True, help="Read PATTERN as a regex instead of a glob.")
+@click.option("-R", "--recursive", is_flag=True, help="Descend into subdirectories.")
+@click.option("--hidden", is_flag=True, help="Include hidden files.")
+@click.option(
+    "--sort",
+    "sort_by",
+    type=click.Choice(OPEN_SORT_KEYS, case_sensitive=False),
+    default="name",
+    show_default=True,
+    help="Order the listing: name A-Z, size largest first, time newest first.",
+)
+@click.option("-r", "--reverse", is_flag=True, help="Reverse the listing order.")
+@click.option("--limit", type=click.IntRange(1), help="Keep only the first N matches after sorting.")
+@click.option("-a", "--all", "open_all", is_flag=True, help="Open every match without asking.")
+@click.option("-i", "--pick", help="Open these matches without asking, e.g. '2' or '1,4-6'.")
+@click.option("--opener", help="Command to open with, instead of the desktop default.")
+@click.option("-n", "--dry-run", is_flag=True, help="List the matches and what would open, opening nothing.")
+@yes_option
+@json_option
+@verbose_option
+def open_files(
+    directory: Path,
+    pattern: str,
+    extension: tuple[str, ...],
+    as_regex: bool,
+    recursive: bool,
+    hidden: bool,
+    sort_by: str,
+    reverse: bool,
+    limit: Optional[int],
+    open_all: bool,
+    pick: Optional[str],
+    opener: Optional[str],
+    dry_run: bool,
+    assume_yes: bool,
+    as_json: bool,
+    verbose: int,
+) -> None:
+    """List the files matching a pattern, then open the chosen ones.
+
+    \b
+    PATTERN is a shell glob matched against the filename ('*.pdf', 'report*'),
+    or a regex with --regex. The matches are listed and counted; you then pick
+    one, a few ('1,4-6'), or all of them, and each is handed to the desktop's
+    default application with xdg-open.
+
+    \b
+    Examples:
+      pyfm open ~/downloads '*.pdf'
+      pyfm open ~/photos -x jpg -x png -R --sort time
+      pyfm open ./reports 'q[1-4]-2025' --regex --pick 1,3
+      pyfm open ~/books '*.epub' --all -y
+    """
+    base = directory if directory.is_dir() else directory.parent
+    extensions = normalize_extensions(extension) or None
+    if as_regex:
+        name_re = compile_find_pattern(pattern)
+    else:
+        # fnmatch anchors at the end, so a glob still has to match the whole name.
+        name_re = re.compile(fnmatch.translate(pattern))
+
+    matches: list[tuple[Path, int, float]] = []
+    for path in iter_files(
+        directory,
+        depth=None if recursive else 0,
+        include_hidden=hidden,
+        extensions=extensions,
+        filename_pattern=name_re,
+    ):
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            console.warn(f"could not read {path}: {exc}")
+            continue
+        matches.append((path, stat.st_size, stat.st_mtime))
+
+    if sort_by == "size":
+        matches.sort(key=lambda item: -item[1])
+    elif sort_by == "time":
+        matches.sort(key=lambda item: -item[2])
+    else:
+        matches.sort(key=lambda item: str(item[0]).lower())
+    if reverse:
+        matches.reverse()
+
+    found = len(matches)
+    if limit is not None and found > limit:
+        matches = matches[:limit]
+
+    if not matches:
+        console.result(f"No files in {directory} match {pattern!r}.")
+        return
+
+    if as_json:
+        console.emit_json(
+            [
+                {
+                    "index": number,
+                    "path": str(path),
+                    "name": path.name,
+                    "bytes": size,
+                    "size": human_bytes(size),
+                    "modified": datetime.fromtimestamp(mtime).isoformat(timespec="seconds"),
+                }
+                for number, (path, size, mtime) in enumerate(matches, start=1)
+            ]
+        )
+    else:
+        console.print_rows(
+            [
+                {
+                    "#": number,
+                    "file": str(path.relative_to(base)),
+                    "size": human_bytes(size),
+                    "modified": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M"),
+                }
+                for number, (path, size, mtime) in enumerate(matches, start=1)
+            ],
+            ["#", "file", "size", "modified"],
+        )
+        counted = console.plural(found, "file")
+        shown = f", showing {len(matches)}" if len(matches) < found else ""
+        console.result(f"{counted} matched{shown}.")
+
+    if open_all:
+        chosen = list(range(len(matches)))
+    elif pick:
+        try:
+            chosen = parse_selection(pick, len(matches))
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif as_json:
+        # --json is for scripts, which have no one to answer the prompt.
+        return
+    else:
+        chosen = ask_selection(len(matches))
+
+    if not chosen:
+        console.result("Nothing opened.")
+        return
+
+    if len(chosen) > OPEN_CONFIRM_THRESHOLD and not dry_run:
+        if not console.confirm(f"Open {console.plural(len(chosen), 'file')}?", assume_yes):
+            console.result("Nothing opened.")
+            return
+
+    command = resolve_opener(opener)
+    console.dry_run_notice(dry_run)
+    opened = 0
+    for index in chosen:
+        path = matches[index][0]
+        argv = [*command, str(path)]
+        if dry_run:
+            console.result(f"would open {path}")
+            continue
+        console.info(f"$ {' '.join(argv)}", verbose, threshold=2)
+        try:
+            # Detached, with the streams closed, so the CLI returns straight
+            # away and a chatty viewer cannot scribble over its output.
+            subprocess.Popen(
+                argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            console.warn(f"could not open {path}: {exc}")
+            continue
+        opened += 1
+        console.info(f"opened {path}", verbose, threshold=1)
+
+    if not dry_run:
+        console.success(f"Opened {console.plural(opened, 'file')} with {command[0]}.")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -70,6 +70,23 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyfm open` finds the file you meant and hands it to the desktop.**
+  `pyfm open ~/downloads '*.pdf'` lists every match with its size and
+  modification date, numbered and counted, then asks which to open: a number,
+  a list, a range like `1,4-6`, `a` for all of them, or `q` for none. Each
+  choice goes to `xdg-open` — `open` on macOS, `start` on Windows, or whatever
+  `--opener` names — launched detached with its streams closed, so the command
+  returns immediately and a chatty viewer cannot scribble over the listing.
+
+  The pattern is a shell glob against the filename, so one argument covers
+  both "by name" (`report*`) and "by extension" (`*.pdf`); `--regex` reads it
+  as a regex instead and `-x/--extension` filters by extension directly. The
+  listing can recurse, include hidden files, and sort by name, size or time.
+  `--all` and `--pick` answer the question up front for scripts, `--json`
+  lists and stops without asking, and opening more than five files confirms
+  first — as does any non-interactive session, which takes the safe default
+  and opens nothing rather than filling a screen with windows.
+
 - **`pydata sql` can build a table from some of the fields rather than all of
   them.** `-k/--key` takes a glob and keeps the columns matching it, spelled
   and matched exactly as it already is in `pydata filter` — against both the

@@ -9,6 +9,7 @@ batch-find-replace   Regex find/replace across files with given extensions
 batch-rename         Rename files and directories by regex
 duplicates           Find (and optionally delete) files with identical contents
 organize             Sort loose files into subdirectories
+open                 List the files matching a pattern and open the chosen ones
 extract-links        Pull http(s) links out of a file or web page
 file-find-replace    Replace a literal string in one file
 generate-text-file   Create text files filled with random sentences
@@ -129,6 +130,63 @@ pyfm organize ~/downloads --by ext
 pyfm organize ~/photos --by date --date-format '%Y/%m' --dry-run
 pyfm organize ./books --by name --pattern '\.epub$'
 ```
+
+## `open`
+
+Lists the files matching a pattern, counts them, and opens the ones you pick
+with the desktop's default application (`xdg-open` on Linux, `open` on macOS,
+`start` on Windows).
+
+```
+pyfm open [DIRECTORY] [PATTERN]
+```
+
+`DIRECTORY` defaults to `.` and may also be a single file. `PATTERN` is a
+shell glob matched against the filename and defaults to `*`, so a glob covers
+"by name" (`report*`) and "by extension" (`*.pdf`) alike.
+
+| Option | Meaning |
+| --- | --- |
+| `-x, --extension EXT` | Only these extensions (repeatable, or comma-separated) |
+| `--regex` | Read `PATTERN` as a regex instead of a glob |
+| `-R, --recursive` | Descend into subdirectories |
+| `--hidden` | Include hidden files |
+| `--sort name\|size\|time` | A-Z, largest first, or newest first (default `name`) |
+| `-r, --reverse` | Reverse the listing order |
+| `--limit N` | Keep only the first N matches after sorting |
+| `-a, --all` | Open every match without asking |
+| `-i, --pick SPEC` | Open these without asking, e.g. `2` or `1,4-6` |
+| `--opener CMD` | Open with this command instead of the desktop default |
+| `-n, --dry-run` | List the matches and what would open, opening nothing |
+
+```shell
+pyfm open ~/downloads '*.pdf'
+pyfm open ~/photos -x jpg -x png -R --sort time
+pyfm open ./reports 'q[1-4]-2025' --regex --pick 1,3
+pyfm open ~/books '*.epub' --all -y
+```
+
+Without `--all` or `--pick` it lists the matches and asks:
+
+```
+# | file          | size    | modified
+--+---------------+---------+-----------------
+1 | invoice.pdf   | 124.3 KB| 2026-08-01 09:12
+2 | report.pdf    | 1.2 MB  | 2026-07-14 17:40
+3 | slides.pdf    | 4.0 MB  | 2026-06-30 11:05
+3 files matched.
+Open which? [1-3, ranges like 1-3, 'a' for all, 'q' to quit]:
+```
+
+Answer with a number, a comma-separated list, a range (`1,4-6`), `a` for all,
+or `q` to open nothing. Opening more than five files asks for confirmation
+first, since each one spawns a window; `-y` skips that. Every file is launched
+detached with its output discarded, so the command returns immediately.
+
+`--json` prints the listing and stops without prompting, which is what makes
+it safe in a script. In any non-interactive session (a pipe, cron, CI) the
+prompt and the confirmation both take their safe default and nothing is
+opened, so a selection has to come from `--all` or `--pick`.
 
 ## `extract-links`
 

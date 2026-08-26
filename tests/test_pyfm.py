@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import time
+from pathlib import Path
+
+import pytest
 
 from pytoolbox.pyfm import file_management
 
@@ -275,3 +279,235 @@ def test_generate_text_file_rejects_snake_case_aliases(runner, tmp_path):
     )
     assert result.exit_code != 0
     assert "no such option" in result.output.lower()
+
+
+@pytest.fixture
+def openable(tmp_path):
+    """A directory of files plus a fake opener that logs what it was given.
+
+    Layout::
+
+        docs/a-report.pdf
+        docs/b-notes.pdf
+        docs/photo.jpg
+        docs/.hidden.pdf
+        docs/sub/deep.pdf
+    """
+    root = tmp_path / "docs"
+    (root / "sub").mkdir(parents=True)
+    (root / "a-report.pdf").write_bytes(b"x" * 300)
+    (root / "b-notes.pdf").write_bytes(b"x" * 20)
+    (root / "photo.jpg").write_bytes(b"x" * 100)
+    (root / ".hidden.pdf").write_bytes(b"x")
+    (root / "sub" / "deep.pdf").write_bytes(b"x" * 5000)
+
+    log = tmp_path / "opened.log"
+    opener = tmp_path / "fakeopen"
+    opener.write_text(f'#!/bin/sh\necho "$1" >> {log}\n', encoding="utf-8")
+    opener.chmod(0o755)
+    return root, opener, log
+
+
+def _opened(log, expected):
+    """Wait for the detached opener processes to write their lines."""
+    for _ in range(100):
+        names = [Path(line).name for line in log.read_text().splitlines()] if log.exists() else []
+        if len(names) >= expected:
+            return names
+        time.sleep(0.05)
+    return names
+
+
+def test_open_lists_matches_and_counts_them(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root), "*.pdf", "--pick", "1", "-n"])
+    assert result.exit_code == 0, result.output
+    assert "a-report.pdf" in result.stdout
+    assert "b-notes.pdf" in result.stdout
+    assert "photo.jpg" not in result.stdout
+    assert "2 files matched." in result.stdout
+    assert "would open" in result.stdout
+
+
+def test_open_hands_the_chosen_files_to_the_opener(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--all", "--opener", str(opener)]
+    )
+    assert result.exit_code == 0, result.output
+    assert sorted(_opened(log, 2)) == ["a-report.pdf", "b-notes.pdf"]
+
+
+def test_open_prompts_for_a_selection(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--opener", str(opener)], input="2\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert _opened(log, 1) == ["b-notes.pdf"]
+
+
+def test_open_prompt_accepts_ranges_and_all(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--opener", str(opener)], input="1-2\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert sorted(_opened(log, 2)) == ["a-report.pdf", "b-notes.pdf"]
+
+
+def test_open_prompt_reasks_after_a_bad_answer(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--opener", str(opener)], input="nope\n1\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "not a number or a range" in result.stderr
+    assert _opened(log, 1) == ["a-report.pdf"]
+
+
+def test_open_quits_without_opening_anything(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--opener", str(opener)], input="q\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Nothing opened." in result.stdout
+    assert not log.exists()
+
+
+def test_open_treats_end_of_input_as_quit(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--opener", str(opener)], input=""
+    )
+    assert result.exit_code == 0, result.output
+    assert "Nothing opened." in result.stdout
+    assert not log.exists()
+
+
+def test_open_dry_run_opens_nothing(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--all", "-n", "--opener", str(opener)]
+    )
+    assert result.exit_code == 0, result.output
+    assert result.stdout.count("would open") == 2
+    assert not log.exists()
+
+
+def test_open_recurses_and_includes_hidden_on_request(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "-R", "--hidden", "-n", "-a", "-y"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "4 files matched." in result.stdout
+    assert os.path.join("sub", "deep.pdf") in result.stdout
+    assert ".hidden.pdf" in result.stdout
+
+
+def test_open_filters_by_extension(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root), "-x", "jpg", "-n", "-a"])
+    assert result.exit_code == 0, result.output
+    assert "1 file matched." in result.stdout
+    assert "photo.jpg" in result.stdout
+
+
+def test_open_reads_the_pattern_as_a_regex(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), r"^[ab]-.*\.pdf$", "--regex", "-n", "-a"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "2 files matched." in result.stdout
+
+
+def test_open_sorts_by_size_largest_first(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "-R", "--sort", "size", "--json"]
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert [item["name"] for item in payload] == [
+        "deep.pdf",
+        "a-report.pdf",
+        "photo.jpg",
+        "b-notes.pdf",
+    ]
+
+
+def test_open_limit_reports_the_full_count(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root), "-R", "--limit", "2", "-n", "-a"])
+    assert result.exit_code == 0, result.output
+    assert "4 files matched, showing 2." in result.stdout
+
+
+def test_open_json_lists_without_prompting(runner, openable):
+    root, opener, log = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "--json", "--opener", str(opener)]
+    )
+    assert result.exit_code == 0, result.output
+    assert [item["name"] for item in json.loads(result.stdout)] == ["a-report.pdf", "b-notes.pdf"]
+    assert not log.exists()
+
+
+def test_open_reports_when_nothing_matches(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root), "*.zip"])
+    assert result.exit_code == 0, result.output
+    assert "No files in" in result.stdout
+
+
+def test_open_rejects_a_selection_out_of_range(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root), "*.pdf", "--pick", "9"])
+    assert result.exit_code != 0
+    assert "outside 1-2" in result.output
+
+
+def test_open_rejects_an_opener_that_is_not_installed(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.pdf", "-a", "--opener", "no-such-opener-here"]
+    )
+    assert result.exit_code != 0
+    assert "not on PATH" in result.output
+
+
+def test_open_asks_before_opening_a_pile_of_files(runner, openable):
+    root, opener, log = openable
+    for index in range(8):
+        (root / f"bulk{index}.txt").write_bytes(b"x")
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.txt", "--all", "--opener", str(opener)]
+    )
+    # Not a terminal, so the confirmation takes its safe default rather than
+    # opening eight windows in a script that never meant to.
+    assert result.exit_code == 0, result.output
+    assert "8 files matched." in result.stdout
+    assert "Nothing opened." in result.stdout
+    assert not log.exists()
+
+
+def test_open_yes_skips_the_pile_confirmation(runner, openable):
+    root, opener, log = openable
+    for index in range(8):
+        (root / f"bulk{index}.txt").write_bytes(b"x")
+    result = runner.invoke(
+        file_management, ["open", str(root), "*.txt", "--all", "-y", "--opener", str(opener)]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(_opened(log, 8)) == 8
+
+
+def test_open_accepts_a_single_file_as_the_target(runner, openable):
+    root, _, _ = openable
+    result = runner.invoke(file_management, ["open", str(root / "photo.jpg"), "-n", "-a"])
+    assert result.exit_code == 0, result.output
+    assert "1 file matched." in result.stdout
+    assert "photo.jpg" in result.stdout

@@ -30,7 +30,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 
 | Command    | Also as        | What it does                                                    | Docs |
 | ---------- | -------------- | --------------------------------------------------------------- | ---- |
-| `pyfm`     | `toolbox fm`     | Split, merge, rename, deduplicate and organize files            | [docs/pyfm.md](docs/pyfm.md) |
+| `pyfm`     | `toolbox fm`     | Split, merge, rename, deduplicate, organize and open files      | [docs/pyfm.md](docs/pyfm.md) |
 | `pystr`    | `toolbox str`    | Search, replace, clipboard, case conversion, encoding, Persian normalization | [docs/pystr.md](docs/pystr.md) |
 | `pyjdate`  | `toolbox jdate`  | Jalali ↔ Gregorian conversion, intervals, distances              | [docs/pyjdate.md](docs/pyjdate.md) |
 | `pytime`   | `toolbox time`   | Time tracking in a single SQLite file, with reports              | [docs/pytime.md](docs/pytime.md) |
