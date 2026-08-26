@@ -81,3 +81,96 @@ def test_resolve_connection_reads_a_conf_file(tmp_path):
     conf.write_text("me:pw@host:2222\n", encoding="utf-8")
     target = hosts.resolve_connection(None, str(conf), "-s/--server")
     assert (target.spec, target.port, target.password) == ("me@host", 2222, "pw")
+
+
+# ── ssh -G ──────────────────────────────────────────────────────────
+
+SSH_G_OUTPUT = """\
+user deploy
+hostname 10.0.0.5
+port 2222
+proxyjump bastion
+identityfile ~/.ssh/id_ed25519
+identityfile ~/.ssh/id_rsa
+controlmaster auto
+serveraliveinterval 60
+"""
+
+
+def test_parse_ssh_g_reads_the_fields_pyssh_needs():
+    resolved = hosts.parse_ssh_g("prod", SSH_G_OUTPUT)
+    assert resolved.hostname == "10.0.0.5"
+    assert resolved.user == "deploy"
+    assert resolved.port == 2222
+    assert resolved.proxy_jump == "bastion"
+    assert resolved.identity_files == ("~/.ssh/id_ed25519", "~/.ssh/id_rsa")
+
+
+def test_parse_ssh_g_falls_back_for_an_undefined_name():
+    resolved = hosts.parse_ssh_g("whatever", "user me\nhostname whatever\nport 22\n")
+    assert resolved.hostname == "whatever"
+    assert resolved.port == 22
+    assert resolved.proxy_jump is None
+    assert resolved.identity_files == ()
+
+
+def test_parse_ssh_g_ignores_a_none_proxyjump():
+    """ssh reports the absence of a jump host as the literal string 'none'."""
+    assert hosts.parse_ssh_g("x", "hostname x\nproxyjump none\n").proxy_jump is None
+
+
+def test_parse_ssh_g_survives_a_junk_port():
+    assert hosts.parse_ssh_g("x", "hostname x\nport nonsense\n").port == 22
+
+
+def test_resolve_config_runs_ssh_dash_g(monkeypatch):
+    calls = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = SSH_G_OUTPUT
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        calls["cmd"] = cmd
+        return FakeCompleted()
+
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(hosts.subprocess, "run", fake_run)
+
+    resolved = hosts.resolve_config("prod")
+    assert calls["cmd"] == ["ssh", "-G", "prod"]
+    assert resolved is not None
+    assert resolved.hostname == "10.0.0.5"
+
+
+def test_resolve_config_passes_extra_options(monkeypatch):
+    calls = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = SSH_G_OUTPUT
+        stderr = ""
+
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        hosts.subprocess, "run", lambda cmd, **kw: (calls.update(cmd=cmd), FakeCompleted())[1]
+    )
+    hosts.resolve_config("prod", ["Port=2200"])
+    assert calls["cmd"] == ["ssh", "-G", "-o", "Port=2200", "prod"]
+
+
+def test_resolve_config_returns_none_without_ssh(monkeypatch):
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: None)
+    assert hosts.resolve_config("prod") is None
+
+
+def test_resolve_config_returns_none_when_ssh_fails(monkeypatch):
+    class FakeCompleted:
+        returncode = 255
+        stdout = ""
+        stderr = "bad configuration"
+
+    monkeypatch.setattr(hosts.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(hosts.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    assert hosts.resolve_config("prod") is None
