@@ -8,6 +8,8 @@ double-tunnel   SOCKS5 proxy to server 2, reached through server 1
 rsync-dir       Copy a directory over SSH with rsync
 status          List tunnels started by pyssh
 stop            Stop a background tunnel
+secret          Store, list and forget host passwords
+hosts           List hosts pyssh can reach, and manage their tags
 ```
 
 These are thin wrappers around the system `ssh` and `rsync` binaries, not an
@@ -49,6 +51,36 @@ includes a password, `sshpass` is required; the password is written to an
 owner-only (`0600`) file under `$XDG_RUNTIME_DIR/pytoolbox`, handed to
 `sshpass -f`, and deleted as soon as the handshake completes. It never appears
 in the process list.
+
+## Secrets and tags
+
+`~/.ssh/config` says how to reach a host. It cannot hold a password and has
+no notion of grouping, so pyssh stores exactly those two things, keyed by ssh
+config host name, in an owner-only `ssh.json` beside its other config.
+
+```shell
+pyssh secret set prod-web        # prompts, stores in the OS keyring
+pyssh secret list
+pyssh hosts tag add prod web1 web2
+pyssh hosts --tag prod
+```
+
+| Tier | Where the password lives | When |
+| --- | --- | --- |
+| `none` | nowhere — key file, agent or PKCS#11 | the default, and always preferable |
+| `keyring` | the OS keyring | whenever a backend works |
+| `plaintext` | the 0600 `ssh.json` | only with `--insecure-plaintext` |
+
+The keyring needs the extra: `pip install 'pytoolbox[secrets]'`.
+
+**Termux.** There is no keyring backend on Termux — `keyring`'s Linux backend
+is D-Bus SecretService, which Termux does not run, and `termux-keystore`
+cannot store arbitrary data (it does `generate`, `sign`, `verify`, `list` and
+`delete`, and nothing else). Use key authentication instead. Android's
+hardware keystore can hold the key itself through
+[tergent](https://github.com/aeolwyr/tergent), a PKCS#11 provider — set
+`PKCS11Provider` in `~/.ssh/config` and pyssh picks it up like any other
+setting.
 
 ## `tunnel`
 

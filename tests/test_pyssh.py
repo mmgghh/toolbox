@@ -545,3 +545,100 @@ def test_double_tunnel_reports_an_unresolvable_name(runner, monkeypatch):
     )
     assert result.exit_code != 0
     assert "target" in result.stderr
+
+
+# ── secrets and tags ────────────────────────────────────────────────
+
+@pytest.fixture
+def working_keyring(monkeypatch):
+    saved = {}
+    fake = type(
+        "FakeKeyring",
+        (),
+        {
+            "set_password": staticmethod(lambda s, n, p: saved.__setitem__((s, n), p)),
+            "get_password": staticmethod(lambda s, n: saved.get((s, n))),
+            "delete_password": staticmethod(lambda s, n: saved.pop((s, n), None)),
+        },
+    )()
+    monkeypatch.setattr(pyssh.store, "_keyring", lambda: fake)
+    return saved
+
+
+def test_secret_set_prompts_and_reports_the_tier(runner, working_keyring):
+    result = runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+    assert result.exit_code == 0, result.output
+    assert "keyring" in result.output
+    assert working_keyring[(pyssh.store.KEYRING_SERVICE, "prod-web")] == "hunter2"
+
+
+def test_secret_list_never_prints_a_password(runner, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+    result = runner.invoke(ssh_management, ["secret", "list"])
+    assert result.exit_code == 0, result.output
+    assert "prod-web" in result.stdout
+    assert "hunter2" not in result.output
+
+
+def test_secret_list_as_json(runner, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+    result = runner.invoke(ssh_management, ["secret", "list", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "prod-web"
+    assert payload[0]["tier"] == "keyring"
+    assert "value" not in payload[0]
+
+
+def test_secret_rm_forgets_it(runner, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+    result = runner.invoke(ssh_management, ["secret", "rm", "prod-web"])
+    assert result.exit_code == 0, result.output
+    assert working_keyring == {}
+
+
+def test_secret_rm_for_an_unknown_host(runner, working_keyring):
+    result = runner.invoke(ssh_management, ["secret", "rm", "nope"])
+    assert result.exit_code != 0
+
+
+def test_hosts_tag_add_and_list(runner):
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
+    result = runner.invoke(ssh_management, ["hosts", "--tag", "prod", "--json"])
+    assert result.exit_code == 0, result.output
+    assert [row["name"] for row in json.loads(result.stdout)] == ["web1", "web2"]
+
+
+def test_hosts_tag_rm(runner):
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
+    runner.invoke(ssh_management, ["hosts", "tag", "rm", "prod", "web1"])
+    result = runner.invoke(ssh_management, ["hosts", "--tag", "prod", "--json"])
+    assert json.loads(result.stdout) == []
+
+
+def test_hosts_lists_ssh_config_names(runner, monkeypatch, tmp_path):
+    config = tmp_path / "config"
+    config.write_text("Host alpha\nHost beta\n", encoding="utf-8")
+    monkeypatch.setattr(pyssh.hosts, "default_config_path", lambda: config)
+    result = runner.invoke(ssh_management, ["hosts", "--json"])
+    assert [row["name"] for row in json.loads(result.stdout)] == ["alpha", "beta"]
+
+
+def test_hosts_marks_which_names_have_a_secret(runner, monkeypatch, tmp_path, working_keyring):
+    config = tmp_path / "config"
+    config.write_text("Host alpha\nHost beta\n", encoding="utf-8")
+    monkeypatch.setattr(pyssh.hosts, "default_config_path", lambda: config)
+    runner.invoke(ssh_management, ["secret", "set", "alpha"], input="pw\npw\n")
+    rows = {row["name"]: row for row in json.loads(runner.invoke(ssh_management, ["hosts", "--json"]).stdout)}
+    assert rows["alpha"]["secret"] == "keyring"
+    assert rows["beta"]["secret"] == "none"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "resolves_to"),
+    [("t", "tunnel"), ("d", "double-tunnel"), ("rs", "rsync-dir")],
+)
+def test_existing_abbreviations_still_resolve(runner, prefix, resolves_to):
+    """Adding commands must not break an abbreviation that works today."""
+    result = runner.invoke(ssh_management, [prefix, "--help"], prog_name="pyssh")
+    assert result.exit_code == 0, result.output
+    assert f"Usage: pyssh {resolves_to}" in result.stdout

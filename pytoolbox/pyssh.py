@@ -29,11 +29,12 @@ from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
     dry_run_option,
+    json_option,
     verbose_option,
     version_option,
     yes_option,
 )
-from pytoolbox.ssh import hosts
+from pytoolbox.ssh import hosts, store
 from pytoolbox.ssh.hosts import (  # noqa: F401 - re-exported for backwards compatibility
     SERVER_SPEC_RE,
     Server,
@@ -1038,6 +1039,172 @@ def stop(name: Optional[str], stop_all: bool) -> None:
         terminate(state.get("pids", []))
         Path(state["_file"]).unlink(missing_ok=True)
         console.result(f"Stopped {Path(state['_file']).stem}.")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Secrets and tags
+# ═══════════════════════════════════════════════════════════════════
+
+
+@ssh_management.group(cls=AliasedGroup)
+def secret() -> None:
+    """Passwords for hosts in your ~/.ssh/config.
+
+    \b
+    Key authentication is always preferable; this is for the servers that
+    will not have it. Passwords go to the OS keyring when there is one,
+    and never onto a command line.
+
+    \b
+    Examples:
+      pyssh secret set prod-web
+      pyssh secret list
+      pyssh secret rm prod-web
+    """
+
+
+@secret.command("set")
+@click.argument("name")
+@click.option(
+    "--insecure-plaintext",
+    is_flag=True,
+    help="Store the password in the 0600 config file when no keyring works.",
+)
+def secret_set(name: str, insecure_plaintext: bool) -> None:
+    """Store the password for NAME, prompting for it.
+
+    \b
+    Examples:
+      pyssh secret set prod-web
+      pyssh secret set termux-box --insecure-plaintext
+    """
+    password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+    tier = store.set_secret(name, password, allow_plaintext=insecure_plaintext)
+    if tier == store.TIER_PLAINTEXT:
+        console.warn(f"{name}'s password is stored in plain text at {store.store_path()}.")
+    console.success(f"Stored {name}'s password ({tier}).")
+
+
+@secret.command("rm")
+@click.argument("name")
+def secret_rm(name: str) -> None:
+    """Forget the password for NAME.
+
+    \b
+    Examples:
+      pyssh secret rm prod-web
+    """
+    if not store.remove_secret(name):
+        raise click.ClickException(f"No password is stored for {name!r}.")
+    console.success(f"Forgot {name}'s password.")
+
+
+@secret.command("list")
+@json_option
+def secret_list(as_json: bool) -> None:
+    """List hosts with a stored password, and where it is kept.
+
+    \b
+    Examples:
+      pyssh secret list
+      pyssh secret list --json
+    """
+    rows = [
+        {"name": item.name, "tier": item.tier}
+        for item in store.entries()
+        if item.tier != store.TIER_NONE
+    ]
+    if not rows and not as_json:
+        console.result("No passwords are stored.")
+        return
+    console.print_rows(rows, ["name", "tier"], as_json=as_json)
+
+
+@ssh_management.group(cls=AliasedGroup, name="hosts", invoke_without_command=True)
+@click.option("-t", "--tag", "tag_filter", help="Only hosts carrying this tag.")
+@json_option
+@click.pass_context
+def hosts_cmd(ctx: click.Context, tag_filter: Optional[str], as_json: bool) -> None:
+    """List the hosts pyssh can reach, and manage their tags.
+
+    \b
+    Names come from ~/.ssh/config; tags and stored passwords come from
+    pyssh. A name pyssh has a tag or password for is listed even when it
+    is not in your ssh config.
+
+    \b
+    Examples:
+      pyssh hosts
+      pyssh hosts --tag prod --json
+      pyssh hosts tag add prod web1 web2
+    """
+    if ctx.invoked_subcommand is not None:
+        return
+
+    stored = {item.name: item for item in store.entries()}
+    names = list(hosts.config_host_names())
+    names += [name for name in sorted(stored) if name not in names]
+
+    rows = []
+    for name in names:
+        item = stored.get(name)
+        tags = list(item.tags) if item else []
+        if tag_filter and tag_filter not in tags:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "tags": ",".join(tags),
+                "secret": item.tier if item else store.TIER_NONE,
+            }
+        )
+
+    if not rows and not as_json:
+        console.result("No hosts found. Add one to ~/.ssh/config.")
+        return
+    console.print_rows(rows, ["name", "tags", "secret"], as_json=as_json)
+
+
+@hosts_cmd.group(cls=AliasedGroup, name="tag")
+def hosts_tag() -> None:
+    """Group hosts so `pyssh exec --tag` can address them together.
+
+    \b
+    Examples:
+      pyssh hosts tag add prod web1 web2
+      pyssh hosts tag rm prod web2
+    """
+
+
+@hosts_tag.command("add")
+@click.argument("tag_name")
+@click.argument("names", nargs=-1, required=True)
+def hosts_tag_add(tag_name: str, names: tuple[str, ...]) -> None:
+    """Tag each of NAMES with TAG_NAME.
+
+    \b
+    Examples:
+      pyssh hosts tag add prod web1 web2
+      pyssh hosts tag add db mpars-bi
+    """
+    for name in names:
+        store.add_tags(name, [tag_name])
+    console.success(f"Tagged {console.plural(len(names), 'host')} with {tag_name!r}.")
+
+
+@hosts_tag.command("rm")
+@click.argument("tag_name")
+@click.argument("names", nargs=-1, required=True)
+def hosts_tag_rm(tag_name: str, names: tuple[str, ...]) -> None:
+    """Remove TAG_NAME from each of NAMES.
+
+    \b
+    Examples:
+      pyssh hosts tag rm prod web2
+    """
+    for name in names:
+        store.remove_tags(name, [tag_name])
+    console.success(f"Removed {tag_name!r} from {console.plural(len(names), 'host')}.")
 
 
 if __name__ == "__main__":  # pragma: no cover

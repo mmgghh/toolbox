@@ -70,6 +70,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyssh` can remember a server's password and group servers by tag.**
+  `pyssh secret set prod-web` puts the password in the OS keyring;
+  `pyssh hosts tag add prod web1 web2` groups hosts so one command can address
+  them together. Both are keyed by `~/.ssh/config` host name — pyssh does not
+  keep a second copy of your server list.
+
 - **`pyssh` now accepts an `~/.ssh/config` host name anywhere a server is
   expected.** `-s prod` connects exactly as `ssh prod` would, including
   `ProxyJump`, `IdentityFile` and a non-default `Port`, because pyssh asks
