@@ -48,33 +48,37 @@ def is_known(host: str, port: int = 22) -> bool:
     return completed.returncode == 0
 
 
-def unknown_host_message(name: str, host: str) -> str:
+def unknown_host_message(name: str, host: str, port: int = 22) -> str:
     """What to tell someone whose host is not in known_hosts.
 
     It names plain ``ssh`` deliberately: ``pyssh connect`` would supply the
     stored password and hit this same refusal, and only an interactive ssh can
     show a fingerprint to check.
     """
+    scan = f"ssh-keyscan -H {host}" if port in (None, 22) else f"ssh-keyscan -p {port} -H {host}"
     return (
         f"The host key for {name} is not in ~/.ssh/known_hosts, so pyssh will not\n"
         "send your password to it. Verify the fingerprint out of band, then connect\n"
         "once with plain ssh and accept it:\n"
         f"    ssh {name}\n"
-        "or trust it without a prompt:\n"
-        f"    ssh-keyscan -H {host} >> ~/.ssh/known_hosts"
+        "or, once you have verified the fingerprint, record it without a prompt:\n"
+        f"    {scan} >> ~/.ssh/known_hosts"
     )
 
 
-def changed_key_message(name: str, host: str, address: Optional[str] = None) -> str:
+def changed_key_message(
+    name: str, host: str, address: Optional[str] = None, port: int = 22
+) -> str:
     """What to tell someone whose host key no longer matches."""
     lines = [
         f"The host key for {name} has changed. This is what a machine-in-the-middle",
         "attack looks like; it is also what rebuilding a server looks like.",
         "If you rebuilt it, remove the stale key and reconnect:",
-        f"    ssh-keygen -R '{host}'",
+        f"    ssh-keygen -R '{_known_hosts_key(host, port)}'",
     ]
     if address and address != host:
-        lines.append(f"    ssh-keygen -R '{address}'      # the resolved address, keyed separately")
+        address_key = _known_hosts_key(address, port)
+        lines.append(f"    ssh-keygen -R '{address_key}'      # the resolved address, keyed separately")
     return "\n".join(lines)
 
 
@@ -82,13 +86,13 @@ def require_known(name: str, host: str, port: int = 22) -> None:
     """Stop unless the host is already in known_hosts."""
     if is_known(host, port):
         return
-    raise click.ClickException(unknown_host_message(name, host))
+    raise click.ClickException(unknown_host_message(name, host, port))
 
 
 def failure_hint(
-    stderr: str, name: str, host: str, address: Optional[str] = None
+    stderr: str, name: str, host: str, address: Optional[str] = None, port: int = 22
 ) -> Optional[str]:
     """A remediation for an ssh failure, or ``None`` if it is not a key problem."""
     if CHANGED_KEY_MARKER in stderr:
-        return changed_key_message(name, host, address)
+        return changed_key_message(name, host, address, port)
     return None

@@ -65,6 +65,24 @@ def test_the_unknown_host_message_points_at_plain_ssh():
     assert "pyssh connect" not in message
 
 
+def test_the_unknown_host_message_makes_recording_conditional_on_verifying():
+    """'record it without a prompt' must read as conditional, not an alternative."""
+    message = knownhosts.unknown_host_message("prod", "10.0.0.5")
+    assert "once you have verified the fingerprint" in message
+    assert "or trust it without a prompt" not in message
+
+
+def test_unknown_host_message_scans_a_nonstandard_port():
+    message = knownhosts.unknown_host_message("prod", "10.0.0.5", port=2222)
+    assert "ssh-keyscan -p 2222 -H 10.0.0.5" in message
+
+
+def test_unknown_host_message_default_port_has_no_dash_p():
+    message = knownhosts.unknown_host_message("prod", "10.0.0.5", port=22)
+    assert "ssh-keyscan -H 10.0.0.5" in message
+    assert "-p" not in message
+
+
 def test_the_changed_key_message_says_how_to_remove_it():
     message = knownhosts.changed_key_message("prod", "10.0.0.5")
     assert "ssh-keygen -R '10.0.0.5'" in message
@@ -77,11 +95,45 @@ def test_the_changed_key_message_covers_the_address_too():
     assert "ssh-keygen -R '203.0.113.9'" in message
 
 
+def test_changed_key_message_brackets_a_nonstandard_port():
+    message = knownhosts.changed_key_message("prod", "10.0.0.5", port=2222)
+    assert "ssh-keygen -R '[10.0.0.5]:2222'" in message
+
+
+def test_changed_key_message_keeps_the_default_port_bare():
+    message = knownhosts.changed_key_message("prod", "10.0.0.5", port=22)
+    assert "ssh-keygen -R '10.0.0.5'" in message
+    assert "[10.0.0.5]" not in message
+
+
+def test_changed_key_message_brackets_the_address_line_too():
+    message = knownhosts.changed_key_message("prod", "prod.example.com", "203.0.113.9", port=2222)
+    assert "ssh-keygen -R '[prod.example.com]:2222'" in message
+    assert "ssh-keygen -R '[203.0.113.9]:2222'" in message
+
+
+def test_changed_key_message_has_no_second_line_when_address_is_none():
+    message = knownhosts.changed_key_message("prod", "10.0.0.5")
+    assert message.count("ssh-keygen -R") == 1
+
+
+def test_changed_key_message_has_no_second_line_when_address_equals_host():
+    message = knownhosts.changed_key_message("prod", "10.0.0.5", "10.0.0.5")
+    assert message.count("ssh-keygen -R") == 1
+
+
 def test_require_known_raises_for_an_unknown_host(monkeypatch):
     _fake_keygen(monkeypatch, 1)
     with pytest.raises(click.ClickException) as excinfo:
         knownhosts.require_known("prod", "10.0.0.5")
     assert "known_hosts" in str(excinfo.value)
+
+
+def test_require_known_propagates_the_port_into_the_message(monkeypatch):
+    _fake_keygen(monkeypatch, 1)
+    with pytest.raises(click.ClickException) as excinfo:
+        knownhosts.require_known("prod", "10.0.0.5", port=2222)
+    assert "ssh-keyscan -p 2222 -H 10.0.0.5" in str(excinfo.value)
 
 
 def test_require_known_passes_for_a_known_host(monkeypatch):
@@ -101,3 +153,10 @@ def test_failure_hint_recognises_a_changed_key():
 
 def test_failure_hint_is_silent_about_unrelated_errors():
     assert knownhosts.failure_hint("Permission denied (publickey).", "prod", "10.0.0.5") is None
+
+
+def test_failure_hint_propagates_the_port():
+    stderr = "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!"
+    hint = knownhosts.failure_hint(stderr, "prod", "10.0.0.5", port=2222)
+    assert hint is not None
+    assert "ssh-keygen -R '[10.0.0.5]:2222'" in hint
