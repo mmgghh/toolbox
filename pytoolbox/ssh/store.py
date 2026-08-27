@@ -12,10 +12,11 @@ import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 import click
 
-from pytoolbox.core import paths
+from pytoolbox.core import console, paths
 
 #: Bumped only for a format change that needs migrating.
 STORE_VERSION = 1
@@ -147,3 +148,112 @@ def remove_tags(name: str, tags: Sequence[str]) -> HostEntry:
 def names_with_tag(tag: str) -> list[str]:
     """Every host carrying ``tag``, by name."""
     return [item.name for item in entries() if tag in item.tags]
+
+
+NO_KEYRING_MESSAGE = """\
+No usable keyring on this system, so pyssh will not store a password for {name}.
+Use key authentication instead:
+    pyssh keygen {name} && pyssh copy-id {name}
+On Termux, Android's hardware keystore can hold an SSH key via tergent:
+    https://github.com/aeolwyr/tergent
+To store it in plain text anyway (mode 0600, readable by anyone who reads your
+home directory), re-run with --insecure-plaintext."""
+
+
+def _keyring():
+    """The keyring module, or ``None`` when the extra is not installed.
+
+    Isolated in one function so tests can substitute a backend, and so the
+    import cost is paid only by the commands that need a secret.
+    """
+    try:
+        import keyring
+    except ImportError:
+        return None
+    return keyring
+
+
+def set_secret(name: str, password: str, allow_plaintext: bool = False) -> str:
+    """Store a password at the strongest tier available, and name that tier.
+
+    Whether a backend works is decided by trying it: a keyring can be
+    importable and still unusable, which is the normal case on Termux and on
+    headless servers.
+    """
+    name = validate_name(name)
+    backend = _keyring()
+    if backend is not None:
+        try:
+            backend.set_password(KEYRING_SERVICE, name, password)
+        except Exception:  # noqa: BLE001 - any failure means "no usable keyring"
+            pass
+        else:
+            _set_secret_record(name, {"tier": TIER_KEYRING})
+            return TIER_KEYRING
+
+    if not allow_plaintext:
+        raise click.ClickException(NO_KEYRING_MESSAGE.format(name=name))
+    _set_secret_record(name, {"tier": TIER_PLAINTEXT, "value": password})
+    return TIER_PLAINTEXT
+
+
+def _set_secret_record(name: str, secret: dict) -> None:
+    data = load()
+    data["hosts"].setdefault(name, {})["secret"] = secret
+    save(data)
+
+
+def get_secret(name: str) -> Optional[str]:
+    """The stored password for ``name``, or ``None`` if there is none."""
+    name = validate_name(name)
+    record = load()["hosts"].get(name) or {}
+    secret = record.get("secret") or {}
+    tier = secret.get("tier", TIER_NONE)
+
+    if tier == TIER_PLAINTEXT:
+        console.warn(
+            f"{name}: using a password stored in plain text at {store_path()}. "
+            "Move to key authentication when you can: pyssh copy-id " + name
+        )
+        return secret.get("value")
+
+    if tier == TIER_KEYRING:
+        backend = _keyring()
+        if backend is None:
+            raise click.ClickException(
+                f"{name}'s password is in the OS keyring, but the keyring package is "
+                "not installed here. Install it with `pip install 'pytoolbox[secrets]'`."
+            )
+        try:
+            return backend.get_password(KEYRING_SERVICE, name)
+        except Exception as exc:  # noqa: BLE001 - surfaced with what to do next
+            raise click.ClickException(
+                f"Could not read {name}'s password from the keyring: {exc}. "
+                f"Re-add it with `pyssh secret set {name}`."
+            ) from exc
+
+    return None
+
+
+def remove_secret(name: str) -> bool:
+    """Forget a host's password. Returns whether there was one."""
+    name = validate_name(name)
+    data = load()
+    record = data["hosts"].get(name) or {}
+    had_secret = bool(record.get("secret"))
+
+    backend = _keyring()
+    if backend is not None:
+        try:
+            backend.delete_password(KEYRING_SERVICE, name)
+        except Exception:  # noqa: BLE001 - nothing stored there is fine
+            pass
+
+    if not had_secret:
+        return False
+
+    record.pop("secret", None)
+    if not record.get("tags"):
+        del data["hosts"][name]
+    save(data)
+    return True
