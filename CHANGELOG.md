@@ -70,6 +70,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyssh` now accepts an `~/.ssh/config` host name anywhere a server is
+  expected.** `-s prod` connects exactly as `ssh prod` would, including
+  `ProxyJump`, `IdentityFile` and a non-default `Port`, because pyssh asks
+  `ssh -G` rather than keeping a second copy of your server list.
+
 - **`pyfm open` finds the file you meant and hands it to the desktop.**
   `pyfm open ~/downloads '*.pdf'` lists every match with its size and
   modification date, numbered and counted, then asks which to open: a number,

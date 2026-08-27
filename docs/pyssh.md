@@ -24,6 +24,17 @@ user@host:port
 user:password@host:port
 ```
 
+Or use the name of a host in your `~/.ssh/config`:
+
+```shell
+pyssh tunnel -s mpars-bi -p 9998
+pyssh rsync-dir -s ./site -d mpars-bi:/srv/site
+```
+
+A value containing `@` is parsed as a spec; anything else is handed to ssh as a
+host name, so `~/.ssh/config` decides the hostname, user, port, identity file
+and `ProxyJump`. pyssh does not parse your ssh config — it asks `ssh -G`.
+
 Or keep it in a file and pass `--server-conf`; the first non-empty,
 non-comment line is used:
 

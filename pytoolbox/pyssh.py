@@ -507,6 +507,29 @@ def tunnel(
             session.cleanup()
 
 
+def _second_hop_address(target: hosts.Target) -> hosts.Server:
+    """Where hop 1 should forward to, and who hop 2 logs in as.
+
+    An inline spec already says. A config name does not, so ssh is asked --
+    the first hop needs a real address and port to build its ``-L``.
+    """
+    if not target.is_config_name:
+        user, _, host = target.spec.partition("@")
+        return Server(user=user, host=host, port=target.port or 22, password=target.password)
+    resolved = hosts.resolve_config(target.spec)
+    if resolved is None or not resolved.user:
+        raise click.ClickException(
+            f"Could not work out where {target.spec!r} points. Add it to ~/.ssh/config "
+            "with a HostName and a User, or pass --server2 as 'user@host:port'."
+        )
+    return Server(
+        user=resolved.user,
+        host=resolved.hostname,
+        port=resolved.port,
+        password=target.password,
+    )
+
+
 @ssh_management.command("double-tunnel")
 @click.option("--server1", help="First hop, as 'user[:password]@host[:port]'.")
 @click.option("--server2", help="Second hop, as 'user[:password]@host[:port]'.")
@@ -563,8 +586,9 @@ def double_tunnel(
                           --server2 me@target.example.com:22 --lp1 9998 --lp2 9999
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
-    first = resolve_server(server1, server1_conf, "--server1")
-    second = resolve_server(server2, server2_conf, "--server2")
+    first = hosts.resolve_connection(server1, server1_conf, "--server1")
+    second = hosts.resolve_connection(server2, server2_conf, "--server2")
+    second_address = _second_hop_address(second)
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
     for port in (lp1, lp2):
@@ -577,7 +601,7 @@ def double_tunnel(
         pass1 = session.track_secret(_password_file(first.password, "d1"))
         hop1 = build_ssh_command(
             first,
-            ["-L", f"127.0.0.1:{lp1}:{second.host}:{second.port}"],
+            ["-L", f"127.0.0.1:{lp1}:{second_address.host}:{second_address.port}"],
             identity=identity,
             password_file=pass1,
             extra_opts=ssh_options,
@@ -586,7 +610,12 @@ def double_tunnel(
         _wait_for_listener(lp1, "127.0.0.1", process1, STARTUP_TIMEOUT_SECONDS)
 
         # Second hop dials the forwarded local port, so it always talks to localhost.
-        via_local = Server(user=second.user, host="127.0.0.1", port=lp1, password=second.password)
+        via_local = Server(
+            user=second_address.user,
+            host="127.0.0.1",
+            port=lp1,
+            password=second_address.password,
+        )
         pass2 = session.track_secret(_password_file(via_local.password, "d2"))
         hop2 = build_ssh_command(
             via_local,
@@ -668,6 +697,19 @@ def split_rsync_target(spec: str) -> tuple[str, Optional[str]]:
     user, host, path = match.group("user"), match.group("host"), match.group("path")
     return f"{user}@{host}:{path}", match.group("password") or None
 
+
+#: ``[user[:password]@]host:path`` -- the host part of a remote rsync target.
+RSYNC_HOST_RE = re.compile(r"^(?:(?P<user>[^@:/]+)(?::[^@]*)?@)?(?P<host>[^@:/]+):(?!/{2})")
+
+
+def rsync_host_of(spec: str) -> Optional[str]:
+    """The host an rsync target refers to, or ``None`` for a local path.
+
+    Used to look up a stored secret. The target string itself is never
+    rewritten: ssh resolves config host names for rsync already.
+    """
+    match = RSYNC_HOST_RE.match(spec)
+    return match.group("host") if match else None
 
 
 def _rsync_ssh_command(

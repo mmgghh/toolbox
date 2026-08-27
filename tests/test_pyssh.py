@@ -468,3 +468,80 @@ def test_tunnel_accepts_a_config_name(runner, monkeypatch):
     assert result.exit_code == 0, result.output
     assert captured["cmd"][-1] == "prod"
     assert "-p" not in captured["cmd"]
+
+
+# ── config names in the other commands ──────────────────────────────
+
+@pytest.mark.parametrize(
+    ("spec", "host"),
+    [
+        ("./my dir", None),
+        ("/srv/site", None),
+        ("me@host:/srv", "host"),
+        ("host:/srv", "host"),
+        ("mpars-bi:/srv/site", "mpars-bi"),
+        ("me:secret@host:/srv", "host"),
+    ],
+)
+def test_rsync_host_of(spec, host):
+    assert pyssh.rsync_host_of(spec) == host
+
+
+def test_rsync_dir_passes_a_config_name_through_verbatim(runner, fake_rsync):
+    """ssh resolves the name for rsync; pyssh must not rewrite the target."""
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "mpars-bi:/srv/site"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_rsync["cmd"][-1] == "mpars-bi:/srv/site"
+
+
+def test_double_tunnel_resolves_a_config_name_for_the_first_hop(runner, monkeypatch):
+    captured = []
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.append(cmd), FakeProcess())[1]
+    )
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="deploy", port=2222
+        ),
+    )
+
+    result = runner.invoke(
+        ssh_management,
+        ["double-tunnel", "--server1", "me@bridge", "--server2", "target", "-b"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "-L" in captured[0]
+    assert captured[0][captured[0].index("-L") + 1] == "127.0.0.1:9998:10.0.0.5:2222"
+    assert captured[1][-1] == "deploy@127.0.0.1"
+
+
+def test_double_tunnel_reports_an_unresolvable_name(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    result = runner.invoke(
+        ssh_management, ["double-tunnel", "--server1", "me@bridge", "--server2", "target"]
+    )
+    assert result.exit_code != 0
+    assert "target" in result.stderr
