@@ -188,3 +188,77 @@ def test_removing_a_secret_that_is_not_there(working_keyring):
 def test_the_tier_is_visible_without_reading_the_secret(working_keyring):
     store.set_secret("prod-web", "hunter2")
     assert store.entry("prod-web").tier == store.TIER_KEYRING
+
+
+class LockedKeyring:
+    """A backend that still holds a password but refuses to delete it --
+    the shape of a keyring that is locked or briefly unreachable, as
+    opposed to one with nothing stored under this name."""
+
+    def __init__(self, saved):
+        self.saved = saved
+
+    def set_password(self, service, name, password):
+        self.saved[(service, name)] = password
+
+    def get_password(self, service, name):
+        return self.saved.get((service, name))
+
+    def delete_password(self, service, name):
+        raise RuntimeError("keyring is locked")
+
+
+class UnwritableKeyring:
+    """A backend that can no longer store new passwords but can still read
+    and delete whatever it already holds -- the shape of a keyring that
+    went unusable after already holding an entry."""
+
+    def __init__(self, saved):
+        self.saved = saved
+
+    def set_password(self, service, name, password):
+        raise RuntimeError("No recommended backend was available")
+
+    def get_password(self, service, name):
+        return self.saved.get((service, name))
+
+    def delete_password(self, service, name):
+        if (service, name) not in self.saved:
+            raise RuntimeError("no such password")
+        del self.saved[(service, name)]
+
+
+def test_removing_a_secret_the_backend_refuses_to_delete_is_reported(working_keyring, monkeypatch):
+    store.set_secret("prod-web", "hunter2")
+    monkeypatch.setattr(store, "_keyring", lambda: LockedKeyring(working_keyring.saved))
+    with pytest.raises(click.ClickException):
+        store.remove_secret("prod-web")
+
+
+def test_a_failed_removal_keeps_the_store_record(working_keyring, monkeypatch):
+    store.set_secret("prod-web", "hunter2")
+    monkeypatch.setattr(store, "_keyring", lambda: LockedKeyring(working_keyring.saved))
+    with pytest.raises(click.ClickException):
+        store.remove_secret("prod-web")
+    assert store.entry("prod-web").tier == store.TIER_KEYRING
+
+
+def test_removing_a_plaintext_secret_never_touches_the_keyring(no_keyring, monkeypatch):
+    store.set_secret("prod-web", "hunter2", allow_plaintext=True)
+
+    def _explode():
+        raise AssertionError("_keyring() must not be called for a plaintext-tier record")
+
+    monkeypatch.setattr(store, "_keyring", _explode)
+    assert store.remove_secret("prod-web") is True
+
+
+def test_rotating_from_keyring_to_plaintext_deletes_the_old_keyring_entry(working_keyring, monkeypatch):
+    store.set_secret("prod-web", "OLD")
+    assert (store.KEYRING_SERVICE, "prod-web") in working_keyring.saved
+
+    monkeypatch.setattr(store, "_keyring", lambda: UnwritableKeyring(working_keyring.saved))
+    assert store.set_secret("prod-web", "NEW", allow_plaintext=True) == store.TIER_PLAINTEXT
+
+    assert (store.KEYRING_SERVICE, "prod-web") not in working_keyring.saved
+    assert store.get_secret("prod-web") == "NEW"

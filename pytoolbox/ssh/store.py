@@ -199,7 +199,20 @@ def set_secret(name: str, password: str, allow_plaintext: bool = False) -> str:
 
 def _set_secret_record(name: str, secret: dict) -> None:
     data = load()
-    data["hosts"].setdefault(name, {})["secret"] = secret
+    record = data["hosts"].setdefault(name, {})
+    old_secret = record.get("secret") or {}
+    if old_secret.get("tier") == TIER_KEYRING and secret.get("tier") != TIER_KEYRING:
+        # The password being replaced lived in the keyring under this same
+        # name; best-effort clean it up so it does not outlive the rotation
+        # as an untracked orphan. A failure here must not block the new
+        # write -- this is cleanup, not the operation the caller asked for.
+        backend = _keyring()
+        if backend is not None:
+            try:
+                backend.delete_password(KEYRING_SERVICE, name)
+            except Exception:  # noqa: BLE001 - best-effort cleanup only
+                pass
+    record["secret"] = secret
     save(data)
 
 
@@ -240,17 +253,30 @@ def remove_secret(name: str) -> bool:
     name = validate_name(name)
     data = load()
     record = data["hosts"].get(name) or {}
-    had_secret = bool(record.get("secret"))
+    secret = record.get("secret") or {}
+    if not secret:
+        return False
 
-    backend = _keyring()
-    if backend is not None:
+    if secret.get("tier", TIER_NONE) == TIER_KEYRING:
+        backend = _keyring()
+        if backend is None:
+            raise click.ClickException(
+                f"{name}'s password is in the OS keyring, but the keyring package is "
+                "not installed here. Install it with `pip install 'pytoolbox[secrets]'`."
+            )
         try:
             backend.delete_password(KEYRING_SERVICE, name)
-        except Exception:  # noqa: BLE001 - nothing stored there is fine
-            pass
-
-    if not had_secret:
-        return False
+        except Exception as exc:  # noqa: BLE001 - confirm before trusting a failed delete
+            try:
+                still_there = backend.get_password(KEYRING_SERVICE, name) is not None
+            except Exception:  # noqa: BLE001 - cannot tell, so assume the worst
+                still_there = True
+            if still_there:
+                raise click.ClickException(
+                    f"Could not remove {name}'s password from the keyring: {exc}. Unlock "
+                    "the keyring and try again -- the stored record has been kept, so "
+                    "nothing is lost."
+                ) from exc
 
     record.pop("secret", None)
     if not record.get("tags"):
