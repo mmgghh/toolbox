@@ -934,19 +934,49 @@ def test_status_drops_a_session_whose_master_is_gone(runner, monkeypatch, tmp_pa
     assert json.loads(result.stdout) == []
 
 
+def test_status_table_shows_forwards_when_there_is_no_socks_port(runner, monkeypatch, tmp_path):
+    """A connect/forward/reverse session has no socks_port; the socks column
+    must fall back to the forwards string instead of a broken socks5://host:."""
+    monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: True)
+    pyssh.save_state(
+        "connect-5432",
+        {
+            "kind": "connect",
+            "pids": [],
+            "control": str(tmp_path / "ctl"),
+            "destination": "prod",
+            "forwards": ["-L", "127.0.0.1:5432:db:5432"],
+        },
+    )
+    result = runner.invoke(ssh_management, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "-L 127.0.0.1:5432:db:5432" in result.stdout
+    assert "socks5://" not in result.stdout
+
+
 def test_stop_asks_the_master_to_exit(runner, monkeypatch, tmp_path):
     asked = {}
+    killed = {}
     monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: True)
     monkeypatch.setattr(
         pyssh.session, "stop_master", lambda sock, dest: asked.update(dest=dest) or True
     )
+    monkeypatch.setattr(
+        pyssh, "terminate", lambda pids, timeout=5.0: killed.update(pids=list(pids)) or 0
+    )
     pyssh.save_state(
         "connect-5432",
-        {"kind": "connect", "pids": [], "control": str(tmp_path / "ctl"), "destination": "prod"},
+        {
+            "kind": "connect",
+            "pids": [999999999],
+            "control": str(tmp_path / "ctl"),
+            "destination": "prod",
+        },
     )
     result = runner.invoke(ssh_management, ["stop", "connect-5432"])
     assert result.exit_code == 0, result.output
     assert asked["dest"] == "prod"
+    assert killed == {}
 
 
 def test_stop_still_kills_a_pid_only_session(runner, monkeypatch):

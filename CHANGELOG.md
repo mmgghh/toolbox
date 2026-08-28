@@ -279,10 +279,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Backgrounded tunnels are now tracked by a control socket rather than a
-  PID.** `pyssh stop` closes them with `ssh -O exit`, and `pyssh status` asks
-  the connection itself whether it is alive, so a reused PID can no longer be
-  mistaken for a running tunnel.
+- **`pyssh connect`, `forward` and `reverse` sessions are tracked by a control
+  socket rather than a PID.** `pyssh stop` closes them with `ssh -O exit`, and
+  `pyssh status` asks the connection itself whether it is alive, so a reused
+  PID can no longer be mistaken for a running session. `tunnel` and
+  `double-tunnel` are unchanged and remain PID-tracked.
 
 - **`pyssh r` is no longer an abbreviation for `rsync-dir`.** Commands resolve
   by unambiguous prefix, and the new `reverse` command makes a bare `r`
