@@ -648,3 +648,61 @@ def test_existing_abbreviations_still_resolve(runner, prefix, resolves_to):
     result = runner.invoke(ssh_management, [prefix, "--help"], prog_name="pyssh")
     assert result.exit_code == 0, result.output
     assert f"Usage: pyssh {resolves_to}" in result.stdout
+
+
+# ── using a stored secret ────────────────────────────────────────────
+
+def test_a_stored_password_is_used_for_a_config_name(runner, monkeypatch, working_keyring):
+    captured = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.update(cmd=cmd), FakeProcess())[1]
+    )
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+
+    result = runner.invoke(ssh_management, ["tunnel", "-s", "prod-web", "-p", "9998", "-b"])
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"][0] == "sshpass"
+    assert "hunter2" not in " ".join(captured["cmd"])
+
+
+def test_an_inline_password_wins_over_a_stored_one(runner, monkeypatch, working_keyring):
+    monkeypatch.setattr(pyssh.store, "get_secret", lambda name: "stored")
+    target = pyssh.apply_stored_secret(pyssh.hosts.resolve_target("me:inline@host"))
+    assert target.password == "inline"
+
+
+def test_a_spec_without_a_password_does_not_consult_the_store(monkeypatch):
+    """An inline user@host is not a stored name; looking it up would be wrong."""
+    monkeypatch.setattr(
+        pyssh.store, "get_secret", lambda name: pytest.fail("store consulted for a spec")
+    )
+    assert pyssh.apply_stored_secret(pyssh.hosts.resolve_target("me@host")).password is None
+
+
+def test_rsync_dir_uses_a_stored_password_for_a_config_name(runner, fake_rsync, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "prod-web:/srv/site"]
+    )
+    assert result.exit_code == 0, result.output
+    assert fake_rsync["cmd"][0] == "sshpass"
+    assert fake_rsync["cmd"][-1] == "prod-web:/srv/site"
+    assert "hunter2" not in " ".join(fake_rsync["cmd"])

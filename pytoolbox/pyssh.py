@@ -188,6 +188,17 @@ def _password_file(password: Optional[str], slot: str) -> Optional[Path]:
     return paths.write_private_file(path, password)
 
 
+def apply_stored_secret(target: hosts.Target) -> hosts.Target:
+    """Attach a stored password to a target that has none of its own.
+
+    Only config names are looked up: an inline ``user@host`` spec names a
+    connection directly, and is not a key in the store.
+    """
+    if target.password or not target.is_config_name:
+        return target
+    return target.with_password(store.get_secret(target.spec))
+
+
 def build_ssh_command(
     server: Union[Server, hosts.Target],
     forward_args: Sequence[str],
@@ -453,7 +464,7 @@ def tunnel(
       pyssh tunnel --server-conf ~/vps.conf --reconnect --public
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
-    target = hosts.resolve_connection(server, server_conf, "-s/--server")
+    target = apply_stored_secret(hosts.resolve_connection(server, server_conf, "-s/--server"))
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
     if not port_is_free(local_port, bind_host):
@@ -587,8 +598,8 @@ def double_tunnel(
                           --server2 me@target.example.com:22 --lp1 9998 --lp2 9999
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
-    first = hosts.resolve_connection(server1, server1_conf, "--server1")
-    second = hosts.resolve_connection(server2, server2_conf, "--server2")
+    first = apply_stored_secret(hosts.resolve_connection(server1, server1_conf, "--server1"))
+    second = apply_stored_secret(hosts.resolve_connection(server2, server2_conf, "--server2"))
     second_address = _second_hop_address(second)
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
@@ -942,6 +953,13 @@ def rsync_dir(
             "Only one side can carry a password; rsync opens a single SSH connection."
         )
     password = source_password or destination_password
+    if password is None:
+        for spec in (source, destination):
+            host = rsync_host_of(spec)
+            if host and "@" not in spec.split(":", 1)[0]:
+                password = store.get_secret(host)
+                if password:
+                    break
 
     if exclude_from:
         exclude = (*exclude, *rsync.read_pattern_file(Path(exclude_from)))
