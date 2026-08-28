@@ -84,3 +84,50 @@ def test_background_args_without_a_socket():
 def test_background_args_with_a_socket(tmp_path):
     socket = tmp_path / "ctl"
     assert command.background_args(socket) == ["-f", "-M", "-S", str(socket)]
+
+
+@pytest.mark.parametrize("port", ["¹⁵", "５４３２"])
+def test_a_non_ascii_local_port_is_rejected(port):
+    """isdigit() is true for non-ASCII digits like superscripts and fullwidth
+    numerals; _port must require ASCII digits so a bad spec always becomes a
+    ClickException instead of crashing or producing garbage argv."""
+    with pytest.raises(click.ClickException):
+        command.forward_args(local=[f"{port}:db:5432"])
+
+
+@pytest.mark.parametrize("port", ["¹⁵", "５４３２"])
+def test_a_non_ascii_remote_port_is_rejected(port):
+    with pytest.raises(click.ClickException):
+        command.forward_args(remote=[port])
+
+
+@pytest.mark.parametrize("port", ["¹⁵", "５４３２"])
+def test_a_non_ascii_dynamic_port_is_rejected(port):
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=[port])
+
+
+def test_an_empty_local_bind_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(local=[":5432:host:5432"])
+
+
+def test_an_empty_dynamic_bind_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=[":1080"])
+
+
+def test_an_empty_remote_bind_is_still_accepted():
+    """Unlike -L/-D, a -R bind address is sshd's business, not ours (see
+    _remote's docstring), so an empty bind passes through untouched even
+    though the analogous -L/-D shape is now rejected."""
+    assert command.forward_args(remote=[":8080:localhost:80"]) == [
+        "-R",
+        ":8080:localhost:80",
+    ]
+
+
+def test_a_bare_remote_port_is_still_accepted():
+    """Regression guard: tightening _port's ASCII check must not affect -R's
+    ordinary bare-port shape."""
+    assert command.forward_args(remote=["1080"]) == ["-R", "1080"]
