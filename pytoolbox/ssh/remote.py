@@ -40,14 +40,14 @@ def wrap_command(
     prefix: list[str] = []
     for pair in env:
         name, sep, value = pair.partition("=")
-        if not sep or not ENV_NAME_RE.match(name):
+        if not sep or not ENV_NAME_RE.fullmatch(name):
             raise click.ClickException(
                 f"{pair!r} is not a NAME=VALUE pair. Example: --env DEPLOY_ENV=staging."
             )
         prefix.append(f"export {name}={shlex.quote(value)};")
 
     if workdir:
-        prefix.append(f"cd {shlex.quote(workdir)} &&")
+        prefix.append(f"cd -- {shlex.quote(workdir)} &&")
     if sudo:
         body = f"sudo -n {body}"
     return " ".join([*prefix, body])
@@ -72,11 +72,17 @@ def run(cmd: Sequence[str], name: str, capture: bool) -> ExecResult:
     """Run one ssh command line.
 
     Without ``capture`` the child inherits this process's streams, so a single
-    host can be piped and redirected exactly like plain ssh.
+    host can be piped and redirected exactly like plain ssh. A local failure to
+    even spawn the child (missing binary, EMFILE under a high --parallel) is
+    turned into a normal ExecResult rather than left to propagate, so one bad
+    host in run_many cannot discard every other host's result.
     """
-    if not capture:
-        return ExecResult(name=name, returncode=subprocess.call(list(cmd)))
-    completed = subprocess.run(list(cmd), capture_output=True, text=True)
+    try:
+        if not capture:
+            return ExecResult(name=name, returncode=subprocess.call(list(cmd)))
+        completed = subprocess.run(list(cmd), capture_output=True, text=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return ExecResult(name=name, returncode=255, stderr=str(exc))
     return ExecResult(
         name=name,
         returncode=completed.returncode,

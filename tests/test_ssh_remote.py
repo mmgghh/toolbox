@@ -15,11 +15,18 @@ def test_a_plain_command_is_untouched():
 def test_cd_runs_the_command_in_a_directory():
     # shlex.quote adds quotes only when a character needs them, so a plain
     # path passes through bare. The guarantee is shell-safety, not quote marks.
-    assert remote.wrap_command("git pull", workdir="/srv/app") == "cd /srv/app && git pull"
+    # `--` stops the path being read as a `cd` option (see the dash test below).
+    assert remote.wrap_command("git pull", workdir="/srv/app") == "cd -- /srv/app && git pull"
 
 
 def test_a_directory_with_spaces_is_quoted():
-    assert remote.wrap_command("ls", workdir="/srv/my app") == "cd '/srv/my app' && ls"
+    assert remote.wrap_command("ls", workdir="/srv/my app") == "cd -- '/srv/my app' && ls"
+
+
+def test_a_workdir_of_dash_is_not_read_as_a_cd_option():
+    # shlex.quote treats "-" as safe, so without `--` this would run
+    # `cd - && pwd`, which jumps to $OLDPWD and prints it to stdout.
+    assert remote.wrap_command("pwd", workdir="-") == "cd -- - && pwd"
 
 
 def test_env_is_exported_so_a_pipeline_sees_it():
@@ -41,7 +48,7 @@ def test_sudo_is_non_interactive():
 
 def test_cd_and_env_and_sudo_compose():
     wrapped = remote.wrap_command("make", workdir="/srv", env=["CI=1"], sudo=True)
-    assert wrapped == "export CI=1; cd /srv && sudo -n make"
+    assert wrapped == "export CI=1; cd -- /srv && sudo -n make"
 
 
 @pytest.mark.parametrize("pair", ["FOO", "=bar", "1FOO=bar", "FO O=bar"])
@@ -53,6 +60,14 @@ def test_a_malformed_env_pair_is_rejected(pair):
 def test_an_empty_command_is_rejected():
     with pytest.raises(click.ClickException):
         remote.wrap_command("   ")
+
+
+def test_an_env_name_with_a_trailing_newline_is_rejected():
+    # re's `$` matches just before a trailing newline, so `.match()` alone
+    # would let "FOO\n" through as a valid name and corrupt the wrapped
+    # string. fullmatch() is what actually anchors both ends.
+    with pytest.raises(click.ClickException):
+        remote.wrap_command("id", env=["FOO\n=bar"])
 
 
 def test_run_captures_output(monkeypatch):
@@ -77,6 +92,51 @@ def test_run_without_capture_passes_streams_through(monkeypatch):
     result = remote.run(["ssh", "prod", "cat f"], "prod", capture=False)
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_run_reports_a_spawn_failure_as_a_failed_result(monkeypatch):
+    """A missing binary or EMFILE must not raise out of run() as a traceback."""
+
+    def boom(cmd, **kw):
+        raise OSError("no such file or directory: ssh")
+
+    monkeypatch.setattr(remote.subprocess, "run", boom)
+    result = remote.run(["ssh", "prod", "true"], "prod", capture=True)
+    assert result.returncode == 255
+    assert "no such file or directory" in result.stderr
+
+
+def _fake_run_where_one_host_raises(cmd, **kw):
+    name = cmd[1]
+    if name == "b":
+        raise OSError("boom")
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = f"{name}\n"
+        stderr = ""
+
+    return FakeCompleted()
+
+
+def test_run_many_keeps_every_result_when_one_job_raises_sequentially(monkeypatch):
+    monkeypatch.setattr(remote.subprocess, "run", _fake_run_where_one_host_raises)
+    jobs = [(name, ["ssh", name, "x"]) for name in ["a", "b", "c"]]
+    results = remote.run_many(jobs, parallel=1)
+
+    assert [r.name for r in results] == ["a", "b", "c"]
+    assert [r.returncode for r in results] == [0, 255, 0]
+    assert "boom" in results[1].stderr
+
+
+def test_run_many_keeps_every_result_when_one_job_raises_in_parallel(monkeypatch):
+    monkeypatch.setattr(remote.subprocess, "run", _fake_run_where_one_host_raises)
+    jobs = [(name, ["ssh", name, "x"]) for name in ["a", "b", "c"]]
+    results = remote.run_many(jobs, parallel=3)
+
+    assert [r.name for r in results] == ["a", "b", "c"]
+    assert [r.returncode for r in results] == [0, 255, 0]
+    assert "boom" in results[1].stderr
 
 
 def test_run_many_returns_one_result_per_host(monkeypatch):
