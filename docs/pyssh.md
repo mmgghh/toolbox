@@ -5,6 +5,9 @@ Also available as `toolbox ssh`.
 ```
 tunnel          SOCKS5 proxy through one remote server
 double-tunnel   SOCKS5 proxy to server 2, reached through server 1
+connect         Open a connection, with any combination of forwards
+forward         Bring a remote service to a local port
+reverse         Expose a local service on the remote server
 rsync-dir       Copy a directory over SSH with rsync
 status          List tunnels started by pyssh
 stop            Stop a background tunnel
@@ -129,6 +132,29 @@ pyssh double-tunnel \
 
 `--lp1` is the local port forwarded to server 2's SSH port; `--lp2` is where
 the SOCKS proxy listens. It takes the same options as `tunnel`.
+
+## `connect`, `forward` and `reverse`
+
+`connect` is the general command; `forward` and `reverse` are presets over it.
+
+```shell
+pyssh connect prod                                   # interactive shell
+pyssh connect prod -L 5432:db.internal:5432 -b       # background local forward
+pyssh connect prod -R 8080:localhost:3000 -D 1080 -b # several at once
+pyssh forward prod -L 6379:cache:6379
+pyssh reverse prod -R 1080                           # SOCKS proxy for the server
+```
+
+**Backgrounding.** `-b` uses ssh's own `-f`, so the command returns only once
+authentication has succeeded — and, for a `-R` forward, only once the server
+has actually bound the port. A failure is reported instead of leaving a dead
+tunnel behind. The session is tracked by a control socket, so `pyssh stop`
+closes it cleanly with `ssh -O exit` rather than signalling a PID.
+
+**`--public` on a reverse forward** asks the *server* to bind `0.0.0.0`, which
+sshd refuses unless its `GatewayPorts` is `yes` or `clientspecified`. The
+default is `no`, so pyssh warns rather than reporting a public listener that
+is not reachable.
 
 ## `status` and `stop`
 

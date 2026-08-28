@@ -1149,11 +1149,17 @@ def status(as_json: bool) -> None:
         return
     rows = []
     for state in states:
+        forwards = " ".join(state.get("forwards", []))
+        socks = (
+            f"socks5://{state.get('bind', '127.0.0.1')}:{state['socks_port']}"
+            if state.get("socks_port")
+            else forwards
+        )
         rows.append(
             {
                 "name": Path(state["_file"]).stem,
                 "kind": state.get("kind", ""),
-                "socks": f"socks5://{state.get('bind', '127.0.0.1')}:{state.get('socks_port', '')}",
+                "socks": socks,
                 "server": state.get("server", ""),
                 "pids": ",".join(str(pid) for pid in state.get("pids", [])),
                 "uptime": _uptime(state.get("started_at")),
@@ -1187,7 +1193,10 @@ def stop(name: Optional[str], stop_all: bool) -> None:
         raise click.ClickException(f"No running tunnel named {name!r}.")
 
     for state in targets:
-        terminate(state.get("pids", []))
+        control = state.get("control")
+        destination = state.get("destination")
+        if not (control and destination and session.stop_master(Path(control), destination)):
+            terminate(state.get("pids", []))
         Path(state["_file"]).unlink(missing_ok=True)
         console.result(f"Stopped {Path(state['_file']).stem}.")
 
@@ -1460,6 +1469,100 @@ def connect(
     finally:
         if password_file is not None:
             password_file.unlink(missing_ok=True)
+
+
+def _preset_session(
+    name: str,
+    local: Sequence[str],
+    remote: Sequence[str],
+    dynamic: Sequence[str],
+    public: bool,
+    background: bool,
+    identity: Optional[str],
+    ssh_options: Sequence[str],
+    verbose: int,
+) -> None:
+    """Shared body for the forward/reverse presets."""
+    ctx = click.get_current_context()
+    ctx.invoke(
+        connect,
+        name=name,
+        local_forwards=local,
+        remote_forwards=remote,
+        dynamic_forwards=dynamic,
+        no_command=True,
+        tty=False,
+        background=background,
+        public=public,
+        identity=identity,
+        ssh_options=ssh_options,
+        verbose=verbose,
+    )
+
+
+@ssh_management.command()
+@click.argument("name")
+@click.option("-L", "--local", "local_forwards", multiple=True, required=True, metavar="SPEC",
+              help="port:host:hostport, or bind:port:host:hostport. Repeatable.")
+@click.option("-b", "--background", is_flag=True, help="Return once the forward is up.")
+@click.option("--public", is_flag=True, help="Bind 0.0.0.0 so the LAN can reach it.")
+@click.option("-i", "--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option("-o", "--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
+@verbose_option
+def forward(
+    name: str,
+    local_forwards: tuple[str, ...],
+    background: bool,
+    public: bool,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    verbose: int,
+) -> None:
+    """Bring a remote service to a local port.
+
+    \b
+    Examples:
+      pyssh forward prod -L 5432:db.internal:5432
+      pyssh forward prod -L 6379:cache:6379 -b
+    """
+    _preset_session(
+        name, local_forwards, (), (), public, background, identity, ssh_options, verbose
+    )
+
+
+@ssh_management.command()
+@click.argument("name")
+@click.option("-R", "--remote", "remote_forwards", multiple=True, required=True, metavar="SPEC",
+              help="port:host:hostport, or a bare port for a SOCKS proxy the server can use.")
+@click.option("-b", "--background", is_flag=True, help="Return once the forward is up.")
+@click.option("--public", is_flag=True,
+              help="Ask the server to bind 0.0.0.0. Needs GatewayPorts there.")
+@click.option("-i", "--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option("-o", "--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
+@verbose_option
+def reverse(
+    name: str,
+    remote_forwards: tuple[str, ...],
+    background: bool,
+    public: bool,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    verbose: int,
+) -> None:
+    """Expose a local service on the remote server.
+
+    \b
+    A bare port -- `-R 1080` -- gives the server a SOCKS proxy through your
+    machine instead, which is how a locked-down box gets internet access.
+
+    \b
+    Examples:
+      pyssh reverse prod -R 8080:localhost:3000
+      pyssh reverse prod -R 1080 -b
+    """
+    _preset_session(
+        name, (), remote_forwards, (), public, background, identity, ssh_options, verbose
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

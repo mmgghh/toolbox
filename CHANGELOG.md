@@ -70,6 +70,11 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyssh connect`, `forward` and `reverse`.** One connection can carry local
+  (`-L`), remote (`-R`) and dynamic (`-D`) forwards together, in the
+  foreground or backgrounded with `-b`. A bare `-R 1080` gives the server a
+  SOCKS proxy through your machine.
+
 - **`pyssh` can remember a server's password and group servers by tag.**
   `pyssh secret set prod-web` puts the password in the OS keyring;
   `pyssh hosts tag add prod web1 web2` groups hosts so one command can address
@@ -273,6 +278,16 @@ This project follows [Semantic Versioning](https://semver.org/).
   reported as missing.
 
 ### Changed
+
+- **Backgrounded tunnels are now tracked by a control socket rather than a
+  PID.** `pyssh stop` closes them with `ssh -O exit`, and `pyssh status` asks
+  the connection itself whether it is alive, so a reused PID can no longer be
+  mistaken for a running tunnel.
+
+- **`pyssh r` is no longer an abbreviation for `rsync-dir`.** Commands resolve
+  by unambiguous prefix, and the new `reverse` command makes a bare `r`
+  ambiguous. Use `pyssh rs`, or spell it out. `pyssh t`, `pyssh d` and
+  `pyssh rs` are unaffected.
 
 - **`pymd2pdf` is now a package rather than one 1500-line module.** Font
   discovery, Persian shaping, the fpdf2 subclass, the block renderers, tables

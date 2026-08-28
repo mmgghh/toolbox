@@ -883,3 +883,82 @@ def test_wait_for_listeners_probes_0_0_0_0_via_loopback(monkeypatch):
     monkeypatch.setattr(pyssh, "port_is_listening", fake_port_is_listening)
     pyssh._wait_for_listeners([("0.0.0.0", 1234)], timeout=1)
     assert seen == [(1234, "127.0.0.1")]
+
+
+def test_forward_is_a_local_forward(runner, fake_background):
+    result = runner.invoke(ssh_management, ["forward", "prod", "-L", "5432:db:5432", "-b"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert cmd[cmd.index("-L") + 1] == "127.0.0.1:5432:db:5432"
+    assert "-N" in cmd
+
+
+def test_reverse_is_a_remote_forward(runner, fake_background):
+    result = runner.invoke(ssh_management, ["reverse", "prod", "-R", "8080:localhost:3000", "-b"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert cmd[cmd.index("-R") + 1] == "8080:localhost:3000"
+
+
+def test_reverse_accepts_a_bare_port_as_a_remote_socks_proxy(runner, fake_background):
+    result = runner.invoke(ssh_management, ["reverse", "prod", "-R", "1080", "-b"])
+    assert result.exit_code == 0, result.output
+    assert fake_background["cmd"][fake_background["cmd"].index("-R") + 1] == "1080"
+
+
+def test_reverse_warns_that_public_needs_gatewayports(runner, fake_background):
+    result = runner.invoke(
+        ssh_management, ["reverse", "prod", "-R", "8080:localhost:3000", "--public", "-b"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "GatewayPorts" in result.stderr
+
+
+def test_status_keeps_a_session_whose_master_answers(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: True)
+    pyssh.save_state(
+        "connect-5432",
+        {"kind": "connect", "pids": [], "control": str(tmp_path / "ctl"), "destination": "prod"},
+    )
+    result = runner.invoke(ssh_management, ["status", "--json"])
+    assert len(json.loads(result.stdout)) == 1
+
+
+def test_status_drops_a_session_whose_master_is_gone(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: False)
+    pyssh.save_state(
+        "connect-5432",
+        {"kind": "connect", "pids": [], "control": str(tmp_path / "ctl"), "destination": "prod"},
+    )
+    result = runner.invoke(ssh_management, ["status", "--json"])
+    assert json.loads(result.stdout) == []
+
+
+def test_stop_asks_the_master_to_exit(runner, monkeypatch, tmp_path):
+    asked = {}
+    monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: True)
+    monkeypatch.setattr(
+        pyssh.session, "stop_master", lambda sock, dest: asked.update(dest=dest) or True
+    )
+    pyssh.save_state(
+        "connect-5432",
+        {"kind": "connect", "pids": [], "control": str(tmp_path / "ctl"), "destination": "prod"},
+    )
+    result = runner.invoke(ssh_management, ["stop", "connect-5432"])
+    assert result.exit_code == 0, result.output
+    assert asked["dest"] == "prod"
+
+
+def test_stop_still_kills_a_pid_only_session(runner, monkeypatch):
+    """Windows and over-long socket paths fall back to PIDs.
+
+    terminate is stubbed so the test does not signal its own process.
+    """
+    killed = {}
+    monkeypatch.setattr(
+        pyssh, "terminate", lambda pids, timeout=5.0: killed.update(pids=list(pids)) or 1
+    )
+    pyssh.save_state("tunnel-9998", {"kind": "tunnel", "pids": [os.getpid()], "socks_port": 9998})
+    result = runner.invoke(ssh_management, ["stop", "tunnel-9998"])
+    assert result.exit_code == 0, result.output
+    assert killed["pids"] == [os.getpid()]
