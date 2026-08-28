@@ -21,8 +21,9 @@ from pytoolbox.core import console, paths
 #: Unix socket paths are capped at 108 bytes; leave room for the name.
 MAX_SOCKET_PATH = 100
 
-#: ssh -O check answers on stderr: "Master running (pid=12345)".
-MASTER_PID_RE = re.compile(r"pid=(\d+)")
+#: ssh -O check answers on stderr: "Master running (pid=12345)". The leading
+#: \b keeps this from matching inside an unrelated word like "stupid=5".
+MASTER_PID_RE = re.compile(r"\bpid=(\d+)")
 
 CONTROL_TIMEOUT_SECONDS = 10
 
