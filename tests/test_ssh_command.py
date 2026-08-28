@@ -131,3 +131,71 @@ def test_a_bare_remote_port_is_still_accepted():
     """Regression guard: tightening _port's ASCII check must not affect -R's
     ordinary bare-port shape."""
     assert command.forward_args(remote=["1080"]) == ["-R", "1080"]
+
+
+def test_a_wildcard_local_bind_is_rejected():
+    """ssh(1)/ssh_config(5) document '*' as an exact synonym for an empty
+    bind address (all interfaces), so it must be rejected the same way."""
+    with pytest.raises(click.ClickException):
+        command.forward_args(local=["*:5432:host:5432"])
+
+
+def test_a_wildcard_dynamic_bind_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=["*:1080"])
+
+
+def test_a_wildcard_dynamic_bind_is_rejected_even_with_public():
+    """The invariant is "a wildcard bind is always rejected", not "unless
+    --public was passed" -- this pins the invariant, not one spelling."""
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=["*:1080"], public=True)
+
+
+def test_a_wildcard_remote_bind_is_still_accepted():
+    """Extends the -L/-D vs -R asymmetry to the '*' spelling: -R's bind is
+    still sshd's business, not ours, so it passes through untouched."""
+    assert command.forward_args(remote=["*:8080:localhost:80"]) == [
+        "-R",
+        "*:8080:localhost:80",
+    ]
+
+
+def test_a_whitespace_only_local_bind_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(local=[" :5432:host:5432"])
+
+
+def test_a_whitespace_only_dynamic_bind_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=[" :1080"])
+
+
+#: Comfortably past CPython's int-string conversion limit (4300+ digits as of
+#: 3.9.14/3.11+), but the exact threshold isn't the point under test -- any
+#: absurdly long numeral must be rejected, on every supported Python version.
+_OVERLONG_DIGITS = "9" * 5000
+
+
+def test_an_overlong_local_port_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(local=[f"{_OVERLONG_DIGITS}:db:5432"])
+
+
+def test_an_overlong_remote_port_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(remote=[_OVERLONG_DIGITS])
+
+
+def test_an_overlong_dynamic_port_is_rejected():
+    with pytest.raises(click.ClickException):
+        command.forward_args(dynamic=[_OVERLONG_DIGITS])
+
+
+def test_a_leading_zero_port_is_still_accepted():
+    """Pins that the overlong-port length cap doesn't regress an ordinary
+    leading-zero port, which int() has always parsed fine."""
+    assert command.forward_args(local=["0000000080:db:80"]) == [
+        "-L",
+        "127.0.0.1:0000000080:db:80",
+    ]

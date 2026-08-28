@@ -22,7 +22,11 @@ _SHAPES = {
 
 
 def _port(value: str, spec: str, flag: str) -> int:
-    if not (value.isascii() and value.isdigit()) or not 1 <= int(value) <= 65535:
+    # len(value) > 20 keeps a pathological numeral from ever reaching int():
+    # 20 is far above any real port (max 5 digits) and far below CPython's
+    # int-string conversion limit, without depending on
+    # sys.get_int_max_str_digits() (only available on Python 3.9.14+).
+    if not (value.isascii() and value.isdigit()) or len(value) > 20 or not 1 <= int(value) <= 65535:
         raise click.ClickException(
             f"{value!r} in {flag} {spec!r} is not a port. Expected {_SHAPES[flag]}."
         )
@@ -49,7 +53,7 @@ def _local_or_dynamic(spec: str, flag: str, public: bool) -> str:
 
     if len(parts) == max(wanted):
         bind, rest = parts[0], parts[1:]
-        if not bind:
+        if not bind.strip() or bind == "*":
             raise click.ClickException(f"Invalid {flag} {spec!r}. Expected {_SHAPES[flag]}.")
     else:
         bind, rest = _default_bind(public), parts
