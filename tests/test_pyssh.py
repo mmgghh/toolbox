@@ -601,14 +601,20 @@ def test_secret_rm_for_an_unknown_host(runner, working_keyring):
     assert result.exit_code != 0
 
 
-def test_hosts_tag_add_and_list(runner):
+def test_hosts_tag_add_and_list(runner, monkeypatch, tmp_path):
+    config = tmp_path / "config"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(pyssh.hosts, "default_config_path", lambda: config)
     runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
     result = runner.invoke(ssh_management, ["hosts", "--tag", "prod", "--json"])
     assert result.exit_code == 0, result.output
     assert [row["name"] for row in json.loads(result.stdout)] == ["web1", "web2"]
 
 
-def test_hosts_tag_rm(runner):
+def test_hosts_tag_rm(runner, monkeypatch, tmp_path):
+    config = tmp_path / "config"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setattr(pyssh.hosts, "default_config_path", lambda: config)
     runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
     runner.invoke(ssh_management, ["hosts", "tag", "rm", "prod", "web1"])
     result = runner.invoke(ssh_management, ["hosts", "--tag", "prod", "--json"])

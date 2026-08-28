@@ -1078,7 +1078,7 @@ def secret_set(name: str, insecure_plaintext: bool) -> None:
       pyssh secret set prod-web
       pyssh secret set termux-box --insecure-plaintext
     """
-    password = click.prompt("Password", hide_input=True, confirmation_prompt=True)
+    password = click.prompt("Password", hide_input=True, confirmation_prompt=True, err=True)
     tier = store.set_secret(name, password, allow_plaintext=insecure_plaintext)
     if tier == store.TIER_PLAINTEXT:
         console.warn(f"{name}'s password is stored in plain text at {store.store_path()}.")
