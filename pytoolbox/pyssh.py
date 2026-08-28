@@ -267,12 +267,17 @@ def _open_background_session(
     identity: Optional[str],
     ssh_options: Sequence[str],
     verbose: int,
-) -> dict:
+) -> Optional[dict]:
     """Start a backgrounded ssh and record it, returning the saved state.
 
     ``ssh -f`` returns only after authentication and after every remote
     forward is up, so a non-zero exit is an authoritative failure -- including
     for ``-R``, whose listener lives where no local probe can reach it.
+
+    Returns ``None``, saving nothing, when there is no control socket:
+    ``ssh -f`` forks and never reports the daemon's pid, so without a socket
+    there is no pid and no handle for a later ``pyssh status``/``stop`` to act
+    on -- a state with neither would just be pruned the moment it is read.
     """
     socket_path = session.control_path(name)
     password_file = _password_file(target.password, "c")
@@ -300,11 +305,20 @@ def _open_background_session(
 
     _wait_for_listeners(listeners, STARTUP_TIMEOUT_SECONDS)
 
-    pid = session.master_pid(socket_path, target.spec) if socket_path else None
+    if socket_path is None:
+        console.warn(
+            "This connection has no control socket (unsupported on Windows, or "
+            "the runtime path would be too long), so pyssh cannot track it with "
+            "`pyssh status` or `pyssh stop`. It is running in the background "
+            "regardless -- you will need to stop it yourself."
+        )
+        return None
+
+    pid = session.master_pid(socket_path, target.spec)
     state = {
         "kind": kind,
         "pids": [pid] if pid else [],
-        "control": str(socket_path) if socket_path else None,
+        "control": str(socket_path),
         "destination": target.spec,
         "forwards": list(forwards),
         "server": str(target),
@@ -1421,12 +1435,13 @@ def connect(
 
     if background:
         session_name = f"connect-{listeners[0][1] if listeners else os.getpid()}"
-        _open_background_session(
+        state = _open_background_session(
             target, forwards, listeners, session_name, "connect",
             identity, ssh_options, verbose,
         )
         console.success(f"Connected to {target.spec} in the background.", verbose)
-        console.echo(f"Stop it with: pyssh stop {session_name}", err=True)
+        if state is not None:
+            console.echo(f"Stop it with: pyssh stop {session_name}", err=True)
         return
 
     password_file = _password_file(target.password, "c")

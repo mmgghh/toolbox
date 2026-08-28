@@ -809,3 +809,77 @@ def test_key_auth_to_an_unknown_host_is_not_blocked(runner, fake_background, mon
     monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
     result = runner.invoke(ssh_management, ["connect", "prod", "-L", "1:h:1", "-b"])
     assert result.exit_code == 0, result.output
+
+
+def test_connect_refuses_a_taken_local_port(runner, monkeypatch):
+    """Pins the pre-flight port check; nothing here should ever reach ssh."""
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh, "port_is_free", lambda port, host="127.0.0.1": False)
+    monkeypatch.setattr(
+        pyssh.session,
+        "run_background",
+        lambda cmd, verbose=0: pytest.fail("ssh should never be reached: the port check must stop it first"),
+    )
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "5432:db:5432", "-b"])
+    assert result.exit_code != 0
+    assert "5432" in result.stderr
+    assert "already in use" in result.stderr
+
+
+def test_connect_uses_strict_host_keys_when_a_password_is_present(
+    runner, fake_background, monkeypatch, working_keyring
+):
+    """A password disables sshpass's usual accept-new leniency."""
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "5432:db:5432", "-b"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert "StrictHostKeyChecking=yes" in cmd
+    assert "hunter2" not in " ".join(cmd)
+
+
+def test_connect_forces_no_host_key_policy_without_a_password(runner, fake_background):
+    """No sshpass in play means no forced override; ssh does its own prompting."""
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "5432:db:5432", "-b"])
+    assert result.exit_code == 0, result.output
+    assert not any(c.startswith("StrictHostKeyChecking=") for c in fake_background["cmd"])
+
+
+def test_a_session_with_no_control_socket_is_not_falsely_trackable(
+    runner, fake_background, monkeypatch
+):
+    """Without a socket ssh -f never reports a pid, so nothing trustworthy can be
+    saved; pyssh must say so and must not promise a `stop` that cannot work."""
+    monkeypatch.setattr(pyssh.session, "control_path", lambda name: None)
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "5432:db:5432", "-b"])
+    assert result.exit_code == 0, result.output
+    assert pyssh.load_states() == []
+    assert "cannot track" in result.stderr
+    assert "Stop it with:" not in result.stderr
+
+
+def test_wait_for_listeners_times_out_when_nothing_is_listening(monkeypatch):
+    monkeypatch.setattr(pyssh, "port_is_listening", lambda port, host="127.0.0.1", timeout=1.0: False)
+    monkeypatch.setattr(pyssh.time, "sleep", lambda seconds: None)
+    with pytest.raises(click.ClickException, match="9999"):
+        pyssh._wait_for_listeners([("127.0.0.1", 9999)], timeout=0)
+
+
+def test_wait_for_listeners_probes_0_0_0_0_via_loopback(monkeypatch):
+    seen = []
+
+    def fake_port_is_listening(port, host="127.0.0.1", timeout=1.0):
+        seen.append((port, host))
+        return True
+
+    monkeypatch.setattr(pyssh, "port_is_listening", fake_port_is_listening)
+    pyssh._wait_for_listeners([("0.0.0.0", 1234)], timeout=1)
+    assert seen == [(1234, "127.0.0.1")]
