@@ -706,3 +706,106 @@ def test_rsync_dir_uses_a_stored_password_for_a_config_name(runner, fake_rsync, 
     assert fake_rsync["cmd"][0] == "sshpass"
     assert fake_rsync["cmd"][-1] == "prod-web:/srv/site"
     assert "hunter2" not in " ".join(fake_rsync["cmd"])
+
+
+# ── connect ─────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_background(monkeypatch):
+    """Capture the argv of a backgrounded ssh, and report success."""
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = "Master running (pid=4242)"
+
+    def fake_run_background(cmd, verbose=0):
+        captured["cmd"] = list(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.session, "run_background", fake_run_background)
+    monkeypatch.setattr(pyssh.session, "master_pid", lambda sock, dest: 4242)
+    monkeypatch.setattr(pyssh.session, "master_alive", lambda sock, dest: True)
+    monkeypatch.setattr(pyssh, "_wait_for_listeners", lambda *a, **k: None)
+    # The pre-flight port check binds a real local socket; a machine that
+    # happens to be running its own service on the test's chosen port (e.g. a
+    # local Postgres on 5432) must not make this fail.
+    monkeypatch.setattr(pyssh, "port_is_free", lambda port, host="127.0.0.1": True)
+    return captured
+
+
+def test_connect_backgrounds_a_local_forward(runner, fake_background):
+    result = runner.invoke(
+        ssh_management, ["connect", "prod", "-L", "5432:db.internal:5432", "-b"]
+    )
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert "-L" in cmd and cmd[cmd.index("-L") + 1] == "127.0.0.1:5432:db.internal:5432"
+    assert "-f" in cmd and "-N" in cmd
+    assert cmd[-1] == "prod"
+
+
+def test_connect_backgrounds_a_reverse_forward(runner, fake_background):
+    result = runner.invoke(ssh_management, ["connect", "prod", "-R", "8080:localhost:3000", "-b"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert cmd[cmd.index("-R") + 1] == "8080:localhost:3000"
+
+
+def test_a_failed_reverse_forward_is_reported(runner, monkeypatch):
+    """ssh -f exits non-zero when the server could not bind; that is the signal."""
+
+    class FakeCompleted:
+        returncode = 255
+        stdout = ""
+        stderr = "Warning: remote port forwarding failed for listen port 8080"
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.session, "run_background", lambda cmd, verbose=0: FakeCompleted())
+    result = runner.invoke(ssh_management, ["connect", "prod", "-R", "8080:localhost:3000", "-b"])
+    assert result.exit_code != 0
+    assert "8080" in result.stderr
+
+
+def test_connect_combines_forwards_in_one_connection(runner, fake_background):
+    result = runner.invoke(
+        ssh_management,
+        ["connect", "prod", "-L", "5432:db:5432", "-R", "8080:localhost:3000", "-D", "1080", "-b"],
+    )
+    assert result.exit_code == 0, result.output
+    cmd = fake_background["cmd"]
+    assert cmd.count("-L") == 1 and cmd.count("-R") == 1 and cmd.count("-D") == 1
+
+
+def test_connect_records_the_session_for_status(runner, fake_background):
+    runner.invoke(ssh_management, ["connect", "prod", "-L", "5432:db:5432", "-b"])
+    states = pyssh.load_states()
+    assert len(states) == 1
+    assert states[0]["kind"] == "connect"
+    assert states[0]["destination"] == "prod"
+
+
+def test_connect_refuses_a_password_to_an_unknown_host(runner, monkeypatch, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "1:h:1", "-b"])
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+    assert "ssh prod" in result.stderr
+
+
+def test_key_auth_to_an_unknown_host_is_not_blocked(runner, fake_background, monkeypatch):
+    """Only a password triggers the refusal; ssh does its own checking otherwise."""
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    result = runner.invoke(ssh_management, ["connect", "prod", "-L", "1:h:1", "-b"])
+    assert result.exit_code == 0, result.output

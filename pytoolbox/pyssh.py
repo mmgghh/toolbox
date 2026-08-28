@@ -34,7 +34,7 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
-from pytoolbox.ssh import hosts, store
+from pytoolbox.ssh import command, hosts, knownhosts, session, store
 from pytoolbox.ssh.hosts import (  # noqa: F401 - re-exported for backwards compatibility
     SERVER_SPEC_RE,
     Server,
@@ -52,6 +52,10 @@ HEALTH_INTERVAL_SECONDS = 15
 
 #: Seconds to wait for ssh to establish a listener before declaring failure.
 STARTUP_TIMEOUT_SECONDS = 20
+
+#: A backgrounded ssh captures its output, so a stalled connect would hang
+#: with nothing on screen. Bound it; the user's own -o wins if they set one.
+CONNECT_TIMEOUT_SECONDS = 15
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -132,7 +136,7 @@ def load_states() -> list[dict]:
         except (OSError, ValueError):
             continue
         state["_file"] = str(path)
-        if not pid_alive(state.get("pids", [])):
+        if not state_is_alive(state):
             path.unlink(missing_ok=True)
             continue
         states.append(state)
@@ -148,6 +152,20 @@ def pid_alive(pids: Sequence[int]) -> bool:
             continue
         return True
     return False
+
+
+def state_is_alive(state: dict) -> bool:
+    """Whether a recorded session is still running.
+
+    A control socket is authoritative -- ``ssh -O check`` asks the master
+    itself. PIDs are the fallback for Windows and for paths too long to hold a
+    Unix socket.
+    """
+    control = state.get("control")
+    destination = state.get("destination")
+    if control and destination:
+        return session.master_alive(Path(control), destination)
+    return pid_alive(state.get("pids", []))
 
 
 def terminate(pids: Sequence[int], timeout: float = 5.0) -> int:
@@ -199,6 +217,103 @@ def apply_stored_secret(target: hosts.Target) -> hosts.Target:
     return target.with_password(store.get_secret(target.spec))
 
 
+def _target_endpoint(target: hosts.Target) -> tuple[str, int]:
+    """The host and port a target actually connects to.
+
+    A config name is resolved through ``ssh -G``; an inline spec carries its
+    own. known_hosts keys its entries by this pair rather than by the name the
+    user typed, so anything that names a key back to the user must use it.
+    """
+    if target.is_config_name:
+        resolved = hosts.resolve_config(target.spec)
+        if resolved is None:
+            return target.spec, 22
+        return resolved.hostname, resolved.port
+    _, _, host = target.spec.partition("@")
+    return host, target.port or 22
+
+
+def _guard_host_key(target: hosts.Target) -> None:
+    """Refuse to hand a password to a host we cannot identify.
+
+    Only password authentication is guarded: with a key, ssh's own host-key
+    prompting already works, and there is no secret to leak to an impostor.
+    """
+    if not target.password:
+        return
+    host, port = _target_endpoint(target)
+    knownhosts.require_known(target.spec, host, port)
+
+
+def _wait_for_listeners(listeners: Sequence[tuple[str, int]], timeout: float) -> None:
+    """Block until every local listener accepts connections."""
+    deadline = time.monotonic() + timeout
+    for host, port in listeners:
+        probe_host = "127.0.0.1" if host == "0.0.0.0" else host
+        while not port_is_listening(port, probe_host):
+            if time.monotonic() > deadline:
+                raise click.ClickException(
+                    f"Timed out waiting for the forward to listen on port {port}."
+                )
+            time.sleep(0.3)
+
+
+def _open_background_session(
+    target: hosts.Target,
+    forwards: Sequence[str],
+    listeners: Sequence[tuple[str, int]],
+    name: str,
+    kind: str,
+    identity: Optional[str],
+    ssh_options: Sequence[str],
+    verbose: int,
+) -> dict:
+    """Start a backgrounded ssh and record it, returning the saved state.
+
+    ``ssh -f`` returns only after authentication and after every remote
+    forward is up, so a non-zero exit is an authoritative failure -- including
+    for ``-R``, whose listener lives where no local probe can reach it.
+    """
+    socket_path = session.control_path(name)
+    password_file = _password_file(target.password, "c")
+    try:
+        cmd = build_ssh_command(
+            target,
+            [*forwards, *command.background_args(socket_path)],
+            identity=identity,
+            password_file=password_file,
+            extra_opts=[f"ConnectTimeout={CONNECT_TIMEOUT_SECONDS}", *ssh_options],
+            strict_host_keys=bool(target.password),
+        )
+        completed = session.run_background(cmd, verbose)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
+
+    if completed.returncode != 0:
+        endpoint_host, endpoint_port = _target_endpoint(target)
+        hint = knownhosts.failure_hint(
+            completed.stderr, target.spec, endpoint_host, port=endpoint_port
+        )
+        detail = completed.stderr.strip() or f"ssh exited with code {completed.returncode}"
+        raise click.ClickException(f"{detail}\n{hint}" if hint else detail)
+
+    _wait_for_listeners(listeners, STARTUP_TIMEOUT_SECONDS)
+
+    pid = session.master_pid(socket_path, target.spec) if socket_path else None
+    state = {
+        "kind": kind,
+        "pids": [pid] if pid else [],
+        "control": str(socket_path) if socket_path else None,
+        "destination": target.spec,
+        "forwards": list(forwards),
+        "server": str(target),
+        "started_at": time.time(),
+    }
+    save_state(name, state)
+    return state
+
+
 def build_ssh_command(
     server: Union[Server, hosts.Target],
     forward_args: Sequence[str],
@@ -207,6 +322,7 @@ def build_ssh_command(
     extra_opts: Sequence[str] = (),
     keepalive: bool = True,
     no_command: bool = True,
+    strict_host_keys: bool = False,
 ) -> list[str]:
     """Assemble the ssh command line for a tunnel or a session.
 
@@ -232,8 +348,11 @@ def build_ssh_command(
     for opt in extra_opts:
         cmd[1:1] = ["-o", opt]
     if password_file is not None:
-        # Host-key prompts cannot be answered when sshpass drives ssh non-interactively.
-        cmd[1:1] = ["-o", "StrictHostKeyChecking=accept-new"]
+        # sshpass answers the password prompt and nothing else, so a host-key
+        # prompt would hang. The new commands verify the key up front instead
+        # and ask for strictness here; the older ones keep accept-new.
+        policy = "yes" if strict_host_keys else "accept-new"
+        cmd[1:1] = ["-o", f"StrictHostKeyChecking={policy}"]
     # ``--`` ends option parsing. Without it a destination beginning with ``-`` is read
     # by ssh as an option, and whatever follows becomes the host -- which is how
     # -oProxyCommand=... turns into remote code execution on the commands that append a
@@ -1223,6 +1342,109 @@ def hosts_tag_rm(tag_name: str, names: tuple[str, ...]) -> None:
     for name in names:
         store.remove_tags(name, [tag_name])
     console.success(f"Removed {tag_name!r} from {console.plural(len(names), 'host')}.")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Connect
+# ═══════════════════════════════════════════════════════════════════
+
+
+@ssh_management.command()
+@click.argument("name")
+@click.option("-L", "--local", "local_forwards", multiple=True, metavar="SPEC",
+              help="Forward a local port to the remote side: port:host:hostport. Repeatable.")
+@click.option("-R", "--remote", "remote_forwards", multiple=True, metavar="SPEC",
+              help="Forward a remote port back here: port:host:hostport, or a bare "
+                   "port for a SOCKS proxy the server can use. Repeatable.")
+@click.option("-D", "--dynamic", "dynamic_forwards", multiple=True, metavar="SPEC",
+              help="Open a local SOCKS5 proxy on PORT. Repeatable.")
+@click.option("-N", "--no-command", is_flag=True, help="Forward only; do not start a shell.")
+@click.option("-t", "--tty", is_flag=True, help="Force a TTY (for interactive remote programs).")
+@click.option("-b", "--background", is_flag=True,
+              help="Return once the forwards are up, leaving them running.")
+@click.option("--public", is_flag=True,
+              help="Bind local forwards to 0.0.0.0 so the LAN can reach them.")
+@click.option("-i", "--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option("-o", "--ssh-option", "ssh_options", multiple=True,
+              help="Extra `ssh -o` option, repeatable.")
+@verbose_option
+def connect(
+    name: str,
+    local_forwards: tuple[str, ...],
+    remote_forwards: tuple[str, ...],
+    dynamic_forwards: tuple[str, ...],
+    no_command: bool,
+    tty: bool,
+    background: bool,
+    public: bool,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    verbose: int,
+) -> None:
+    """Open a connection to NAME, with any forwards you need.
+
+    \b
+    NAME is a host in your ~/.ssh/config, or a 'user@host:port' spec. With no
+    forwards this is an interactive shell; -L, -R and -D can be combined and
+    repeated in one connection.
+
+    \b
+    Examples:
+      pyssh connect prod
+      pyssh connect prod -L 5432:db.internal:5432 -b
+      pyssh connect prod -R 8080:localhost:3000 -D 1080 -b
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+    target = apply_stored_secret(hosts.resolve_target(name))
+    _guard_host_key(target)
+
+    forwards = command.forward_args(
+        local=local_forwards, remote=remote_forwards, dynamic=dynamic_forwards, public=public
+    )
+    listeners = command.local_listeners(
+        local=local_forwards, dynamic=dynamic_forwards, public=public
+    )
+
+    if public and remote_forwards:
+        console.warn(
+            "A remote forward binds the server's loopback unless its sshd sets "
+            "'GatewayPorts yes' or 'clientspecified'. Check there if other machines "
+            "cannot reach it."
+        )
+
+    for host, port in listeners:
+        if not port_is_free(port, host):
+            raise click.ClickException(
+                f"Local port {port} is already in use. Pick another, or run "
+                "`pyssh status` to see sessions started by pyssh."
+            )
+
+    if background:
+        session_name = f"connect-{listeners[0][1] if listeners else os.getpid()}"
+        _open_background_session(
+            target, forwards, listeners, session_name, "connect",
+            identity, ssh_options, verbose,
+        )
+        console.success(f"Connected to {target.spec} in the background.", verbose)
+        console.echo(f"Stop it with: pyssh stop {session_name}", err=True)
+        return
+
+    password_file = _password_file(target.password, "c")
+    try:
+        cmd = build_ssh_command(
+            target,
+            [*forwards, *(["-t"] if tty else [])],
+            identity=identity,
+            password_file=password_file,
+            extra_opts=ssh_options,
+            no_command=no_command or bool(forwards and not tty),
+            strict_host_keys=bool(target.password),
+        )
+        console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+        raise SystemExit(subprocess.call(cmd))
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":  # pragma: no cover
