@@ -375,6 +375,24 @@ Combinations that would cancel each other out — `--checksum` with
 `--size-only`, `--existing` with `--ignore-existing` — are rejected up front
 instead of being handed to rsync.
 
+## `keygen`, `copy-id` and `check`
+
+Two commands take a host from password authentication to key authentication,
+which is what every "no usable keyring" message points at.
+
+```shell
+pyssh keygen prod                 # ed25519 by default, prints the config lines
+pyssh copy-id prod                # installs the public key on the server
+pyssh check prod                  # confirms it worked
+pyssh secret rm prod              # and the password is no longer needed
+```
+
+`copy-id` uses `ssh-copy-id` when it is installed and falls back to appending
+the key over ssh when it is not — Termux's OpenSSH does not ship it. `check`
+runs with `BatchMode=yes`, so a host that would prompt is reported as
+unreachable rather than hanging, and a changed host key gets the
+`ssh-keygen -R` line that fixes it.
+
 ## Termux
 
 ```shell

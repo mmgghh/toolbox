@@ -70,6 +70,10 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyssh keygen`, `copy-id` and `check`.** Generate a key, install it on a
+  server, and confirm authentication works — the path off password
+  authentication, in three commands.
+
 - **`pyssh exec` runs a command on one host or on a whole tag.**
   `pyssh exec --tag prod --parallel 8 'systemctl is-active nginx'` fans out
   across every tagged host and exits non-zero if any of them failed. With a

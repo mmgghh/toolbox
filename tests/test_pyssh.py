@@ -1216,3 +1216,144 @@ def test_exec_passes_parallel_through_to_run_many(runner, monkeypatch):
     result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "--parallel", "8", "uptime"])
     assert result.exit_code == 0, result.output
     assert captured["parallel"] == 8
+
+
+# ── onboarding ──────────────────────────────────────────────────────
+
+def test_keygen_makes_an_ed25519_key_by_default(runner, monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.subprocess, "run", lambda cmd, **kw: (captured.update(cmd=cmd), FakeCompleted())[1]
+    )
+    key = tmp_path / "id_test"
+    result = runner.invoke(ssh_management, ["keygen", "-f", str(key)])
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"][:3] == ["ssh-keygen", "-t", "ed25519"]
+    assert str(key) in captured["cmd"]
+
+
+def test_keygen_names_the_identityfile_line_to_add(runner, monkeypatch, tmp_path):
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    result = runner.invoke(ssh_management, ["keygen", "prod", "-f", str(tmp_path / "id_test")])
+    assert "IdentityFile" in result.output
+    assert "Host prod" in result.output
+
+
+def test_keygen_will_not_overwrite_an_existing_key(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    key = tmp_path / "id_test"
+    key.write_text("existing", encoding="utf-8")
+    result = runner.invoke(ssh_management, ["keygen", "-f", str(key)])
+    assert result.exit_code != 0
+    assert key.read_text(encoding="utf-8") == "existing"
+
+
+def test_copy_id_prefers_ssh_copy_id(runner, monkeypatch, tmp_path):
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    key = tmp_path / "id_test.pub"
+    key.write_text("ssh-ed25519 AAAA test\n", encoding="utf-8")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.subprocess, "run", lambda cmd, **kw: (captured.update(cmd=cmd), FakeCompleted())[1]
+    )
+    result = runner.invoke(ssh_management, ["copy-id", "prod", "-i", str(key)])
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"][0] == "ssh-copy-id"
+    assert captured["cmd"][-1] == "prod"
+
+
+def test_copy_id_falls_back_when_ssh_copy_id_is_missing(runner, monkeypatch, tmp_path):
+    """Not every OpenSSH build ships ssh-copy-id."""
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    key = tmp_path / "id_test.pub"
+    key.write_text("ssh-ed25519 AAAA test\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pyssh.shutil, "which", lambda name: None if name == "ssh-copy-id" else f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr(
+        pyssh.subprocess, "run", lambda cmd, **kw: (captured.update(cmd=cmd), FakeCompleted())[1]
+    )
+    result = runner.invoke(ssh_management, ["copy-id", "prod", "-i", str(key)])
+    assert result.exit_code == 0, result.output
+    assert captured["cmd"][0] == "ssh"
+    assert "authorized_keys" in captured["cmd"][-1]
+
+
+def test_check_reports_a_reachable_host(runner, monkeypatch):
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=2222
+        ),
+    )
+    result = runner.invoke(ssh_management, ["check", "prod", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["reachable"] is True
+    assert payload["name"] == "prod"
+    # The report names the endpoint ssh actually reaches, not the name typed.
+    assert (payload["hostname"], payload["port"]) == ("10.0.0.5", 2222)
+
+
+def test_check_reports_an_unreachable_host(runner, monkeypatch):
+    class FakeCompleted:
+        returncode = 255
+        stdout = ""
+        stderr = "Permission denied (publickey)."
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    result = runner.invoke(ssh_management, ["check", "prod", "--json"])
+    assert result.exit_code != 0
+    assert json.loads(result.stdout)["reachable"] is False
+
+
+def test_check_uses_batch_mode(runner, monkeypatch):
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.subprocess, "run", lambda cmd, **kw: (captured.update(cmd=cmd), FakeCompleted())[1]
+    )
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    runner.invoke(ssh_management, ["check", "prod"])
+    assert "BatchMode=yes" in captured["cmd"]

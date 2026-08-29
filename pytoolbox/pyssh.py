@@ -1710,5 +1710,162 @@ def _exec_row(result: remote.ExecResult) -> dict:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════
+# Onboarding: keygen, copy-id and check
+# ═══════════════════════════════════════════════════════════════════
+
+
+@ssh_management.command()
+@click.argument("name", required=False)
+@click.option("-t", "--type", "key_type", default="ed25519", show_default=True,
+              type=click.Choice(["ed25519", "rsa", "ecdsa"]), help="Key algorithm.")
+@click.option("-f", "--file", "key_path", type=click.Path(dir_okay=False),
+              help="Where to write the key. Defaults to ~/.ssh/id_<type>_<name>.")
+@click.option("-C", "--comment", help="Comment to embed in the key.")
+def keygen(name: Optional[str], key_type: str, key_path: Optional[str], comment: Optional[str]) -> None:
+    """Generate an SSH key, optionally named for a host.
+
+    \b
+    ed25519 is the default: short, fast and the modern recommendation. With a
+    NAME, the ~/.ssh/config lines that put the key to work are printed too.
+
+    \b
+    Examples:
+      pyssh keygen prod
+      pyssh keygen -t rsa -f ~/.ssh/id_rsa_legacy
+    """
+    _require("ssh-keygen", "Install OpenSSH (Termux: `pkg install openssh`).")
+    suffix = f"_{name}" if name else ""
+    path = Path(key_path).expanduser() if key_path else Path.home() / ".ssh" / f"id_{key_type}{suffix}"
+    if path.exists():
+        raise click.ClickException(
+            f"{path} already exists. Pick another path with -f, or use it as it is."
+        )
+    paths.ensure_dir(path.parent, private=True)
+
+    cmd = ["ssh-keygen", "-t", key_type, "-f", str(path)]
+    if comment:
+        cmd += ["-C", comment]
+    completed = subprocess.run(cmd)
+    if completed.returncode != 0:
+        raise click.ClickException(f"ssh-keygen exited with code {completed.returncode}.")
+
+    console.success(f"Wrote {path}.")
+    if name:
+        console.result(f"Host {name}\n    IdentityFile {path}")
+        console.echo(f"Add those lines to ~/.ssh/config, then: pyssh copy-id {name}", err=True)
+
+
+@ssh_management.command("copy-id")
+@click.option("-i", "--identity", "public_key", type=click.Path(dir_okay=False),
+              help="Public key to install. Defaults to ~/.ssh/id_ed25519.pub.")
+@click.argument("name")
+@verbose_option
+def copy_id(name: str, public_key: Optional[str], verbose: int) -> None:
+    """Install your public key on NAME so you can stop using a password.
+
+    \b
+    Examples:
+      pyssh copy-id prod
+      pyssh copy-id prod -i ~/.ssh/id_ed25519_prod.pub
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+    key = Path(public_key).expanduser() if public_key else Path.home() / ".ssh" / "id_ed25519.pub"
+    if not key.is_file():
+        raise click.ClickException(
+            f"{key} does not exist. Make one with `pyssh keygen {name}`, or point -i at yours."
+        )
+
+    target = apply_stored_secret(hosts.resolve_target(name))
+    password_file = _password_file(target.password, "k")
+    try:
+        if shutil.which("ssh-copy-id") is not None:
+            cmd = ["ssh-copy-id", "-i", str(key)]
+            if target.port is not None:
+                cmd += ["-p", str(target.port)]
+            cmd.append(target.spec)
+        else:
+            # Not every OpenSSH build ships ssh-copy-id; Termux is one.
+            installer = (
+                "umask 077; mkdir -p ~/.ssh; "
+                f"printf '%s\\n' {shlex.quote(key.read_text(encoding='utf-8').strip())} "
+                ">> ~/.ssh/authorized_keys"
+            )
+            cmd = build_ssh_command(target, [], no_command=False)
+            cmd.append(installer)
+        if password_file is not None:
+            cmd = ["sshpass", "-f", str(password_file)] + cmd
+        console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+        completed = subprocess.run(cmd)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
+
+    if completed.returncode != 0:
+        raise click.ClickException(f"Could not install the key on {name} (exit {completed.returncode}).")
+    console.success(f"Installed {key.name} on {name}. Try: pyssh check {name}")
+    console.echo(f"Once that works, drop the password: pyssh secret rm {name}", err=True)
+
+
+@ssh_management.command()
+@click.argument("name")
+@click.option("--timeout", default=5, show_default=True, type=click.IntRange(1, 120),
+              help="Seconds to wait for the connection.")
+@json_option
+@verbose_option
+def check(name: str, timeout: int, as_json: bool, verbose: int) -> None:
+    """Check that NAME is reachable and that authentication works.
+
+    \b
+    Runs a no-op remotely with BatchMode on, so a host that would prompt is
+    reported as unreachable instead of hanging.
+
+    \b
+    Examples:
+      pyssh check prod
+      pyssh check prod --json
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+    target = hosts.resolve_target(name)
+    resolved = hosts.resolve_config(target.spec) if target.is_config_name else None
+
+    cmd = build_ssh_command(
+        target,
+        [],
+        extra_opts=[f"ConnectTimeout={timeout}", "BatchMode=yes"],
+        no_command=False,
+        keepalive=False,
+    )
+    cmd.append("true")
+
+    console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+    started = time.monotonic()
+    completed = subprocess.run(cmd, capture_output=True, text=True)
+    elapsed = time.monotonic() - started
+
+    payload = {
+        "name": name,
+        "hostname": resolved.hostname if resolved else target.spec,
+        "port": resolved.port if resolved else (target.port or 22),
+        "reachable": completed.returncode == 0,
+        "seconds": round(elapsed, 3),
+        "error": completed.stderr.strip() or None,
+    }
+    if as_json:
+        console.emit_json(payload)
+    elif payload["reachable"]:
+        console.result(f"{name} is reachable ({payload['hostname']}:{payload['port']}, {elapsed:.2f}s).")
+    else:
+        console.error(f"{name} is not reachable: {payload['error']}")
+
+    if not payload["reachable"]:
+        hint = knownhosts.failure_hint(
+            completed.stderr, name, str(payload["hostname"]), port=int(payload["port"])
+        )
+        if hint:
+            console.echo(hint, err=True)
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":  # pragma: no cover
     ssh_management()
