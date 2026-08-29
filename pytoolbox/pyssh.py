@@ -34,7 +34,7 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
-from pytoolbox.ssh import command, hosts, knownhosts, session, store
+from pytoolbox.ssh import command, hosts, knownhosts, remote, session, store
 from pytoolbox.ssh.hosts import (  # noqa: F401 - re-exported for backwards compatibility
     SERVER_SPEC_RE,
     Server,
@@ -1563,6 +1563,140 @@ def reverse(
     _preset_session(
         name, (), remote_forwards, (), public, background, identity, ssh_options, verbose
     )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Exec
+# ═══════════════════════════════════════════════════════════════════
+
+
+@ssh_management.command(
+    "exec", context_settings={**CONTEXT_SETTINGS, "ignore_unknown_options": True}
+)
+@click.argument("args", nargs=-1, required=True)
+@click.option("--tag", help="Run on every host carrying this tag instead of one NAME.")
+@click.option("-P", "--parallel", default=1, show_default=True, type=click.IntRange(1, 64),
+              help="How many hosts to run on at once.")
+@click.option("--cd", "workdir", metavar="DIR", help="Run the command in DIR.")
+@click.option("--env", "env_pairs", multiple=True, metavar="NAME=VALUE",
+              help="Export a variable before running. Repeatable.")
+@click.option("--sudo", is_flag=True, help="Run as root with `sudo -n`. Needs passwordless sudo.")
+@click.option("-t", "--tty", is_flag=True, help="Force a TTY, for interactive remote programs.")
+@click.option("-i", "--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option("-o", "--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
+@json_option
+@verbose_option
+def exec_command(
+    args: tuple[str, ...],
+    tag: Optional[str],
+    parallel: int,
+    workdir: Optional[str],
+    env_pairs: tuple[str, ...],
+    sudo: bool,
+    tty: bool,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    as_json: bool,
+    verbose: int,
+) -> None:
+    """Run a command on one host, or on every host with a tag.
+
+    \b
+    Usage is `pyssh exec NAME COMMAND...` or `pyssh exec --tag TAG COMMAND...`.
+    Arguments are joined with spaces and interpreted by the remote shell,
+    exactly as `ssh host cmd` does, so quote anything with pipes or globs you
+    want the far side to expand. One host's output passes straight through, so
+    it can be piped and redirected; a group's is prefixed with the host name.
+
+    \b
+    Examples:
+      pyssh exec prod 'uptime'
+      pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
+      pyssh exec --tag prod -P 8 'systemctl is-active nginx'
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+
+    if tag:
+        names = store.names_with_tag(tag)
+        if not names:
+            raise click.ClickException(
+                f"No hosts are tagged {tag!r}. Tag some with `pyssh hosts tag add {tag} NAME`."
+            )
+        remote_command = " ".join(args)
+    else:
+        if len(args) < 2:
+            raise click.ClickException(
+                "Provide a host and a command, or use --tag. Example: pyssh exec prod 'uptime'."
+            )
+        names = [args[0]]
+        remote_command = " ".join(args[1:])
+
+    wrapped = remote.wrap_command(remote_command, workdir=workdir, env=env_pairs, sudo=sudo)
+    grouped = bool(tag)
+
+    jobs: list[tuple[str, list[str]]] = []
+    secret_files: list[Path] = []
+    try:
+        for name in names:
+            target = apply_stored_secret(hosts.resolve_target(name))
+            _guard_host_key(target)
+            password_file = _password_file(target.password, f"x{len(secret_files)}")
+            if password_file is not None:
+                secret_files.append(password_file)
+            # A captured worker cannot answer a prompt, so a group refuses to be
+            # asked. A stored password goes through sshpass and never prompts.
+            options = list(ssh_options)
+            if grouped and not target.password:
+                options.append("BatchMode=yes")
+            cmd = build_ssh_command(
+                target,
+                ["-t"] if tty else [],
+                identity=identity,
+                password_file=password_file,
+                extra_opts=options,
+                no_command=False,
+                strict_host_keys=bool(target.password),
+            )
+            cmd.append(wrapped)
+            console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+            jobs.append((name, cmd))
+
+        if not grouped:
+            result = remote.run(jobs[0][1], jobs[0][0], capture=as_json)
+            if as_json:
+                console.emit_json([_exec_row(result)])
+            raise SystemExit(result.returncode)
+
+        results = remote.run_many(jobs, parallel=parallel)
+    finally:
+        for path in secret_files:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)
+
+    if as_json:
+        console.emit_json([_exec_row(item) for item in results])
+    else:
+        for item in results:
+            for line in item.stdout.splitlines():
+                console.result(f"{item.name} | {line}")
+            for line in item.stderr.splitlines():
+                console.echo(f"{item.name} | {line}", err=True)
+            if not item.ok:
+                console.error(f"{item.name} exited with code {item.returncode}.")
+
+    failed = [item.name for item in results if not item.ok]
+    if failed:
+        raise SystemExit(1)
+    console.success(f"Ran on {console.plural(len(results), 'host')}.", verbose)
+
+
+def _exec_row(result: remote.ExecResult) -> dict:
+    return {
+        "name": result.name,
+        "returncode": result.returncode,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover

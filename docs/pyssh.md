@@ -156,6 +156,45 @@ sshd refuses unless its `GatewayPorts` is `yes` or `clientspecified`. The
 default is `no`, so pyssh warns rather than reporting a public listener that
 is not reachable.
 
+## `exec`
+
+```shell
+pyssh exec prod 'uptime'
+pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
+pyssh exec prod --sudo 'systemctl restart nginx'
+pyssh exec --tag prod -P 8 'systemctl is-active nginx'
+pyssh exec --tag prod 'uptime' --json
+```
+
+Arguments are joined with spaces and interpreted by the **remote** shell,
+exactly as `ssh host cmd` does — quote anything with pipes, globs or
+semicolons that the far side should expand.
+
+| Option | Meaning |
+| --- | --- |
+| `--tag TAG` | Run on every host carrying TAG instead of one NAME |
+| `-P, --parallel N` | Run on up to N hosts at once (default 1) |
+| `--cd DIR` | Run the command in DIR |
+| `--env NAME=VALUE` | Export a variable first. Repeatable |
+| `--sudo` | Run as root with `sudo -n`; needs passwordless sudo there |
+| `-t, --tty` | Force a TTY, for interactive remote programs |
+| `--json` | One record per host: name, exit code, stdout, stderr |
+
+**Output and exit codes.** One host's output passes straight through, so
+`pyssh exec prod 'cat log' > log` works. A group's output is prefixed with the
+host name and grouped per host. A single host propagates the remote command's
+own exit code; a group exits non-zero if any host failed.
+
+`--sudo` applies to the command as written, so on a pipeline it covers only the
+first stage — wrap the whole thing in `sh -c '...'` if you need more. Group runs
+add `BatchMode=yes` unless a stored password is in play, so a host that would
+prompt fails instead of hanging.
+
+**Host keys.** When a password is used, `exec` refuses to connect to a host
+that is not already in `~/.ssh/known_hosts`, and prints the command that fixes
+it — sending a password to an unverified host and then running commands on it
+is exactly the machine-in-the-middle case. Key authentication is unaffected.
+
 ## `status` and `stop`
 
 Background tunnels record their state under `$XDG_RUNTIME_DIR/pytoolbox`.

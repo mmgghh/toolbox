@@ -70,6 +70,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pyssh exec` runs a command on one host or on a whole tag.**
+  `pyssh exec --tag prod -P 8 'systemctl is-active nginx'` fans out across
+  every tagged host and exits non-zero if any of them failed. With a stored
+  password it refuses to connect to a host missing from `known_hosts`, naming
+  the command that fixes it.
+
 - **`pyssh connect`, `forward` and `reverse`.** One connection can carry local
   (`-L`), remote (`-R`) and dynamic (`-D`) forwards together, in the
   foreground or backgrounded with `-b`. A bare `-R 1080` gives the server a

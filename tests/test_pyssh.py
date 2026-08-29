@@ -992,3 +992,145 @@ def test_stop_still_kills_a_pid_only_session(runner, monkeypatch):
     result = runner.invoke(ssh_management, ["stop", "tunnel-9998"])
     assert result.exit_code == 0, result.output
     assert killed["pids"] == [os.getpid()]
+
+
+# ── exec ────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def fake_exec(monkeypatch):
+    """Capture the ssh argv exec would run, and report success."""
+    captured = {"cmds": []}
+
+    def fake_run(cmd, name, capture):
+        captured["cmds"].append(list(cmd))
+        return pyssh.remote.ExecResult(name=name, returncode=0, stdout="ok\n")
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.remote, "run", fake_run)
+    return captured
+
+
+def test_exec_runs_a_command_on_one_host(runner, fake_exec):
+    result = runner.invoke(ssh_management, ["exec", "prod", "uptime"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_exec["cmds"][0]
+    assert cmd[-1] == "uptime"
+    assert cmd[-2] == "prod"
+    assert "-N" not in cmd
+
+
+def test_exec_joins_its_arguments_like_ssh_does(runner, fake_exec):
+    runner.invoke(ssh_management, ["exec", "prod", "ls", "-la", "/srv"])
+    assert fake_exec["cmds"][0][-1] == "ls -la /srv"
+
+
+def test_exec_applies_cd_and_env_and_sudo(runner, fake_exec):
+    runner.invoke(
+        ssh_management,
+        ["exec", "prod", "--cd", "/srv/app", "--env", "CI=1", "--sudo", "make"],
+    )
+    # shlex.quote only adds quotes when a character needs them; see test_ssh_remote.py.
+    assert fake_exec["cmds"][0][-1] == "export CI=1; cd -- /srv/app && sudo -n make"
+
+
+def test_exec_propagates_the_remote_exit_code(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run",
+        lambda cmd, name, capture: pyssh.remote.ExecResult(name=name, returncode=42),
+    )
+    result = runner.invoke(ssh_management, ["exec", "prod", "false"])
+    assert result.exit_code == 42
+
+
+def test_exec_across_a_tag_hits_every_host(runner, monkeypatch):
+    calls = []
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            calls.append(name)
+            or pyssh.remote.ExecResult(name=name, returncode=0, stdout="up\n")
+            for name, _ in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "uptime"])
+    assert result.exit_code == 0, result.output
+    assert calls == ["web1", "web2"]
+
+
+def test_group_output_is_prefixed_with_the_host(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            pyssh.remote.ExecResult(name=name, returncode=0, stdout="up 3 days\n")
+            for name, _ in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "uptime"])
+    assert "web1 | up 3 days" in result.stdout
+
+
+def test_a_group_exits_non_zero_if_any_host_failed(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            pyssh.remote.ExecResult(name=name, returncode=0 if name == "web1" else 1)
+            for name, _ in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "uptime"])
+    assert result.exit_code != 0
+
+
+def test_group_json_reports_every_host(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            pyssh.remote.ExecResult(name=name, returncode=0, stdout="ok\n") for name, _ in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "uptime", "--json"])
+    payload = json.loads(result.stdout)
+    assert payload[0]["name"] == "web1"
+    assert payload[0]["returncode"] == 0
+
+
+def test_an_unused_tag_is_an_error(runner):
+    result = runner.invoke(ssh_management, ["exec", "--tag", "nope", "uptime"])
+    assert result.exit_code != 0
+    assert "nope" in result.stderr
+
+
+def test_a_group_uses_batch_mode_so_a_prompt_cannot_hang_it(runner, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            seen.update(cmd=list(cmd))
+            or pyssh.remote.ExecResult(name=name, returncode=0)
+            for name, cmd in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
+    runner.invoke(ssh_management, ["exec", "--tag", "prod", "uptime"])
+    assert "BatchMode=yes" in seen["cmd"]
+
+
+def test_exec_needs_a_target(runner):
+    result = runner.invoke(ssh_management, ["exec"])
+    assert result.exit_code != 0
