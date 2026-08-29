@@ -1613,6 +1613,7 @@ def exec_command(
       pyssh exec prod 'uptime'
       pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
       pyssh exec --tag prod -P 8 'systemctl is-active nginx'
+      pyssh exec prod -- grep -o pattern file
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
 

@@ -1134,3 +1134,78 @@ def test_a_group_uses_batch_mode_so_a_prompt_cannot_hang_it(runner, monkeypatch)
 def test_exec_needs_a_target(runner):
     result = runner.invoke(ssh_management, ["exec"])
     assert result.exit_code != 0
+
+
+def test_a_double_dash_lets_the_remote_command_use_pysshs_own_flags(runner, fake_exec):
+    """Without `--`, `-o` would be matched as pyssh's own --ssh-option flag."""
+    runner.invoke(ssh_management, ["exec", "prod", "--", "grep", "-o", "pat", "file"])
+    assert fake_exec["cmds"][0][-1] == "grep -o pat file"
+
+
+def test_exec_refuses_a_password_to_an_unknown_host(runner, monkeypatch, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    result = runner.invoke(ssh_management, ["exec", "prod", "uptime"])
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+
+
+def test_exec_uses_strict_host_keys_when_a_password_is_present(
+    runner, fake_exec, monkeypatch, working_keyring
+):
+    """A password disables sshpass's usual accept-new leniency."""
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    result = runner.invoke(ssh_management, ["exec", "prod", "uptime"])
+    assert result.exit_code == 0, result.output
+    cmd = fake_exec["cmds"][0]
+    assert "StrictHostKeyChecking=yes" in cmd
+    assert "hunter2" not in " ".join(cmd)
+
+
+def test_exec_removes_the_password_file_afterwards(
+    runner, fake_exec, monkeypatch, working_keyring
+):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    runner.invoke(ssh_management, ["exec", "prod", "uptime"])
+    pass_file = pyssh.Path(fake_exec["cmds"][0][2])
+    assert not pass_file.exists()
+
+
+def test_exec_passes_parallel_through_to_run_many(runner, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: captured.update(parallel=parallel) or [
+            pyssh.remote.ExecResult(name=name, returncode=0) for name, _ in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "-P", "8", "uptime"])
+    assert result.exit_code == 0, result.output
+    assert captured["parallel"] == 8

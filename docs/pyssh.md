@@ -164,11 +164,31 @@ pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
 pyssh exec prod --sudo 'systemctl restart nginx'
 pyssh exec --tag prod -P 8 'systemctl is-active nginx'
 pyssh exec --tag prod 'uptime' --json
+pyssh exec prod -- grep -o pattern file
 ```
 
 Arguments are joined with spaces and interpreted by the **remote** shell,
 exactly as `ssh host cmd` does — quote anything with pipes, globs or
 semicolons that the far side should expand.
+
+**pyssh's own options are recognised anywhere on the line, including after
+NAME** — `-o`, `-i`, `-t`, `-P`, `-v` and their long forms are matched
+wherever they appear, not only before the remote command. A remote command
+that happens to contain one of them is silently altered instead of erroring:
+
+```shell
+pyssh exec prod sort -o result.txt data.txt   # sends: sort data.txt
+pyssh exec prod curl -v https://example.com   # sends: curl https://example.com
+```
+
+Both exit `0` with no diagnostic — `sort` silently drops its output file.
+Put `--` before the remote command whenever it might contain one of pyssh's
+own flags; everything after `--` is passed through untouched:
+
+```shell
+pyssh exec prod -- sort -o result.txt data.txt
+pyssh exec prod -- curl -v https://example.com
+```
 
 | Option | Meaning |
 | --- | --- |
