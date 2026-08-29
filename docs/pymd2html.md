@@ -11,7 +11,8 @@ pymd2html doc.md --css mine.css --lang fa
 ```
 
 Needs no optional dependency — the Markdown parser is part of pytoolbox, so
-this works on a bare install and on Termux.
+this works on a bare install and on Termux. Mermaid diagrams are best-effort
+on top of that; see [Mermaid diagrams](#mermaid-diagrams) below.
 
 ## What comes out
 
@@ -67,6 +68,19 @@ shows the tags as text instead.
 Link targets that would run code (`javascript:`, `vbscript:`, `file:`) are
 never emitted as links, with or without that flag; they degrade to their text.
 
+## Mermaid diagrams
+
+````` ```mermaid ````` fences are rendered to an inline SVG (embedded as a
+`data:` URI, so the page stays self-contained) using, in order: a local
+[mermaid-cli](https://github.com/mermaid-js/mermaid-cli) (`mmdc`) install,
+then the [mermaid.ink](https://mermaid.ink) web API. If neither is available,
+the fence is shown as a plain code block instead.
+
+```shell
+npm install -g @mermaid-js/mermaid-cli   # for offline rendering
+pymd2html notes.md --offline             # skip the mermaid.ink fallback
+```
+
 ## Options
 
 ```
@@ -79,6 +93,7 @@ never emitted as links, with or without that flag; they degrade to their text.
     --lang TEXT        Value for <html lang>
     --rtl / --ltr      Force a direction instead of detecting one
     --escape-html      Show raw HTML as text
+    --offline          Never use the network: skip the mermaid.ink fallback
 -q, --quiet            Do not print the output paths
 ```
 

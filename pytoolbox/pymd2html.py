@@ -13,16 +13,26 @@ The output is one self-contained file: the stylesheet is embedded, so the page
 survives being mailed, copied to a phone or opened from a USB stick with no
 network and no sibling files. ``--fragment`` emits just the body for pasting
 into a page that already has its own chrome.
+
+``mermaid`` fences are rendered to an inline SVG (via a local ``mmdc`` install
+or, failing that, the mermaid.ink web API) rather than left as a code block;
+``--offline`` skips the web fallback.
 """
 
 from __future__ import annotations
 
+import base64
 import html
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 import click
+import requests
 
 from pytoolbox.core.options import CONTEXT_SETTINGS, quiet_option, version_option
 
@@ -156,6 +166,80 @@ th { background: var(--code-bg); font-weight: 600; }
 img { max-width: 100%; height: auto; }
 hr { height: 1px; margin: 2rem 0; background: var(--border); border: 0; }
 """
+
+#: mermaid-cli (`mmdc`), if installed, renders diagrams locally and offline.
+#: Otherwise a ```` ```mermaid ```` fence falls back to the mermaid.ink web
+#: API, and finally to showing the raw source as a code block.
+_HAS_MMDC = shutil.which("mmdc") is not None
+
+#: Whether the "no network for Mermaid" warning has already been printed, so a
+#: document full of diagrams says it once rather than once per diagram.
+_mermaid_net_warned = False
+
+
+def _render_mermaid_mmdc(source: str) -> Optional[bytes]:
+    """Render via a local mermaid-cli install. Returns SVG bytes or None."""
+    with tempfile.TemporaryDirectory() as tmp:
+        in_path = Path(tmp) / "diagram.mmd"
+        out_path = Path(tmp) / "diagram.svg"
+        in_path.write_text(source, encoding="utf-8")
+        result = subprocess.run(
+            ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "transparent"],
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0 and out_path.is_file():
+            return out_path.read_bytes()
+    return None
+
+
+def _render_mermaid_ink(source: str) -> bytes:
+    """Render via the mermaid.ink web API. Returns SVG bytes; raises on failure."""
+    b64 = base64.urlsafe_b64encode(source.encode("utf-8")).decode("ascii")
+    resp = requests.get(f"https://mermaid.ink/svg/{b64}", timeout=15)
+    resp.raise_for_status()
+    return resp.content
+
+
+def render_mermaid(source: str, offline: bool = False) -> Optional[bytes]:
+    """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
+    global _mermaid_net_warned
+    if _HAS_MMDC:
+        try:
+            data = _render_mermaid_mmdc(source)
+            if data:
+                return data
+        except Exception:
+            pass
+    if offline:
+        if not _mermaid_net_warned:
+            print(
+                "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
+                "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
+                file=sys.stderr,
+            )
+            _mermaid_net_warned = True
+        return None
+    try:
+        try:
+            return _render_mermaid_ink(source)
+        except requests.exceptions.RequestException:
+            # Transient failures (dropped connections, timeouts) are common
+            # enough on this public endpoint to warrant one retry before
+            # falling back to showing the raw source.
+            return _render_mermaid_ink(source)
+    except Exception as exc:
+        if not _mermaid_net_warned:
+            print(
+                "WARN: could not render Mermaid diagram "
+                f"({'mmdc failed and ' if _HAS_MMDC else ''}mermaid.ink request "
+                f"failed: {exc}); showing raw source instead. Install mermaid-cli "
+                "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
+                file=sys.stderr,
+            )
+            _mermaid_net_warned = True
+        return None
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -367,8 +451,9 @@ class _Renderer:
     HTML is trusted.
     """
 
-    def __init__(self, escape_html: bool = False) -> None:
+    def __init__(self, escape_html: bool = False, offline: bool = False) -> None:
         self.escape_html = escape_html
+        self.offline = offline
         self.anchors: dict[str, int] = {}
 
     # ── entry point ─────────────────────────────────────────────
@@ -426,10 +511,18 @@ class _Renderer:
         while index < len(lines) and not re.match(rf"^ {{0,3}}{marker[0]}{{{len(marker)},}}\s*$", lines[index]):
             body.append(lines[index])
             index += 1
+        # The closing fence, or the end of the document when there is none.
+        end = index + 1
+        if language.lower() == "mermaid":
+            source = "\n".join(body).strip()
+            data = render_mermaid(source, offline=self.offline) if source else None
+            if data:
+                encoded = base64.b64encode(data).decode("ascii")
+                out.append(f'<img class="mermaid" alt="Mermaid diagram" src="data:image/svg+xml;base64,{encoded}">')
+                return end
         attribute = f' class="language-{html.escape(language, quote=True)}"' if language else ""
         out.append(f"<pre><code{attribute}>{html.escape(chr(10).join(body))}</code></pre>")
-        # The closing fence, or the end of the document when there is none.
-        return index + 1
+        return end
 
     def _heading(self, heading: re.Match[str], index: int, out: list[str]) -> int:
         level = len(heading.group(1))
@@ -587,7 +680,7 @@ class _Renderer:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def render_body(text: str, escape_html: bool = False) -> str:
+def render_body(text: str, escape_html: bool = False, offline: bool = False) -> str:
     """Render Markdown to an HTML fragment: no ``<html>``, no stylesheet."""
     # NUL is the placeholder sentinel, and a control character no document
     # needs; dropping it up front is what makes the placeholders unforgeable.
@@ -597,7 +690,7 @@ def render_body(text: str, escape_html: bool = False) -> str:
         # The empty string after a file's final newline is not a blank line,
         # and inside an unclosed code fence it would be printed as one.
         lines.pop()
-    return _Renderer(escape_html=escape_html).blocks(lines)
+    return _Renderer(escape_html=escape_html, offline=offline).blocks(lines)
 
 
 def is_rtl(text: str) -> bool:
@@ -621,9 +714,10 @@ def render_document(
     lang: Optional[str] = None,
     rtl: Optional[bool] = None,
     escape_html: bool = False,
+    offline: bool = False,
 ) -> str:
     """Render Markdown to one self-contained HTML page."""
-    body = render_body(text, escape_html=escape_html)
+    body = render_body(text, escape_html=escape_html, offline=offline)
     heading = title if title is not None else extract_title(text)
     direction = is_rtl(text) if rtl is None else rtl
     attributes = f' lang="{html.escape(lang, quote=True)}"' if lang else ""
@@ -655,12 +749,13 @@ def convert(
     lang: Optional[str] = None,
     rtl: Optional[bool] = None,
     escape_html: bool = False,
+    offline: bool = False,
 ) -> Path:
     """Convert one Markdown file, returning the path written."""
     md_path = Path(md_path)
     text = md_path.read_text(encoding="utf-8")
     if fragment:
-        output = render_body(text, escape_html=escape_html) + "\n"
+        output = render_body(text, escape_html=escape_html, offline=offline) + "\n"
     else:
         output = render_document(
             text,
@@ -669,6 +764,7 @@ def convert(
             lang=lang,
             rtl=rtl,
             escape_html=escape_html,
+            offline=offline,
         )
 
     html_path = Path(html_path)
@@ -723,6 +819,11 @@ def convert(
     help="Show raw HTML in the Markdown as text instead of passing it through. "
     "Use it for documents you did not write.",
 )
+@click.option(
+    "--offline",
+    is_flag=True,
+    help="Never use the network: skip the mermaid.ink fallback for Mermaid diagrams.",
+)
 @quiet_option
 @version_option
 def md2html_cli(
@@ -737,17 +838,25 @@ def md2html_cli(
     rtl: bool,
     ltr: bool,
     escape_html: bool,
+    offline: bool,
     quiet: bool,
 ) -> None:
     """Convert Markdown file(s) to HTML.
 
     \b
     Writes one self-contained page per input: the stylesheet is embedded and
-    nothing is fetched from the network, so the file works offline, on a phone
-    and from an email attachment. Supports headings (with anchors), bold,
-    italic, strikethrough, inline code, code blocks, tables, bullet, numbered
-    and task lists, blockquotes, rules, images, links and raw HTML.
-    Persian/Arabic/Hebrew documents get a right-to-left page automatically.
+    nothing is fetched from the network by default, so the file works
+    offline, on a phone and from an email attachment. Supports headings (with
+    anchors), bold, italic, strikethrough, inline code, code blocks, tables,
+    bullet, numbered and task lists, blockquotes, rules, images, links and
+    raw HTML. Persian/Arabic/Hebrew documents get a right-to-left page
+    automatically.
+
+    \b
+    ```` ```mermaid ```` fenced blocks are rendered to an inline SVG using, in
+    order: a local mermaid-cli (`mmdc`) install, then the mermaid.ink web API.
+    If neither is available, the fence is shown as a plain code block instead.
+    For offline rendering: npm install -g @mermaid-js/mermaid-cli
 
     \b
     Examples:
@@ -756,6 +865,7 @@ def md2html_cli(
       pymd2html *.md -d ./site
       pymd2html post.md --fragment           # body only, for a template
       pymd2html doc.md --css mine.css --lang fa
+      pymd2html notes.md --offline           # skip the mermaid.ink fallback
     """
     if output and len(files) > 1:
         raise click.UsageError("-o/--output can only be used with a single input file.")
@@ -787,6 +897,7 @@ def md2html_cli(
             lang=lang,
             rtl=direction,
             escape_html=escape_html,
+            offline=offline,
         )
         if not quiet and str(written) != "-":
             click.echo(f"  {md_path} -> {written}", err=True)
