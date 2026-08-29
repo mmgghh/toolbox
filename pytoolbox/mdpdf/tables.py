@@ -28,6 +28,26 @@ def _strip_code_ticks(text):
     return re.sub(r'`(.+?)`', r'\1', text)
 
 
+#: ``<br>`` is how Markdown forces a line break inside a table cell, since a
+#: literal newline would end the row. fpdf2 does not parse HTML -- unlike its
+#: own markdown for ``**bold**`` -- so left alone it prints the tag as text.
+_BR_RE = re.compile(r'<br\s*/?>', re.I)
+
+
+def _normalize_cell(text):
+    """Cell source with code ticks stripped and ``<br>`` turned into a real
+    line break that fpdf2's own line wrapping (``multi_cell``) will honour.
+    """
+    return _BR_RE.sub('\n', _strip_code_ticks(text)).strip()
+
+
+def _cell_width(pdf, text):
+    """The width a cell wants: its widest line, not its whole (possibly
+    ``<br>``-broken) length -- an explicit break should not inflate the column.
+    """
+    return max(pdf.get_string_width(line) for line in text.split('\n'))
+
+
 #: A cell that is nothing but a single link, which can therefore become a real
 #: document.PDF link annotation on the whole cell rather than plain label text.
 _CELL_LINK_RE = re.compile(r'^\[([^\]]+)\]\(([^)\s]+)\)$')
@@ -103,7 +123,7 @@ def add_table(pdf, headers, rows):
         reordered before fpdf2 sees it, so its markdown markers can no longer
         be parsed and any bold has to travel as an explicit FontFace.
         """
-        text = _strip_code_ticks(cell).strip()
+        text = _normalize_cell(cell)
         bold_m = render.WHOLE_BOLD_RE.match(text)
         inner = bold_m.group(1).strip() if bold_m else text
         link_m = _CELL_LINK_RE.match(inner)
@@ -132,7 +152,14 @@ def add_table(pdf, headers, rows):
             # (and re-scramble) any of them.
             pdf.set_font(table_font, "B" if (bold_m or is_header) else "", document.TABLE_SIZE)
             usable_width = col_width - 2 * CELL_PADDING
-            shaped = "\n".join(shaping.shape_rtl_lines(pdf, body, usable_width))
+            # Wrap each ``<br>``-separated paragraph on its own: shape_rtl_lines
+            # only knows how to wrap on spaces, so an embedded newline would
+            # otherwise get shaped as part of whichever word it lands next to.
+            shaped = "\n".join(
+                line
+                for paragraph in body.split("\n")
+                for line in shaping.shape_rtl_lines(pdf, paragraph, usable_width)
+            )
         else:
             shaped = body
         return {
@@ -144,13 +171,15 @@ def add_table(pdf, headers, rows):
             ) if emphasis else None,
         }
 
-    # Natural widths (with backticks/markdown stripped, since they don't render).
+    # Natural widths (with backticks/markdown stripped and <br> resolved to its
+    # own line, since none of that renders as the raw source's width implies).
     pdf.set_font(table_font, "B", document.TABLE_SIZE)
-    natural = [pdf.get_string_width(render.strip_md(h)) + 4 for h in headers]
+    natural = [_cell_width(pdf, render.strip_md(_normalize_cell(h))) + 4 for h in headers]
     pdf.set_font(table_font, "", document.TABLE_SIZE)
     for row in rows:
         for i in range(min(n, len(row))):
-            natural[i] = max(natural[i], pdf.get_string_width(render.strip_md(row[i])) + 4)
+            width = _cell_width(pdf, render.strip_md(_normalize_cell(row[i]))) + 4
+            natural[i] = max(natural[i], width)
 
     # Clamp each column to [min_col, max_col]. min_col guarantees at least a few
     # characters fit; max_col forces very long cells to wrap rather than starving

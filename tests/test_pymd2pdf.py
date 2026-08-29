@@ -107,6 +107,20 @@ def test_parse_table_row():
     assert tables.parse_table_row("a | b") == ["a", "b"]
 
 
+@pytest.mark.parametrize(
+    ("cell", "expected"),
+    [
+        ("one<br>two", "one\ntwo"),
+        ("one<br/>two", "one\ntwo"),
+        ("one<br />two", "one\ntwo"),
+        ("one<BR>two", "one\ntwo"),
+        ("plain", "plain"),
+    ],
+)
+def test_normalize_cell_turns_br_into_a_newline(cell, expected):
+    assert tables._normalize_cell(cell) == expected
+
+
 def test_task_regex():
     assert render.TASK_RE.match("[ ] todo").groups() == (" ", "todo")
     assert render.TASK_RE.match("[x] done").groups() == ("x", "done")
@@ -287,6 +301,42 @@ def test_long_rtl_table_cell_wraps_lines_in_reading_order(tmp_path):
     assert positions.keys() == {"start", "end"}
     # PDF y-coordinates increase upward, so the first (higher) physical line
     # has the larger y.
+    assert positions["start"] > positions["end"]
+
+
+TABLE_BR = """# Test
+
+| A | B |
+| --- | --- |
+| MARKSTART<br>MARKEND | x |
+"""
+
+
+@needs_fonts
+def test_table_cell_br_becomes_a_real_line_break(tmp_path):
+    """A ``<br>`` inside a table cell used to reach fpdf2 as literal text --
+    it does not parse HTML the way it parses ``**bold**`` -- so the cell
+    printed the tag instead of breaking. It is now turned into a real
+    newline before the cell is measured or drawn.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    source = tmp_path / "doc.md"
+    source.write_text(TABLE_BR, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+
+    positions = {}
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if "MARKSTART" in text:
+            positions["start"] = tm[5]
+        elif "MARKEND" in text:
+            positions["end"] = tm[5]
+
+    reader = pypdf.PdfReader(target)
+    text = reader.pages[-1].extract_text(visitor_text=visitor)
+    assert "<br>" not in text
+    assert positions.keys() == {"start", "end"}
     assert positions["start"] > positions["end"]
 
 

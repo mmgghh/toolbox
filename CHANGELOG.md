@@ -23,6 +23,13 @@ This project follows [Semantic Versioning](https://semver.org/).
   using a local `mmdc` install or the mermaid.ink API, with the code block as
   a fallback when neither is reachable. `--offline` skips the web fallback.
 
+- **`pymd2pdf` printed a table cell's `<br>` as literal text instead of
+  breaking the line.** fpdf2 parses its own `**bold**` markdown but not HTML,
+  so a cell's line-break tag went to the page unchanged, and the column width
+  was measured against the whole unbroken string besides. `<br>` (any of
+  `<br>`, `<br/>`, `<br />`) is now turned into a real line break before a
+  cell is measured or drawn, in both LTR and RTL tables.
+
 - **`pymd2pdf` ran a blockquote's indent bar down the side of several
   sections the quote had nothing to do with.** The bar is drawn last, once
   the quote's height is known, from the y where it started to the y where it

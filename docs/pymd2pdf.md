@@ -27,7 +27,7 @@ pymd2pdf notes.md --no-title-page --font-size 11 --offline
 | ` ```lang ` fences | Shaded code block |
 | `[text](url)` | Underlined blue text with a real PDF link |
 | `![alt](src)` | Embedded image, scaled to fit, with a caption |
-| Tables | Auto-sized columns, header fill, zebra rows; a cell that is only a link becomes a clickable link |
+| Tables | Auto-sized columns, header fill, zebra rows; a cell that is only a link becomes a clickable link; `<br>` inside a cell is a real line break |
 | `- `, `* `, `+ ` | Bullet lists, marker cycles by nesting depth |
 | `1. ` | Numbered lists |
 | `- [ ]` / `- [x]` | Task lists |
