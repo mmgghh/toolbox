@@ -1136,8 +1136,15 @@ def test_exec_needs_a_target(runner):
     assert result.exit_code != 0
 
 
+def test_exec_without_a_double_dash_still_passes_short_remote_flags_through(runner, fake_exec):
+    """exec has no short options of its own, so -o survives untouched with no -- needed."""
+    runner.invoke(ssh_management, ["exec", "prod", "sort", "-o", "out.txt", "data.txt"])
+    assert fake_exec["cmds"][0][-1] == "sort -o out.txt data.txt"
+
+
 def test_a_double_dash_lets_the_remote_command_use_pysshs_own_flags(runner, fake_exec):
-    """Without `--`, `-o` would be matched as pyssh's own --ssh-option flag."""
+    """`--` still escapes a remote command that collides with one of pyssh's
+    own long options, e.g. one that also uses `-o` for its own purposes."""
     runner.invoke(ssh_management, ["exec", "prod", "--", "grep", "-o", "pat", "file"])
     assert fake_exec["cmds"][0][-1] == "grep -o pat file"
 
@@ -1206,6 +1213,6 @@ def test_exec_passes_parallel_through_to_run_many(runner, monkeypatch):
         ],
     )
     runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1", "web2"])
-    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "-P", "8", "uptime"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "--parallel", "8", "uptime"])
     assert result.exit_code == 0, result.output
     assert captured["parallel"] == 8

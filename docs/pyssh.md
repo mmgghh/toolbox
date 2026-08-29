@@ -162,42 +162,44 @@ is not reachable.
 pyssh exec prod 'uptime'
 pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
 pyssh exec prod --sudo 'systemctl restart nginx'
-pyssh exec --tag prod -P 8 'systemctl is-active nginx'
+pyssh exec --tag prod --parallel 8 'systemctl is-active nginx'
 pyssh exec --tag prod 'uptime' --json
-pyssh exec prod -- grep -o pattern file
+pyssh exec prod -- curl --verbose https://example.com
 ```
 
 Arguments are joined with spaces and interpreted by the **remote** shell,
 exactly as `ssh host cmd` does — quote anything with pipes, globs or
 semicolons that the far side should expand.
 
-**pyssh's own options are recognised anywhere on the line, including after
-NAME** — `-o`, `-i`, `-t`, `-P`, `-v` and their long forms are matched
-wherever they appear, not only before the remote command. A remote command
-that happens to contain one of them is silently altered instead of erroring:
+**`exec` has no short options of its own**, unlike pyssh's other commands —
+there is no `-P`, `-t`, `-i` or `-o`, only `--parallel`, `--tty`, `--identity`
+and `--ssh-option`. This is deliberate: pyssh's own options are matched
+anywhere on the line, including after NAME, and a remote command containing
+`-o`, `-i`, `-t` or `-v` is common (`grep -o`, `sort -o`, `rm -i`, `tar -t`,
+`curl -v`). With no short options to collide with, these now pass straight
+through untouched, no `--` needed:
 
 ```shell
-pyssh exec prod sort -o result.txt data.txt   # sends: sort data.txt
-pyssh exec prod curl -v https://example.com   # sends: curl https://example.com
+pyssh exec prod sort -o result.txt data.txt   # sends: sort -o result.txt data.txt
+pyssh exec prod curl -v https://example.com   # sends: curl -v https://example.com
 ```
 
-Both exit `0` with no diagnostic — `sort` silently drops its output file.
-Put `--` before the remote command whenever it might contain one of pyssh's
-own flags; everything after `--` is passed through untouched:
+pyssh's own **long** options are still matched anywhere on the line, so `--`
+remains the escape for a remote command that happens to use one of those
+spellings itself — `--verbose` is the common case:
 
 ```shell
-pyssh exec prod -- sort -o result.txt data.txt
-pyssh exec prod -- curl -v https://example.com
+pyssh exec prod -- curl --verbose https://example.com   # sends: curl --verbose https://example.com
 ```
 
 | Option | Meaning |
 | --- | --- |
 | `--tag TAG` | Run on every host carrying TAG instead of one NAME |
-| `-P, --parallel N` | Run on up to N hosts at once (default 1) |
+| `--parallel N` | Run on up to N hosts at once (default 1) |
 | `--cd DIR` | Run the command in DIR |
 | `--env NAME=VALUE` | Export a variable first. Repeatable |
 | `--sudo` | Run as root with `sudo -n`; needs passwordless sudo there |
-| `-t, --tty` | Force a TTY, for interactive remote programs |
+| `--tty` | Force a TTY, for interactive remote programs |
 | `--json` | One record per host: name, exit code, stdout, stderr |
 
 **Output and exit codes.** One host's output passes straight through, so

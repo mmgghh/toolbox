@@ -1575,17 +1575,27 @@ def reverse(
 )
 @click.argument("args", nargs=-1, required=True)
 @click.option("--tag", help="Run on every host carrying this tag instead of one NAME.")
-@click.option("-P", "--parallel", default=1, show_default=True, type=click.IntRange(1, 64),
+# exec deliberately has no short options (see --verbose below for why): a
+# remote command containing -P, -t, -i, -o or -v is common (grep -o, sort -o,
+# rm -i, tar -t, curl -v), and pyssh's own options are matched anywhere on the
+# line, including after NAME, so a short form here would silently eat part of
+# the remote command instead of erroring. Long forms only; `--` still escapes
+# a remote command that collides with one of pyssh's own long options.
+@click.option("--parallel", default=1, show_default=True, type=click.IntRange(1, 64),
               help="How many hosts to run on at once.")
 @click.option("--cd", "workdir", metavar="DIR", help="Run the command in DIR.")
 @click.option("--env", "env_pairs", multiple=True, metavar="NAME=VALUE",
               help="Export a variable before running. Repeatable.")
 @click.option("--sudo", is_flag=True, help="Run as root with `sudo -n`. Needs passwordless sudo.")
-@click.option("-t", "--tty", is_flag=True, help="Force a TTY, for interactive remote programs.")
-@click.option("-i", "--identity", type=click.Path(dir_okay=False), help="Private key file.")
-@click.option("-o", "--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
+@click.option("--tty", is_flag=True, help="Force a TTY, for interactive remote programs.")
+@click.option("--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option("--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
 @json_option
-@verbose_option
+# Not the shared verbose_option: it hardcodes -v, which would collide with a
+# remote command like `curl -v` for the same reason noted above. Do not
+# "tidy" this back to @verbose_option.
+@click.option("--verbose", count=True,
+              help="Increase output detail. Repeat for more (--verbose --verbose).")
 def exec_command(
     args: tuple[str, ...],
     tag: Optional[str],
@@ -1612,8 +1622,8 @@ def exec_command(
     Examples:
       pyssh exec prod 'uptime'
       pyssh exec prod --cd /srv/app --env CI=1 'git pull && make'
-      pyssh exec --tag prod -P 8 'systemctl is-active nginx'
-      pyssh exec prod -- grep -o pattern file
+      pyssh exec --tag prod --parallel 8 'systemctl is-active nginx'
+      pyssh exec prod -- curl --verbose https://example.com
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
 
