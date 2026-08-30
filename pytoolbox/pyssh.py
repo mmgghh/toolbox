@@ -555,7 +555,8 @@ def _tunnel_options(func):
 @click.option(
     "-s",
     "--server",
-    help="Target as 'user@host', 'user@host:port' or 'user:password@host:port'.",
+    help="Target as 'user@host', 'user@host:port' or 'user:password@host:port', "
+    "or the name of a host in ~/.ssh/config.",
 )
 @click.option(
     "--server-conf",
@@ -676,8 +677,14 @@ def _second_hop_address(target: hosts.Target) -> hosts.Server:
 
 
 @ssh_management.command("double-tunnel")
-@click.option("--server1", help="First hop, as 'user[:password]@host[:port]'.")
-@click.option("--server2", help="Second hop, as 'user[:password]@host[:port]'.")
+@click.option(
+    "--server1",
+    help="First hop, as 'user[:password]@host[:port]', or an ~/.ssh/config host name.",
+)
+@click.option(
+    "--server2",
+    help="Second hop, as 'user[:password]@host[:port]', or an ~/.ssh/config host name.",
+)
 @click.option(
     "--server1-conf",
     type=click.Path(exists=True, dir_okay=False, readable=True),
@@ -726,9 +733,10 @@ def double_tunnel(
     you -> server1 -> server2 -> internet, exposed as socks5://localhost:<lp2>.
 
     \b
-    Example:
+    Examples:
       pyssh double-tunnel --server1 me@bridge.example.com:22 \\
                           --server2 me@target.example.com:22 --lp1 9998 --lp2 9999
+      pyssh double-tunnel --server1 bridge --server2 target --background
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
     first = apply_stored_secret(hosts.resolve_connection(server1, server1_conf, "--server1"))
@@ -1139,7 +1147,13 @@ def rsync_dir(
 @ssh_management.command()
 @click.option("--json", "as_json", is_flag=True, help="Print state as JSON.")
 def status(as_json: bool) -> None:
-    """List tunnels started by pyssh that are still running."""
+    """List tunnels started by pyssh that are still running.
+
+    \b
+    Examples:
+      pyssh status
+      pyssh status --json
+    """
     states = load_states()
     if as_json:
         console.emit_json(states)
@@ -1180,7 +1194,13 @@ def _uptime(started_at: Optional[float]) -> str:
 @click.argument("name", required=False)
 @click.option("-a", "--all", "stop_all", is_flag=True, help="Stop every running tunnel.")
 def stop(name: Optional[str], stop_all: bool) -> None:
-    """Stop a background tunnel by NAME (see `pyssh status`), or all of them."""
+    """Stop a background tunnel by NAME (see `pyssh status`), or all of them.
+
+    \b
+    Examples:
+      pyssh stop tunnel-9998
+      pyssh stop --all
+    """
     states = load_states()
     if not states:
         console.result("No pyssh tunnels are running.")

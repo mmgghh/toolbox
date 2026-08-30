@@ -1525,3 +1525,33 @@ def test_check_prints_the_changed_host_key_remediation(runner, monkeypatch):
     result = runner.invoke(ssh_management, ["check", "prod"])
     assert result.exit_code != 0
     assert "ssh-keygen -R" in result.stderr
+
+
+def test_every_command_is_documented():
+    """A command missing from docs/pyssh.md is a command nobody will find."""
+    from pathlib import Path
+
+    doc = Path(__file__).resolve().parents[1] / "docs" / "pyssh.md"
+    text = doc.read_text(encoding="utf-8")
+    documented = [
+        name
+        for name in ssh_management.list_commands(click.Context(ssh_management))
+        if name not in text
+    ]
+    assert documented == [], f"undocumented commands: {documented}"
+
+
+def test_every_command_has_an_examples_block(runner):
+    """The repo convention: each docstring ends with an Examples: block."""
+    ctx = click.Context(ssh_management)
+    missing = []
+    for name in ssh_management.list_commands(ctx):
+        cmd = ssh_management.get_command(ctx, name)
+        if isinstance(cmd, click.Group):
+            for sub in cmd.list_commands(ctx):
+                child = cmd.get_command(ctx, sub)
+                if "Examples:" not in (child.help or ""):
+                    missing.append(f"{name} {sub}")
+        elif "Examples:" not in (cmd.help or ""):
+            missing.append(name)
+    assert missing == [], f"commands without an Examples block: {missing}"

@@ -3,16 +3,20 @@
 Also available as `toolbox ssh`.
 
 ```
-tunnel          SOCKS5 proxy through one remote server
-double-tunnel   SOCKS5 proxy to server 2, reached through server 1
-connect         Open a connection, with any combination of forwards
+connect         Open a connection to a host, with any forwards you need
 forward         Bring a remote service to a local port
 reverse         Expose a local service on the remote server
+tunnel          SOCKS5 proxy through one remote server
+double-tunnel   SOCKS5 proxy to server 2, reached through server 1
+exec            Run a command on one host, or on every host with a tag
 rsync-dir       Copy a directory over SSH with rsync
-status          List tunnels started by pyssh
-stop            Stop a background tunnel
-secret          Store, list and forget host passwords
-hosts           List hosts pyssh can reach, and manage their tags
+hosts           List the hosts pyssh can reach, and manage their tags
+secret          Passwords for hosts in your ~/.ssh/config
+keygen          Generate an SSH key
+copy-id         Install your public key on a host
+check           Check that a host is reachable and authentication works
+status          List sessions started by pyssh
+stop            Stop a background session
 ```
 
 These are thin wrappers around the system `ssh` and `rsync` binaries, not an
@@ -148,8 +152,17 @@ pyssh reverse prod -R 1080                           # SOCKS proxy for the serve
 **Backgrounding.** `-b` uses ssh's own `-f`, so the command returns only once
 authentication has succeeded — and, for a `-R` forward, only once the server
 has actually bound the port. A failure is reported instead of leaving a dead
-tunnel behind. The session is tracked by a control socket, so `pyssh stop`
-closes it cleanly with `ssh -O exit` rather than signalling a PID.
+tunnel behind. The session is usually tracked by a control socket, so `pyssh
+stop` closes it cleanly with `ssh -O exit` rather than signalling a PID. There
+is no control socket on Windows, or when the runtime path is too long for a
+Unix socket; pyssh then warns that it cannot track the session, and `pyssh
+status`/`pyssh stop` will not know about it even though it keeps running.
+
+**`--public`** changes the *default* bind address pyssh fills in for `-L`/`-D`
+forwards that do not name one, from `127.0.0.1` to `0.0.0.0`. It does not
+override a bind address you do type: `-L 0.0.0.0:5432:db.internal:5432` binds
+every interface with or without `--public`, and adding `--public` to
+`-L 127.0.0.1:5432:db.internal:5432` still binds loopback only.
 
 **`--public` on a reverse forward** asks the *server* to bind `0.0.0.0`, which
 sshd refuses unless its `GatewayPorts` is `yes` or `clientspecified`. The
