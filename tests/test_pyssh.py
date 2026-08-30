@@ -1253,12 +1253,21 @@ def test_keygen_names_the_identityfile_line_to_add(runner, monkeypatch, tmp_path
 
 
 def test_keygen_will_not_overwrite_an_existing_key(runner, monkeypatch, tmp_path):
+    def _explode(*args, **kwargs):
+        raise AssertionError("ssh-keygen must not run when the key already exists")
+
     monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    # A pass-through subprocess.run would let a removed guard silently invoke
+    # the real ssh-keygen (it would then prompt to overwrite and exit 1 on
+    # EOF, passing the assertions below for the wrong reason). Make the guard
+    # load-bearing: any call at all is a hard failure, not a green test.
+    monkeypatch.setattr(pyssh.subprocess, "run", _explode)
     key = tmp_path / "id_test"
     key.write_text("existing", encoding="utf-8")
     result = runner.invoke(ssh_management, ["keygen", "-f", str(key)])
     assert result.exit_code != 0
     assert key.read_text(encoding="utf-8") == "existing"
+    assert "already exists" in result.output
 
 
 def test_copy_id_prefers_ssh_copy_id(runner, monkeypatch, tmp_path):
@@ -1357,3 +1366,162 @@ def test_check_uses_batch_mode(runner, monkeypatch):
     monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
     runner.invoke(ssh_management, ["check", "prod"])
     assert "BatchMode=yes" in captured["cmd"]
+
+
+# ── onboarding: fix round ────────────────────────────────────────────
+
+def test_copy_id_refuses_a_stored_password_to_an_unknown_host(
+    runner, monkeypatch, tmp_path, working_keyring
+):
+    """copy-id must guard exactly like connect and exec: no verified host, no password."""
+    key = tmp_path / "id_test.pub"
+    key.write_text("ssh-ed25519 AAAA test\n", encoding="utf-8")
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    monkeypatch.setattr(
+        pyssh.subprocess,
+        "run",
+        lambda *a, **k: pytest.fail(
+            "subprocess.run must not be called: the host key was never verified"
+        ),
+    )
+    result = runner.invoke(ssh_management, ["copy-id", "prod", "-i", str(key)])
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+    assert "ssh prod" in result.stderr
+
+
+def test_copy_id_fallback_quotes_a_hostile_key_safely(runner, monkeypatch, tmp_path):
+    """The installer is a shell one-liner; an unquoted key would be code execution."""
+    captured = {}
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    dangerous_key = "ssh-ed25519 AAAA test$(touch pwned) `touch pwned2` ' ; rm -rf / #"
+    key = tmp_path / "id_test.pub"
+    key.write_text(dangerous_key + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        pyssh.shutil, "which", lambda name: None if name == "ssh-copy-id" else f"/usr/bin/{name}"
+    )
+    monkeypatch.setattr(
+        pyssh.subprocess, "run", lambda cmd, **kw: (captured.update(cmd=cmd), FakeCompleted())[1]
+    )
+    result = runner.invoke(ssh_management, ["copy-id", "prod", "-i", str(key)])
+    assert result.exit_code == 0, result.output
+    installer = captured["cmd"][-1]
+    # shlex.split undoes shlex.quote's escaping; if the key round-trips intact
+    # as a single token, nothing in it broke out to run as a shell command.
+    tokens = pyssh.shlex.split(installer)
+    printf_index = tokens.index("printf")
+    assert tokens[printf_index + 2] == dangerous_key
+
+
+def test_copy_id_prefers_the_name_specific_key(runner, monkeypatch, tmp_path):
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    named = ssh_dir / "id_ed25519_prod.pub"
+    named.write_text("ssh-ed25519 AAAA named\n", encoding="utf-8")
+    generic = ssh_dir / "id_ed25519.pub"
+    generic.write_text("ssh-ed25519 AAAA generic\n", encoding="utf-8")
+    monkeypatch.setattr(pyssh.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: type(
+        "FakeCompleted", (), {"returncode": 0, "stdout": "", "stderr": ""}
+    )())
+    result = runner.invoke(ssh_management, ["copy-id", "prod"])
+    assert result.exit_code == 0, result.output
+    assert "id_ed25519_prod.pub" in result.output
+
+
+def test_copy_id_falls_back_to_the_generic_key(runner, monkeypatch, tmp_path):
+    ssh_dir = tmp_path / ".ssh"
+    ssh_dir.mkdir()
+    generic = ssh_dir / "id_ed25519.pub"
+    generic.write_text("ssh-ed25519 AAAA generic\n", encoding="utf-8")
+    monkeypatch.setattr(pyssh.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: type(
+        "FakeCompleted", (), {"returncode": 0, "stdout": "", "stderr": ""}
+    )())
+    result = runner.invoke(ssh_management, ["copy-id", "prod"])
+    assert result.exit_code == 0, result.output
+    assert "id_ed25519.pub" in result.output
+
+
+def test_copy_id_names_both_paths_when_neither_key_exists(runner, monkeypatch, tmp_path):
+    monkeypatch.setattr(pyssh.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    result = runner.invoke(ssh_management, ["copy-id", "prod"])
+    assert result.exit_code != 0
+    assert "id_ed25519_prod.pub" in result.output
+    assert "id_ed25519.pub" in result.output
+
+
+def test_keygen_reports_a_directory_it_cannot_create(runner, monkeypatch, tmp_path):
+    """A user-supplied -f path can name a parent that is not a directory at all."""
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory", encoding="utf-8")
+    key = blocker / "id_test"
+    result = runner.invoke(ssh_management, ["keygen", "-f", str(key)])
+    assert result.exit_code != 0
+    assert "Could not create" in result.output
+    assert str(blocker) in result.output
+
+
+def test_check_reports_a_reachable_host_without_json(runner, monkeypatch):
+    class FakeCompleted:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    result = runner.invoke(ssh_management, ["check", "prod"])
+    assert result.exit_code == 0, result.output
+    assert "prod is reachable" in result.stdout
+    assert "is reachable" not in result.stderr
+
+
+def test_check_reports_an_unreachable_host_without_json(runner, monkeypatch):
+    class FakeCompleted:
+        returncode = 255
+        stdout = ""
+        stderr = "Permission denied (publickey)."
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    result = runner.invoke(ssh_management, ["check", "prod"])
+    assert result.exit_code != 0
+    assert "not reachable" in result.stderr
+    assert "not reachable" not in result.stdout
+
+
+def test_check_prints_the_changed_host_key_remediation(runner, monkeypatch):
+    class FakeCompleted:
+        returncode = 255
+        stdout = ""
+        stderr = (
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "REMOTE HOST IDENTIFICATION HAS CHANGED!\n"
+        )
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.subprocess, "run", lambda cmd, **kw: FakeCompleted())
+    monkeypatch.setattr(pyssh.hosts, "resolve_config", lambda name, options=(): None)
+    result = runner.invoke(ssh_management, ["check", "prod"])
+    assert result.exit_code != 0
+    assert "ssh-keygen -R" in result.stderr

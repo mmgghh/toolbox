@@ -1741,7 +1741,10 @@ def keygen(name: Optional[str], key_type: str, key_path: Optional[str], comment:
         raise click.ClickException(
             f"{path} already exists. Pick another path with -f, or use it as it is."
         )
-    paths.ensure_dir(path.parent, private=True)
+    try:
+        paths.ensure_dir(path.parent, private=True)
+    except OSError as exc:
+        raise click.ClickException(f"Could not create {path.parent}: {exc}") from exc
 
     cmd = ["ssh-keygen", "-t", key_type, "-f", str(path)]
     if comment:
@@ -1758,7 +1761,8 @@ def keygen(name: Optional[str], key_type: str, key_path: Optional[str], comment:
 
 @ssh_management.command("copy-id")
 @click.option("-i", "--identity", "public_key", type=click.Path(dir_okay=False),
-              help="Public key to install. Defaults to ~/.ssh/id_ed25519.pub.")
+              help="Public key to install. Defaults to ~/.ssh/id_ed25519_<name>.pub if it "
+                   "exists, else ~/.ssh/id_ed25519.pub.")
 @click.argument("name")
 @verbose_option
 def copy_id(name: str, public_key: Optional[str], verbose: int) -> None:
@@ -1770,13 +1774,29 @@ def copy_id(name: str, public_key: Optional[str], verbose: int) -> None:
       pyssh copy-id prod -i ~/.ssh/id_ed25519_prod.pub
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
-    key = Path(public_key).expanduser() if public_key else Path.home() / ".ssh" / "id_ed25519.pub"
-    if not key.is_file():
-        raise click.ClickException(
-            f"{key} does not exist. Make one with `pyssh keygen {name}`, or point -i at yours."
-        )
+    if public_key:
+        key = Path(public_key).expanduser()
+        if not key.is_file():
+            raise click.ClickException(
+                f"{key} does not exist. Make one with `pyssh keygen {name}`, or point -i at yours."
+            )
+    else:
+        # `keygen NAME` writes a name-specific key; prefer it over the generic
+        # default so the documented keygen-then-copy-id flow works untouched.
+        named_key = Path.home() / ".ssh" / f"id_ed25519_{name}.pub"
+        generic_key = Path.home() / ".ssh" / "id_ed25519.pub"
+        if named_key.is_file():
+            key = named_key
+        elif generic_key.is_file():
+            key = generic_key
+        else:
+            raise click.ClickException(
+                f"Neither {named_key} nor {generic_key} exists. "
+                f"Make one with `pyssh keygen {name}`, or point -i at yours."
+            )
 
     target = apply_stored_secret(hosts.resolve_target(name))
+    _guard_host_key(target)
     password_file = _password_file(target.password, "k")
     try:
         if shutil.which("ssh-copy-id") is not None:
