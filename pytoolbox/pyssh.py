@@ -1558,7 +1558,8 @@ def forward(
 @ssh_management.command()
 @click.argument("name")
 @click.option("-R", "--remote", "remote_forwards", multiple=True, required=True, metavar="SPEC",
-              help="port:host:hostport, or a bare port for a SOCKS proxy the server can use.")
+              help="port:host:hostport, or bind:port:host:hostport. A bare port, or "
+                   "bind:port, asks for a SOCKS proxy the server can use instead. Repeatable.")
 @click.option("-b", "--background", is_flag=True, help="Return once the forward is up.")
 @click.option("--public", is_flag=True,
               help="Ask the server to bind 0.0.0.0. Needs GatewayPorts there.")
@@ -1745,7 +1746,8 @@ def _exec_row(result: remote.ExecResult) -> dict:
 @click.option("-t", "--type", "key_type", default="ed25519", show_default=True,
               type=click.Choice(["ed25519", "rsa", "ecdsa"]), help="Key algorithm.")
 @click.option("-f", "--file", "key_path", type=click.Path(dir_okay=False),
-              help="Where to write the key. Defaults to ~/.ssh/id_<type>_<name>.")
+              help="Where to write the key. Defaults to ~/.ssh/id_<type>_<name> when "
+                   "NAME is given, else ~/.ssh/id_<type>.")
 @click.option("-C", "--comment", help="Comment to embed in the key.")
 def keygen(name: Optional[str], key_type: str, key_path: Optional[str], comment: Optional[str]) -> None:
     """Generate an SSH key, optionally named for a host.
