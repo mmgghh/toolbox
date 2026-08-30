@@ -34,7 +34,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pystr`    | `toolbox str`    | Search, replace, clipboard, case conversion, encoding, Persian normalization | [docs/pystr.md](docs/pystr.md) |
 | `pyjdate`  | `toolbox jdate`  | Jalali ↔ Gregorian conversion, intervals, distances              | [docs/pyjdate.md](docs/pyjdate.md) |
 | `pytime`   | `toolbox time`   | Time tracking in a single SQLite file, with reports              | [docs/pytime.md](docs/pytime.md) |
-| `pyssh`    | `toolbox ssh`    | SOCKS tunnels (single and chained) and an rsync wrapper          | [docs/pyssh.md](docs/pyssh.md) |
+| `pyssh`    | `toolbox ssh`    | SSH connections, tunnels, remote exec across hosts, rsync, and host/secret management | [docs/pyssh.md](docs/pyssh.md) |
 | `pynet`    | `toolbox net`    | IP and its location, DNS, ports, ping, HTTP, WHOIS, quick file server | [docs/pynet.md](docs/pynet.md) |
 | `pyps`     | `toolbox ps`     | Top memory/swap consumers, search and kill by name, `free`-like summary (Linux/Termux) | [docs/pyps.md](docs/pyps.md) |
 | `pycalc`   | `toolbox calc`   | Arithmetic from the shell, with `^` as a power and no `eval`     | [docs/pycalc.md](docs/pycalc.md) |

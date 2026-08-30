@@ -213,6 +213,8 @@ pyssh exec prod -- curl --verbose https://example.com   # sends: curl --verbose 
 | `--env NAME=VALUE` | Export a variable first. Repeatable |
 | `--sudo` | Run as root with `sudo -n`; needs passwordless sudo there |
 | `--tty` | Force a TTY, for interactive remote programs |
+| `--identity` | Private key file |
+| `--ssh-option` | Extra `ssh -o` option, repeatable |
 | `--json` | One record per host: name, exit code, stdout, stderr |
 
 **Output and exit codes.** One host's output passes straight through, so

@@ -903,14 +903,16 @@ def _run_rsync(cmd: list[str], password: Optional[str], verbose: int) -> None:
     "--source",
     required=True,
     prompt=True,
-    help="Local path, or 'user[:password]@host:/remote/path'.",
+    help="Local path, or 'user[:password]@host:/remote/path', or a bare "
+    "'~/.ssh/config' host name as 'host:/remote/path'.",
 )
 @click.option(
     "-d",
     "--destination",
     required=True,
     prompt=True,
-    help="Local path, or 'user[:password]@host:/remote/path'.",
+    help="Local path, or 'user[:password]@host:/remote/path', or a bare "
+    "'~/.ssh/config' host name as 'host:/remote/path'.",
 )
 # ── matching and filtering ──
 @click.option(
@@ -1395,12 +1397,15 @@ def hosts_tag_rm(tag_name: str, names: tuple[str, ...]) -> None:
 @ssh_management.command()
 @click.argument("name")
 @click.option("-L", "--local", "local_forwards", multiple=True, metavar="SPEC",
-              help="Forward a local port to the remote side: port:host:hostport. Repeatable.")
+              help="Forward a local port to the remote side: port:host:hostport, "
+                   "or bind:port:host:hostport. Repeatable.")
 @click.option("-R", "--remote", "remote_forwards", multiple=True, metavar="SPEC",
-              help="Forward a remote port back here: port:host:hostport, or a bare "
-                   "port for a SOCKS proxy the server can use. Repeatable.")
+              help="Forward a remote port back here: port:host:hostport, or "
+                   "bind:port:host:hostport. A bare port, or bind:port, asks for a "
+                   "SOCKS proxy the server can use instead. Repeatable.")
 @click.option("-D", "--dynamic", "dynamic_forwards", multiple=True, metavar="SPEC",
-              help="Open a local SOCKS5 proxy on PORT. Repeatable.")
+              help="Open a local SOCKS5 proxy on PORT, or bind:PORT to choose the "
+                   "interface. Repeatable.")
 @click.option("-N", "--no-command", is_flag=True, help="Forward only; do not start a shell.")
 @click.option("-t", "--tty", is_flag=True, help="Force a TTY (for interactive remote programs).")
 @click.option("-b", "--background", is_flag=True,
