@@ -12,8 +12,14 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
-from pytoolbox.pypass import ChromeRow, entry_name, existing_entries, read_chrome_csv, store_dir
+from pytoolbox.pypass import ChromeRow, entry_name, existing_entries, pass_cli, read_chrome_csv, store_dir
+
+
+@pytest.fixture
+def runner():
+    return CliRunner()
 
 
 @pytest.mark.parametrize(
@@ -84,3 +90,159 @@ def test_store_dir_env(monkeypatch, tmp_path):
 def test_store_dir_explicit(monkeypatch, tmp_path):
     monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path / "custom"))
     assert store_dir(str(tmp_path / "explicit")) == tmp_path / "explicit"
+
+
+def test_import_chrome_inserts_each_row(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\n"
+        "A,https://a.example.com/,alice,pw-a\n"
+        "B,https://b.example.com/,bob,pw-b\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_run(cmd, input=None, text=None, capture_output=None, check=False):
+        calls.append((cmd, input))
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pytoolbox.pypass.subprocess.run", fake_run)
+    monkeypatch.setattr("pytoolbox.pypass.existing_entries", lambda store: set())
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path / "store"))
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path), "--no-shred"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [
+        (
+            ["pass", "insert", "-m", "alice@a.example.com"],
+            "pw-a\nlogin: alice\nurl: https://a.example.com/\n",
+        ),
+        (
+            ["pass", "insert", "-m", "bob@b.example.com"],
+            "pw-b\nlogin: bob\nurl: https://b.example.com/\n",
+        ),
+    ]
+    assert "Imported 2" in result.output
+
+
+def test_import_chrome_requires_pass(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\nA,https://a.example.com/,alice,pw\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: None)
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path)])
+
+    assert result.exit_code != 0
+    assert "pass" in result.output
+
+
+def test_import_chrome_skips_unparseable_and_empty(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\n"
+        "A,,alice,pw\n"
+        "B,https://b.example.com/,bob,\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        "pytoolbox.pypass.subprocess.run", lambda *a, **k: pytest.fail("should not insert")
+    )
+    monkeypatch.setattr("pytoolbox.pypass.existing_entries", lambda store: set())
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path), "--no-shred"])
+
+    assert result.exit_code == 0, result.output
+    assert "Imported 0" in result.output
+    assert "no usable URL" in result.output
+    assert "empty password" in result.output
+
+
+def test_import_chrome_suffixes_and_skips_duplicates(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\n"
+        "A,https://a.example.com/,alice,pw-new\n"
+        "B,https://a.example.com/,alice,pw-old\n",
+        encoding="utf-8",
+    )
+    inserted = []
+
+    def fake_run(cmd, input=None, text=None, capture_output=None, check=False):
+        if cmd[:2] == ["pass", "show"]:
+            class Result:
+                returncode = 0
+                stdout = "pw-old\nlogin: alice\nurl: https://a.example.com/\n"
+                stderr = ""
+
+            return Result()
+        inserted.append(cmd)
+
+        class Ok:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Ok()
+
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pytoolbox.pypass.subprocess.run", fake_run)
+    monkeypatch.setattr("pytoolbox.pypass.existing_entries", lambda store: {"alice@a.example.com"})
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path), "--no-shred"])
+
+    assert result.exit_code == 0, result.output
+    assert inserted == [["pass", "insert", "-m", "alice@a.example.com-2"]]
+    assert "duplicate" in result.output.lower()
+
+
+def test_import_chrome_dry_run_does_not_insert(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\nA,https://a.example.com/,alice,pw\n", encoding="utf-8"
+    )
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        "pytoolbox.pypass.subprocess.run",
+        lambda *a, **k: pytest.fail("dry run must not call pass"),
+    )
+    monkeypatch.setattr("pytoolbox.pypass.existing_entries", lambda store: set())
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path), "-n"])
+
+    assert result.exit_code == 0, result.output
+    assert "Would import 1" in result.output
+
+
+def test_import_chrome_prompts_to_shred(tmp_path, monkeypatch, runner):
+    csv_path = tmp_path / "export.csv"
+    csv_path.write_text(
+        "name,url,username,password\nA,https://a.example.com/,alice,pw\n", encoding="utf-8"
+    )
+
+    def fake_run(cmd, input=None, text=None, capture_output=None, check=False):
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pytoolbox.pypass.subprocess.run", fake_run)
+    monkeypatch.setattr("pytoolbox.pypass.existing_entries", lambda store: set())
+
+    result = runner.invoke(pass_cli, ["import-chrome", str(csv_path), "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert not csv_path.exists()
