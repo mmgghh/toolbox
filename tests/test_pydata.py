@@ -206,6 +206,60 @@ def test_count_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
     assert "Empty" in result.stdout and "0" in result.stdout
 
 
+# ── keys ────────────────────────────────────────────────────────────
+
+
+def test_keys_a_json_envelope(runner, api):
+    result = run(runner, "keys", api)
+    assert result.exit_code == 0
+    assert "first_name" in result.stdout
+    assert "First Name" not in result.stdout
+
+
+def test_keys_raw_names_keeps_the_original_spelling(runner, api):
+    result = run(runner, "keys", api, "--raw-names")
+    assert "First Name" in result.stdout
+
+
+def test_keys_a_csv(runner, sales):
+    result = run(runner, "keys", sales)
+    assert result.exit_code == 0
+    assert "joined" in result.stdout
+    assert "amount" in result.stdout
+
+
+def test_keys_an_xlsx_sheet_explicitly(runner, book):
+    result = run(runner, "keys", book, "--sheet", "Staff")
+    assert result.exit_code == 0
+    assert "full_name" in result.stdout
+
+
+def test_keys_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    staff = wb.active
+    staff.title = "Staff"
+    staff.append(["ID", "Full Name"])
+    staff.append([1, "ann"])
+    empty = wb.create_sheet("Empty")
+    empty.append(["Only Header"])
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+
+    result = run(runner, "keys", path)
+    assert result.exit_code == 0
+    assert "Staff" in result.stdout and "full_name" in result.stdout
+    assert "Empty" in result.stdout and "only_header" in result.stdout
+
+
+def test_keys_as_json_stays_parseable(runner, sales):
+    result = run(runner, "keys", sales, "--format", "json")
+    assert result.exit_code == 0
+    rows = json.loads(result.stdout)
+    assert [row["key"] for row in rows] == ["id", "name", "joined", "zip", "amount"]
+
+
 # ── sql: scripts ────────────────────────────────────────────────────
 
 

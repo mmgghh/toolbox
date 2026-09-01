@@ -215,6 +215,37 @@ def count_excel_sheets(path: Path) -> dict[str, int]:
         workbook.close()
 
 
+def read_excel_headers(path: Path) -> dict[str, list[str]]:
+    """The column headers of every sheet in a workbook.
+
+    Like :func:`count_excel_sheets`, a sheet with no header row is given an
+    empty list instead of raising -- this is meant to survey a workbook, not
+    load it.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise DataError(
+            "Reading .xlsx needs openpyxl. Install it with: pip install 'pytoolbox[excel]'"
+        ) from exc
+
+    if not path.exists():
+        raise DataError(f"No such file: {path}")
+    workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
+    try:
+        headers = {}
+        for name in workbook.sheetnames:
+            header = next(workbook[name].iter_rows(values_only=True), None)
+            headers[name] = (
+                _header_columns(["" if cell is None else str(cell) for cell in header])
+                if header
+                else []
+            )
+        return headers
+    finally:
+        workbook.close()
+
+
 def _sniff_delimiter(text: str) -> str:
     """Work out the delimiter, falling back to a comma when unsure."""
     sample = text[:_SNIFF_BYTES]

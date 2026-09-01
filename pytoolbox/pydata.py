@@ -34,6 +34,7 @@ from pytoolbox.core.options import (
 from pytoolbox.dataset import (
     edit,
     interactive,
+    naming,
     readers,
     render,
     schema,
@@ -129,6 +130,7 @@ def data_cli() -> None:
       pydata summary sales.csv
       pydata filter api.json --type int
       pydata count sales.csv
+      pydata keys staff.xlsx
       pydata sql sales.csv -t sales --db app.db
       pydata edit sales.csv --rename "First Name=full_name"
     """
@@ -261,6 +263,44 @@ def count(
 
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
     console.result(console.plural(len(source.records), "record"))
+
+
+@data_cli.command()
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@source_options
+@format_option()
+@click.option("-o", "--output", type=click.Path(path_type=Path), help="Write to this file.")
+def keys(
+    path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+    output_format, output,
+) -> None:
+    """Print the keys, titles or column headers of the data.
+
+    For a workbook read without --sheet, every sheet's headers are printed.
+    Names are folded to snake_case, the same as elsewhere; --raw-names prints
+    them exactly as they appear in the file.
+
+    \b
+    Examples:
+      pydata keys api.json
+      pydata keys sales.csv
+      pydata keys staff.xlsx
+      pydata keys staff.xlsx --sheet Q1
+    """
+    resolved_kind = kind or readers.detect_kind(path)
+    if resolved_kind == "excel" and sheet is None and str(path) != "-":
+        headers = readers.read_excel_headers(path)
+        rows = [
+            {"sheet": sheet_name, "key": key}
+            for sheet_name, sheet_headers in headers.items()
+            for key in naming.unique(sheet_headers, raw=raw_names)
+        ]
+        tables.emit(rows, ["sheet", "key"], output_format=output_format, output=output)
+        return
+
+    source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
+    rows = [{"key": name} for name in naming.unique(source.columns, raw=raw_names)]
+    tables.emit(rows, ["key"], output_format=output_format, output=output)
 
 
 @data_cli.command("edit")

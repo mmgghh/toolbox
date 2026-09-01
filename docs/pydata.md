@@ -7,6 +7,7 @@ pydata tree api.json                       # what shape is this?
 pydata summary sales.csv                   # what is in it?
 pydata filter api.json --type int          # show me just the numbers
 pydata count sales.csv                     # how many rows?
+pydata keys staff.xlsx                     # what are the headers?
 pydata sql sales.csv -t sales --db app.db  # load it into SQLite
 pydata sql api.json -t users --dialect postgres --sql users.sql
 pydata sql api.json -i --db app.db         # ask me about the table first
@@ -128,6 +129,34 @@ Q2    | 0
 
 An empty sheet counts as `0` instead of failing, since counting is meant to
 survey a workbook, not load it.
+
+## `keys` — the keys, titles or headers
+
+```shell
+pydata keys api.json                    # top-level JSON keys
+pydata keys sales.csv                   # CSV header
+pydata keys staff.xlsx                  # every sheet, since --sheet is not given
+pydata keys staff.xlsx --sheet Q1       # just that sheet's header
+```
+
+Names are folded to snake_case, the same as `tree`, `summary` and `sql`;
+`--raw-names` prints them exactly as they appear in the file. For a workbook
+read without `--sheet`, every sheet's headers are printed, one row each:
+
+```
+$ pydata keys staff.xlsx
+sheet | key
+------+-----------
+Q1    | id
+Q1    | full_name
+Q2    | id
+Q2    | amount
+```
+
+Unlike an explicit `--sheet`, a sheet with a header row but no data still
+lists its keys instead of failing, since this is meant to survey a workbook,
+not load it. `--format csv|markdown|json|excel` and `-o FILE` work as they do
+everywhere else in the toolbox.
 
 ## `sql` — the table
 
