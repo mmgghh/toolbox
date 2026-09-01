@@ -385,6 +385,19 @@ numbers, not integers.
 `--sheet` picks an Excel worksheet, and `--limit N` reads only the first N
 records.
 
+Without `--sheet`, a workbook is read from its active sheet -- not
+necessarily the first one, and not necessarily the one you meant. When the
+workbook has more than one sheet, which one was picked is named on stderr:
+
+```
+$ pydata tree staff.xlsx
+Using --sheet 'Sheet1' (3 sheets in this workbook).
+...
+```
+
+`pydata filter` alone can also read every sheet at once with `--sheet '*'`,
+covered under `filter` below.
+
 ```
 $ pydata tree sales.csv
 |-- id      int        3/3

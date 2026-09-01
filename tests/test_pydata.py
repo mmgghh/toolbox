@@ -131,6 +131,17 @@ def test_tree_reads_an_xlsx(runner, book):
     assert "Full Name" in result.stdout
 
 
+def test_tree_notes_the_active_sheet_of_a_multi_sheet_workbook(runner, multi_sheet):
+    result = run(runner, "tree", multi_sheet)
+    assert result.exit_code == 0
+    assert "Using --sheet 'Q1'" in result.stderr
+
+
+def test_tree_a_single_sheet_workbook_has_no_sheet_note(runner, book):
+    result = run(runner, "tree", book)
+    assert "Using --sheet" not in result.stderr
+
+
 def test_tree_reads_stdin_with_from(runner):
     result = run(runner, "tree", "-", "--from", "json", input='[{"a": 1}]')
     assert result.exit_code == 0

@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
+from pytoolbox.core.console import plural
 from pytoolbox.dataset import naming
 from pytoolbox.dataset.errors import DataError
 from pytoolbox.dataset.types import ValueType, parse_text, unify_all
@@ -129,7 +130,7 @@ def read_excel(
     path: Path,
     sheet: Optional[str] = None,
     infer: bool = True,
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict], list[str], list[str]]:
     """Read a worksheet into records, keeping the cell types Excel recorded.
 
     Excel already distinguishes a number from a date from text, so there is
@@ -147,8 +148,14 @@ def read_excel(
         raise DataError(f"No such file: {path}")
     workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
     try:
+        notes = []
         if sheet is None:
             worksheet = workbook.active
+            if len(workbook.sheetnames) > 1:
+                notes.append(
+                    f"Using --sheet {worksheet.title!r} "
+                    f"({plural(len(workbook.sheetnames), 'sheet')} in this workbook)."
+                )
         elif sheet in workbook.sheetnames:
             worksheet = workbook[sheet]
         else:
@@ -180,7 +187,7 @@ def read_excel(
 
     if not records:
         raise DataError(f"Sheet {worksheet.title!r} has a header row but no data rows.")
-    return records, columns
+    return records, columns, notes
 
 
 def _is_blank_row(row: tuple) -> bool:

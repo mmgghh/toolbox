@@ -174,7 +174,7 @@ def load(
         if str(path) == "-":
             raise DataError("Excel cannot be read from stdin; give a path to the .xlsx file.")
         _reject_root(root, kind)
-        records, columns = readers.read_excel(path, sheet=sheet, infer=infer)
+        records, columns, notes = readers.read_excel(path, sheet=sheet, infer=infer)
     elif kind == "csv":
         _reject_root(root, kind)
         text = readers.read_text(path, encoding=encoding, errors=errors)
