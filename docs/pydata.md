@@ -158,6 +158,32 @@ fold to. `--type mixed` describes a whole column across records, which has
 no meaning for a single matched value, so it is rejected with `--deep`.
 `--sheet '*'` and `--deep` combine, searching every sheet at any depth.
 
+### Bare values: `--concise`
+
+```shell
+pydata filter api.json -k city --concise
+pydata filter api.json -k id -k city --concise
+```
+
+For scripting, `--concise` drops every column `filter` adds itself to say
+where a value came from -- `sheet`, `record`, `path` -- and prints just the
+matched values: one bare value per line for a single column, or unheaded CSV
+rows once matching pulled in more than one:
+
+```
+$ pydata filter api.json -k city --concise
+Berlin
+Rome
+
+$ pydata filter api.json -k id -k city --concise
+1,Berlin
+2,Rome
+```
+
+It combines with `--sheet '*'` and `--deep` the same way, dropping their
+`sheet`/`record`/`path` columns too and printing only the values found.
+`--format` is ignored when `--concise` is given.
+
 ## `count` — how many rows or objects
 
 ```shell

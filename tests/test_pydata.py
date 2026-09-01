@@ -281,6 +281,44 @@ def test_filter_sheet_wildcard_with_deep(runner, multi_sheet):
     assert rows == [{"sheet": "Notes", "record": 1, "path": "Text", "value": "hi"}]
 
 
+def test_filter_concise_a_single_column_is_one_bare_value_per_line(runner, api):
+    result = run(runner, "filter", api, "-k", "first_name", "--concise")
+    assert result.exit_code == 0
+    assert result.stdout == "ann\nbob\ncy\n"
+
+
+def test_filter_concise_several_columns_are_unheaded_csv(runner, api):
+    result = run(runner, "filter", api, "-k", "id", "-k", "first_name", "--concise")
+    assert result.exit_code == 0
+    assert result.stdout == "1,ann\n2,bob\n3,cy\n"
+
+
+def test_filter_concise_drops_the_sheet_column(runner, multi_sheet):
+    result = run(runner, "filter", multi_sheet, "-k", "amount", "--sheet", "*", "--concise")
+    assert result.exit_code == 0
+    assert result.stdout == "10\n20\n30\n"
+    assert "Q1" not in result.stdout and "Q2" not in result.stdout
+
+
+def test_filter_concise_deep_drops_record_and_path(runner, orders):
+    result = run(runner, "filter", orders, "-k", "id", "--deep", "--concise")
+    assert result.exit_code == 0
+    assert result.stdout == "1\n2\n"
+
+
+def test_filter_concise_ignores_format(runner, api):
+    result = run(runner, "filter", api, "-k", "first_name", "--concise", "--format", "json")
+    assert result.exit_code == 0
+    assert result.stdout == "ann\nbob\ncy\n"
+
+
+def test_filter_concise_writes_a_file(runner, api, tmp_path):
+    out = tmp_path / "values.csv"
+    result = run(runner, "filter", api, "-k", "id", "-k", "first_name", "--concise", "-o", out)
+    assert result.exit_code == 0
+    assert out.read_text() == "1,ann\n2,bob\n3,cy\n"
+
+
 # ── count ───────────────────────────────────────────────────────────
 
 

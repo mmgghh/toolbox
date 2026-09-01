@@ -15,6 +15,8 @@ and PostgreSQL is reached by writing a ``.sql`` file you run yourself.
 
 from __future__ import annotations
 
+import csv
+import io
 import sys
 from pathlib import Path
 from typing import Optional
@@ -194,6 +196,11 @@ def summary(
     help="Search every nested object and list too, not just the top level.",
 )
 @click.option("--rows", type=int, default=None, help="Print only the first N rows.")
+@click.option(
+    "--concise",
+    is_flag=True,
+    help="Print bare values only -- no header, sheet or path -- CSV rows for more than one column.",
+)
 @format_option()
 @click.option("-o", "--output", type=click.Path(path_type=Path), help="Write to this file.")
 def filter_command(
@@ -212,6 +219,7 @@ def filter_command(
     drop_empty,
     deep,
     rows,
+    concise,
     output_format,
     output,
 ) -> None:
@@ -237,6 +245,11 @@ def filter_command(
     are always the original names, the way tree shows them; --raw-names has
     no effect here.
 
+    --concise drops every bookkeeping column -- sheet, record, path -- and
+    prints just the matched values: one bare value per line for a single
+    column, or unheaded CSV rows once more than one column is selected.
+    --format is ignored when --concise is given.
+
     \b
     Examples:
       pydata filter api.json --type int --type float
@@ -244,6 +257,7 @@ def filter_command(
       pydata filter sales.csv --drop-empty --rows 20 --format csv
       pydata filter staff.xlsx -k amount --sheet '*'
       pydata filter api.json -k city --deep
+      pydata filter staff.xlsx -k amount --sheet '*' --concise
     """
     resolved_kind = kind or readers.detect_kind(path)
     if sheet == "*":
@@ -257,7 +271,7 @@ def filter_command(
         )
         if rows is not None:
             printed = printed[:rows]
-        tables.emit(printed, headers, output_format=output_format, output=output)
+        _emit_filtered(printed, headers, concise, output_format, output)
         return
 
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
@@ -265,18 +279,13 @@ def filter_command(
         printed = select.deep_select(source.records, keys=keys, types=types, drop_empty=drop_empty)
         if rows is not None:
             printed = printed[:rows]
-        tables.emit(printed, ["record", "path", "value"], output_format=output_format, output=output)
+        _emit_filtered(printed, ["record", "path", "value"], concise, output_format, output)
         return
 
     root_node, columns = _analyze(source, raw_names)
     chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
     printed = select.rows_for(source.records, chosen, limit=rows)
-    tables.emit(
-        printed,
-        [column.name for column in chosen],
-        output_format=output_format,
-        output=output,
-    )
+    _emit_filtered(printed, [column.name for column in chosen], concise, output_format, output)
 
 
 def _filter_every_sheet(
@@ -317,6 +326,50 @@ def _filter_every_sheet(
     if not matched_any:
         raise DataError("No field matched the filter in any sheet.")
     return printed, headers
+
+
+#: Columns ``filter`` adds itself to say where a value came from, rather
+#: than a value the user asked to see -- dropped by ``--concise``.
+_BOOKKEEPING_HEADERS = {"sheet", "record", "path"}
+
+
+def _emit_filtered(
+    printed: list[dict], headers: list[str], concise: bool, output_format: str, output: Optional[Path]
+) -> None:
+    """Print filtered rows normally, or bare under --concise.
+
+    --concise ignores --format: one value per line for a single column,
+    unheaded CSV rows once matching pulled in more than one.
+    """
+    if not concise:
+        tables.emit(printed, headers, output_format=output_format, output=output)
+        return
+    text = _concise_text(printed, headers)
+    if output is None:
+        click.echo(text)
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text + "\n", encoding="utf-8")
+    console.success(f"Written to {output}.", threshold=0)
+
+
+def _concise_text(rows: list[dict], headers: list[str]) -> str:
+    """Bare values only, dropping sheet/record/path bookkeeping columns."""
+    value_headers = [header for header in headers if header not in _BOOKKEEPING_HEADERS]
+    if not value_headers:
+        return ""
+    if len(value_headers) == 1:
+        header = value_headers[0]
+        return "\n".join(_cell(row.get(header)) for row in rows)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    for row in rows:
+        writer.writerow([_cell(row.get(header)) for header in value_headers])
+    return buffer.getvalue().rstrip("\r\n")
+
+
+def _cell(value: object) -> str:
+    return "" if value is None else str(value)
 
 
 @data_cli.command()
