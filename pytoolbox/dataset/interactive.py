@@ -110,7 +110,11 @@ def _resolve_included(parts: Sequence[str], columns: Sequence[Column]) -> list[C
 
 
 def _one_column(part: str, columns: Sequence[Column]) -> Column:
-    if part.isdigit():
+    # isascii() too: a column position is always plain ASCII, and a
+    # digit-like character isdigit() accepts but int() can't parse (e.g. a
+    # superscript) would otherwise crash here instead of falling through to
+    # the name match.
+    if part.isascii() and part.isdigit():
         position = int(part)
         if not 1 <= position <= len(columns):
             raise DataError(f"There is no column {position}; they are numbered 1 to {len(columns)}.")

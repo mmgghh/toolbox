@@ -116,6 +116,20 @@ def test_parse_signal_rejects_garbage():
         pyps.parse_signal("not-a-signal")
 
 
+def test_parse_signal_rejects_a_digit_lookalike_cleanly():
+    """A superscript passes isdigit() but int() cannot parse it; this must
+    raise a clean ClickException rather than an unhandled ValueError."""
+    with pytest.raises(click.ClickException):
+        pyps.parse_signal("²")
+
+
+def test_parse_signal_rejects_non_ascii_digits():
+    """A signal number is always plain ASCII; Persian digits fall through to
+    the name lookup and are rejected there, not misread as a signal number."""
+    with pytest.raises(click.ClickException):
+        pyps.parse_signal("۹")
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 def test_top_json_lists_processes(runner):
@@ -269,6 +283,24 @@ def test_kill_by_cmdline_marker(runner, marked_process):
 def test_kill_unknown_pid_fails(runner):
     result = runner.invoke(ps_cli, ["kill", str(2**30)])
     assert result.exit_code != 0
+
+
+def test_kill_target_that_looks_like_a_digit_fails_cleanly(runner):
+    """A superscript passes isdigit() but int() cannot parse it; TARGET must
+    fall through to the name match and fail cleanly, not crash with a
+    ValueError traceback."""
+    result = runner.invoke(ps_cli, ["kill", "²"])
+    assert result.exit_code != 0
+    assert "No process matches" in result.stderr
+
+
+def test_info_target_that_looks_like_a_digit_fails_cleanly(runner):
+    """A superscript passes isdigit() but int() cannot parse it; TARGET must
+    fall through to the name match and fail cleanly, not crash with a
+    ValueError traceback."""
+    result = runner.invoke(ps_cli, ["info", "²"])
+    assert result.exit_code != 0
+    assert "No process matches" in result.stderr
 
 
 def test_kill_no_match_fails(runner):

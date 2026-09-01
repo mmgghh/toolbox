@@ -145,7 +145,9 @@ def _outline_level(element: Optional[ET.Element]) -> Optional[int]:
     if element is None:
         return None
     value = attr(element, "w:val")
-    return _valid_outline(int(value)) if value is not None and value.isdigit() else None
+    # isdecimal(), not isdigit(): a malformed w:val int() can't parse
+    # (e.g. a superscript) would otherwise crash the conversion.
+    return _valid_outline(int(value)) if value is not None and value.isdecimal() else None
 
 
 def _valid_outline(level: Optional[int]) -> Optional[int]:
@@ -196,7 +198,7 @@ def _value(parent: ET.Element, tag: str) -> Optional[str]:
 
 
 def _level(raw: Optional[str]) -> Optional[int]:
-    return int(raw) if raw is not None and raw.isdigit() else None
+    return int(raw) if raw is not None and raw.isdecimal() else None
 
 
 def _table(element: ET.Element, pkg: Package, numbering: Numbering, styles: Styles) -> Table:

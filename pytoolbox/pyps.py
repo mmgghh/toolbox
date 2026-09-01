@@ -277,7 +277,11 @@ def print_process_rows(rows: list[dict], as_json: bool) -> None:
 def parse_signal(value: str) -> int:
     """Accept a signal name (``KILL``, ``sigterm``) or number and return its int value."""
     value = value.strip()
-    if value.lstrip("-").isdigit():
+    digits = value.lstrip("-")
+    # isascii() too: a signal number is always plain ASCII, and a digit-like
+    # character isdigit() accepts but int() can't parse (e.g. a superscript)
+    # would otherwise crash here instead of falling through to the name lookup.
+    if digits.isascii() and digits.isdigit():
         return int(value)
     name = value.upper()
     if not name.startswith("SIG"):
@@ -424,7 +428,10 @@ def kill(
     signal_number = parse_signal("KILL" if force else signal_name)
     processes = list_processes()
 
-    if target.isdigit():
+    # isascii() too: a PID is always plain ASCII, and a digit-like character
+    # isdigit() accepts but int() can't parse (e.g. a superscript) would
+    # otherwise crash here instead of falling through to the name match.
+    if target.isascii() and target.isdigit():
         pid = int(target)
         matches = [p for p in processes if p.pid == pid]
         if not matches:
@@ -485,7 +492,10 @@ def info(target: str, exact: bool, match_cmdline: bool, as_json: bool) -> None:
     require_proc()
     processes = list_processes()
 
-    if target.isdigit():
+    # isascii() too: a PID is always plain ASCII, and a digit-like character
+    # isdigit() accepts but int() can't parse (e.g. a superscript) would
+    # otherwise crash here instead of falling through to the name match.
+    if target.isascii() and target.isdigit():
         process = next((p for p in processes if p.pid == int(target)), None)
         if process is None:
             raise click.ClickException(f"No process with PID {target}.")

@@ -313,7 +313,10 @@ def parse_month(month: str | int, calendar: str) -> int:
         m = month
     else:
         raw = month.strip()
-        if raw.isdigit():
+        if raw.isdecimal():
+            # isdecimal(), not isdigit(): a superscript like '²' passes
+            # isdigit() but int() cannot parse it, which would otherwise
+            # crash here instead of falling through to the alias lookup below.
             m = int(raw)
         else:
             key = raw.lower()
@@ -436,7 +439,10 @@ def normalize_calendar(calendar: str) -> str:
 
 def parse_date_parts(calendar: str, date_part: str) -> DateParts:
     raw = date_part.strip().replace(",", "")
-    if raw.isdigit() and len(raw) == 8:
+    # isdecimal(), not isdigit(): a digit-like character int() cannot parse
+    # (e.g. a superscript) would otherwise crash here instead of falling
+    # through to the separator-based parse below.
+    if raw.isdecimal() and len(raw) == 8:
         return DateParts(int(raw[:4]), int(raw[4:6]), int(raw[6:]))
     sep = "-" if "-" in raw else "/" if "/" in raw else None
     if sep is None:

@@ -84,6 +84,18 @@ This project follows [Semantic Versioning](https://semver.org/).
   now tested first: an outline level makes a heading whatever numbering the
   style also carries.
 
+- **A digit-*looking* character could crash `pyjdate`, `pyps`, `pydocx2md`
+  and dataset's interactive column picker instead of producing a clean
+  error.** Several places checked `value.isdigit()` and then called
+  `int(value)`, but `isdigit()` accepts characters `int()` cannot parse —
+  a superscript like `²` is the clearest example. `pyjdate`'s month and date
+  parsing, and the two `w:val` readers in `pydocx2md`'s outline/list-level
+  handling, now check `isdecimal()` instead, which is exactly the set `int()`
+  accepts — decimal digits from any script, including Persian, still work.
+  `pyps`'s PID and signal-number parsing, and dataset's `--interactive`
+  column picker, check `isascii() and isdigit()` instead, since a PID, a
+  signal number and a column position have no legitimate non-Latin form.
+
 ### Added
 
 - **`pyssh keygen`, `copy-id` and `check`.** Generate a key, install it on a

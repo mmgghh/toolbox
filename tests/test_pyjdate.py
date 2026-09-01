@@ -75,6 +75,18 @@ def test_parse_month_accepts_names_and_numbers():
         pyjdate.parse_month("brumaire", "gregorian")
 
 
+def test_parse_month_accepts_persian_digits():
+    """isdecimal(), not isdigit(): Persian digits must keep working."""
+    assert pyjdate.parse_month("۷", "jalali") == 7
+
+
+def test_parse_month_rejects_a_digit_lookalike_cleanly():
+    """A superscript passes isdigit() but int() cannot parse it; this must
+    raise a clean ClickException rather than an unhandled ValueError."""
+    with pytest.raises(click.ClickException):
+        pyjdate.parse_month("²", "jalali")
+
+
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
@@ -88,6 +100,19 @@ def test_parse_month_accepts_names_and_numbers():
 def test_parse_date_parts(text, expected):
     parts = pyjdate.parse_date_parts("gregorian", text)
     assert (parts.year, parts.month, parts.day) == expected
+
+
+def test_parse_date_parts_accepts_persian_digits():
+    """isdecimal(), not isdigit(): Persian digits must keep working."""
+    parts = pyjdate.parse_date_parts("gregorian", "۲۰۲۶۰۱۰۴")
+    assert (parts.year, parts.month, parts.day) == (2026, 1, 4)
+
+
+def test_parse_date_parts_rejects_a_digit_lookalike_cleanly():
+    """A superscript passes isdigit() but int() cannot parse it; falling
+    through to the separator parse must raise ClickException, not crash."""
+    with pytest.raises(click.ClickException):
+        pyjdate.parse_date_parts("gregorian", "²²²²²²²²")
 
 
 def test_validate_date_rejects_impossible_days():

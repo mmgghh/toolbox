@@ -78,6 +78,14 @@ def test_an_outline_level_makes_a_heading_without_a_heading_style(tmp_path):
     assert blocks[0].level == 2
 
 
+def test_a_digit_lookalike_outline_level_is_ignored_not_crashed(tmp_path):
+    """A superscript passes isdigit() but int() cannot parse it; a malformed
+    w:val must be ignored, not crash the conversion."""
+    body = '<w:p><w:pPr><w:outlineLvl w:val="²"/></w:pPr><w:r><w:t>Odd</w:t></w:r></w:p>'
+    blocks = blocks_of(tmp_path, body)
+    assert isinstance(blocks[0], Paragraph)
+
+
 def test_a_bulleted_paragraph_becomes_an_unordered_list_item(tmp_path):
     blocks = blocks_of(tmp_path, list_para("one"), {"word/numbering.xml": numbering_part("bullet")})
     assert isinstance(blocks[0], ListItem)
@@ -88,6 +96,16 @@ def test_a_bulleted_paragraph_becomes_an_unordered_list_item(tmp_path):
 def test_a_numbered_paragraph_becomes_an_ordered_list_item(tmp_path):
     blocks = blocks_of(tmp_path, list_para("one"), {"word/numbering.xml": numbering_part("decimal")})
     assert blocks[0].ordered is True
+
+
+def test_a_digit_lookalike_ilvl_falls_back_to_level_zero(tmp_path):
+    """A superscript passes isdigit() but int() cannot parse it; a malformed
+    w:ilvl must fall back to level 0, not crash the conversion."""
+    blocks = blocks_of(
+        tmp_path, list_para("one", ilvl="²"), {"word/numbering.xml": numbering_part("bullet")}
+    )
+    assert isinstance(blocks[0], ListItem)
+    assert blocks[0].level == 0
 
 
 def test_list_nesting_depth_is_kept(tmp_path):
@@ -105,6 +123,18 @@ def test_a_paragraph_styled_as_a_list_becomes_a_list_item(tmp_path):
     blocks = blocks_of(tmp_path, para("one", style="ListBullet"), parts)
     assert isinstance(blocks[0], ListItem)
     assert blocks[0].ordered is False
+    assert blocks[0].level == 0
+
+
+def test_a_digit_lookalike_style_ilvl_falls_back_to_level_zero(tmp_path):
+    """A superscript passes isdigit() but int() cannot parse it; a malformed
+    style-level w:ilvl must fall back to level 0, not crash the conversion."""
+    parts = {
+        "word/numbering.xml": numbering_part("bullet"),
+        "word/styles.xml": styles_part(style_def("ListBullet", num_pr(num_id="1", ilvl="²"))),
+    }
+    blocks = blocks_of(tmp_path, para("one", style="ListBullet"), parts)
+    assert isinstance(blocks[0], ListItem)
     assert blocks[0].level == 0
 
 
@@ -208,6 +238,14 @@ def test_a_style_that_sets_an_outline_level_makes_a_heading(tmp_path):
     blocks = blocks_of(tmp_path, para("فصل", style="a0"), parts=parts)
     assert isinstance(blocks[0], Heading)
     assert blocks[0].level == 2
+
+
+def test_a_digit_lookalike_style_outline_level_is_ignored_not_crashed(tmp_path):
+    """A superscript passes isdigit() but int() cannot parse it; a malformed
+    style-level w:val must be ignored, not crash the conversion."""
+    parts = {"word/styles.xml": styles_part(style_def("a0", '<w:outlineLvl w:val="²"/>'))}
+    blocks = blocks_of(tmp_path, para("x", style="a0"), parts=parts)
+    assert isinstance(blocks[0], Paragraph)
 
 
 def test_an_outline_level_is_inherited_through_basedOn(tmp_path):

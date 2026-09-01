@@ -101,7 +101,9 @@ def load_styles(pkg: Package) -> Styles:
 
         outline = props.find(qn("w:outlineLvl")) if props is not None else None
         raw = attr(outline, "w:val") if outline is not None else None
-        if raw is not None and raw.isdigit():
+        # isdecimal(), not isdigit(): a malformed w:val int() can't parse
+        # (e.g. a superscript) would otherwise crash the conversion.
+        if raw is not None and raw.isdecimal():
             outlines[style_id] = int(raw)
 
     return Styles(parents, lists, outlines)
@@ -114,4 +116,4 @@ def _value(num_pr: ET.Element, tag: str) -> Optional[str]:
 
 def _level(num_pr: ET.Element) -> Optional[int]:
     raw = _value(num_pr, "w:ilvl")
-    return int(raw) if raw is not None and raw.isdigit() else None
+    return int(raw) if raw is not None and raw.isdecimal() else None
