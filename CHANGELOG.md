@@ -10,9 +10,19 @@ This project follows [Semantic Versioning](https://semver.org/).
 - **`pyhtml2md`, also `toolbox html2md`.** Converts HTML to Markdown with no
   optional dependency, using the standard library's `html.parser`. Tags with
   a clean Markdown equivalent (headings, lists, tables, links, images,
-  emphasis, code, blockquotes...) convert to it; anything else — `<div>`,
-  `<span>`, `<iframe>`, custom elements, HTML comments — passes through
-  verbatim as raw HTML, so nothing reader-visible is ever silently dropped.
+  emphasis, code, blockquotes...) convert to it. Pure layout wrappers with no
+  content of their own (`<div>`, `<span>`, `<header>`, `<footer>`, `<main>`,
+  `<article>`, `<section>`, `<aside>`, `<nav>`, `<hgroup>`, `<address>`) are
+  unwrapped — tag and attributes dropped, content kept — since a Markdown
+  reader never saw their styling anyway. Raw HTML is used only where there is
+  truly no other way to keep the content (`<iframe>`, `<svg>`, `<video>`,
+  form controls, custom elements, HTML comments), so nothing reader-visible
+  is ever silently dropped. A block-level raw tag's open and close tags each
+  sit alone on their own line, blank-line-separated from their content — a
+  raw HTML block runs verbatim to the next blank line and nothing inside it
+  is reprocessed as Markdown, so gluing them to the content would leave
+  nested `**bold**`, links, etc. as literal syntax, or corrupt whatever line
+  a closing tag happened to land on (a table's last row, for instance).
 
 ### Removed
 

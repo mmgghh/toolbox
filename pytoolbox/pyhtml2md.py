@@ -8,8 +8,12 @@ Needs no optional dependency: parsing uses the standard library's
 Tags with a clean Markdown equivalent -- headings, paragraphs, lists (plain,
 ordered and task), blockquotes, code blocks and spans, tables, rules, links,
 images, emphasis, strong, strikethrough -- are converted to Markdown syntax.
-Everything else (``<div>``, ``<span>``, ``<figure>``, ``<iframe>``, ``<svg>``,
-custom elements, HTML comments...) passes through verbatim as raw HTML, the
+Pure layout wrappers with no content of their own (``<div>``, ``<span>``,
+``<header>``, ``<main>``, ``<article>``...) are unwrapped: their tag and
+attributes are dropped and only their content survives, since a Markdown
+reader never saw the styling those tags carried anyway. Raw HTML is used only
+where there truly is no other way to keep the content -- ``<iframe>``,
+``<svg>``, ``<video>``, form controls, custom elements, HTML comments -- the
 mirror image of ``pymd2html``'s raw-HTML passthrough. Nothing a browser would
 render is discarded -- only ``<script>``, ``<style>`` and ``<head>`` metadata,
 which a Markdown reader would never see either.
@@ -58,7 +62,28 @@ _DROPPED_TAGS = frozenset({"script", "style", "head", "title"})
 _DROPPED_VOID_TAGS = frozenset({"meta", "link", "base"})
 
 #: Transparent wrappers: their children render as if at the parent's level.
-_TRANSPARENT_TAGS = frozenset({"html", "body"})
+#: Besides ``<html>``/``<body>``, these are HTML5 sectioning/grouping tags
+#: that exist purely for layout and CSS hooks -- a Markdown reader never saw
+#: their styling, so the tag and its attributes are dropped and only the
+#: content underneath is kept. Tags that hold content Markdown truly has no
+#: way to express (forms, embedded media, definition lists...) are not here;
+#: those still pass through as raw HTML in ``_BLOCK_LEVEL_HTML``.
+_TRANSPARENT_TAGS = frozenset(
+    {
+        "html",
+        "body",
+        "address",
+        "article",
+        "aside",
+        "div",
+        "footer",
+        "header",
+        "hgroup",
+        "main",
+        "nav",
+        "section",
+    }
+)
 
 
 class _Node:
@@ -151,33 +176,26 @@ _KNOWN_BLOCK_TAGS = frozenset({"p", "blockquote", "pre", "table", "hr", *_HEADIN
 
 #: HTML5 elements that are block-level by spec, even with no Markdown syntax
 #: of their own -- an unknown one of these still breaks paragraph flow when
-#: it is passed through as raw HTML.
+#: it is passed through as raw HTML. Unlike ``_TRANSPARENT_TAGS``, each of
+#: these holds content or behaviour Markdown genuinely cannot express (a
+#: form field, an embedded document, a definition-list pairing, a
+#: collapsible section), so dropping the tag would lose more than styling.
 _BLOCK_LEVEL_HTML = frozenset(
     {
-        "address",
-        "article",
-        "aside",
         "canvas",
         "details",
         "dialog",
         "dd",
-        "div",
         "dl",
         "dt",
         "fieldset",
         "figcaption",
         "figure",
-        "footer",
         "form",
-        "header",
-        "hgroup",
         "iframe",
-        "main",
         "menu",
-        "nav",
         "noscript",
         "picture",
-        "section",
         "summary",
         "svg",
         "video",
@@ -233,11 +251,17 @@ def _render_raw(node: _Node) -> str:
     """Reserialize an element with no Markdown mapping, verbatim."""
     if node.tag in _VOID_TAGS:
         return node.raw_start
+    close = f"</{node.tag}>"
     if node.tag in _BLOCK_LEVEL_HTML:
         inner = _render_block(node.children)
-    else:
-        inner = _render_inline(node.children)
-    return f"{node.raw_start}{inner}</{node.tag}>"
+        # A raw HTML block runs until the next blank line, and nothing inside
+        # it gets reprocessed as Markdown -- so the tags must sit alone on
+        # their own line, blank-line-separated from the content, or bold,
+        # links, tables etc. right after the open tag (or right before the
+        # close tag) would either render as literal syntax or get corrupted.
+        return f"{node.raw_start}\n\n{inner}\n\n{close}" if inner else f"{node.raw_start}{close}"
+    inner = _render_inline(node.children)
+    return f"{node.raw_start}{inner}{close}"
 
 
 def _render_inline_node(node) -> str:
@@ -246,6 +270,12 @@ def _render_inline_node(node) -> str:
     if isinstance(node, _Comment):
         return f"<!--{node.data}-->"
     tag = node.tag
+    if tag == "span":
+        # A pure styling wrapper, same reasoning as _TRANSPARENT_TAGS -- only
+        # inline elements ever reach here, so it is unwrapped on the spot
+        # rather than through _flatten_transparent, which only runs at block
+        # boundaries.
+        return _render_inline(node.children)
     if tag == "br":
         return "  \n"
     if tag in _STRONG_TAGS:

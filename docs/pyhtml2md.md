@@ -11,14 +11,21 @@ pyhtml2md a.html b.html -d ./md      # one .md per input
 pyhtml2md page.html -q
 ```
 
-## Nothing is dropped
+## Nothing is dropped, and HTML is a last resort
 
-Tags with a clean Markdown equivalent convert to it. Everything else — a
-`<div>`, `<span>`, `<figure>`, `<iframe>`, a custom element, an HTML comment —
-passes through **verbatim as raw HTML**, since Markdown allows embedded raw
-HTML and this is the one way to guarantee no reader-visible content is ever
-silently discarded. This is the mirror image of
-[`pymd2html`](pymd2html.md)'s own raw-HTML passthrough, applied in reverse.
+Tags with a clean Markdown equivalent convert to it. Pure layout wrappers
+with no content of their own — `<div>`, `<span>`, `<header>`, `<footer>`,
+`<main>`, `<article>`, `<section>`, `<aside>`, `<nav>`, `<hgroup>`,
+`<address>` — are **unwrapped**: the tag and its attributes (`class`, `id`,
+`style`...) are dropped and only the content underneath survives, since a
+Markdown reader never saw that styling anyway.
+
+Everything else that has no Markdown mapping — `<figure>`, `<iframe>`,
+`<svg>`, form controls, a custom element, an HTML comment — passes through
+**verbatim as raw HTML**, because Markdown genuinely has no other way to
+carry it. This is the mirror image of [`pymd2html`](pymd2html.md)'s own
+raw-HTML passthrough, applied in reverse, kept to the cases where it is
+truly the only option.
 
 The only things actually dropped are `<script>` and `<style>` contents and
 `<head>` metadata (`<title>`, `<meta>`, `<link>`, `<base>`) — none of that is
@@ -42,10 +49,12 @@ have seen it either.
 | `<table>` | A pipe table, alignment read from `text-align` |
 | `<hr>` | `---` |
 
-A link or image with no `href`/`src` and any tag with no Markdown mapping
-(`<div>`, `<sub>`, `<mark>`, `<iframe>`, `<dl>`, form controls, custom
-elements...) is reproduced as raw HTML, attributes and all — a block-level one
-on its own lines, an inline one in place.
+A layout wrapper (`<div>`, `<span>`, `<header>`, `<section>`... — see above)
+is unwrapped, keeping only its content. A link or image with no `href`/`src`
+and any other tag with no Markdown mapping (`<sub>`, `<mark>`, `<iframe>`,
+`<dl>`, form controls, custom elements...) is reproduced as raw HTML,
+attributes and all — a block-level one on its own lines, an inline one in
+place.
 
 Literal Markdown syntax characters in ordinary text (`* _ [ ] \` <` anywhere,
 `# - + >` and `1.` at the very start of a line) are backslash-escaped so

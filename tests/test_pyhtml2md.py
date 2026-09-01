@@ -168,11 +168,13 @@ def test_table_cell_pipe_is_escaped():
 # ── Content-preservation guarantees ────────────────────────────────
 
 
-def test_unknown_block_tag_passes_through_as_raw_html():
-    md = html_to_markdown('<div class="note"><p>Careful.</p></div>')
-    assert '<div class="note">' in md
+def test_unknown_block_tag_with_no_markdown_equivalent_passes_through_as_raw_html():
+    # <fieldset> has no Markdown mapping and holds real form content, so it
+    # is one of the tags that must stay as raw HTML rather than be unwrapped.
+    md = html_to_markdown('<fieldset><p>Careful.</p></fieldset>')
+    assert "<fieldset>" in md
     assert "Careful." in md
-    assert "</div>" in md
+    assert "</fieldset>" in md
 
 
 def test_unknown_inline_tag_passes_through_as_raw_html():
@@ -183,6 +185,49 @@ def test_unknown_inline_tag_passes_through_as_raw_html():
 def test_iframe_src_is_preserved():
     md = html_to_markdown('<iframe src="https://example.test/embed"></iframe>')
     assert 'src="https://example.test/embed"' in md
+
+
+def test_block_level_raw_tag_separates_content_with_blank_lines():
+    # The open/close tags must sit alone on their own line: a raw HTML block
+    # runs verbatim to the next blank line and nothing inside it is
+    # reprocessed as Markdown, so text glued to the tags would either show up
+    # as literal "**bold**" or (worse) corrupt whatever line the closing tag
+    # lands on, such as a table's last row.
+    md = html_to_markdown('<fieldset>Some <strong>bold</strong> text.</fieldset>')
+    assert md == "<fieldset>\n\nSome **bold** text.\n\n</fieldset>\n"
+
+
+def test_block_level_raw_tag_does_not_corrupt_a_trailing_table():
+    md = html_to_markdown('<fieldset><table><tr><td>a</td></tr></table></fieldset>')
+    assert "| --- |\n\n</fieldset>" in md
+
+
+def test_empty_block_level_raw_tag_stays_on_one_line():
+    md = html_to_markdown('<fieldset></fieldset>')
+    assert md == "<fieldset></fieldset>\n"
+
+
+# ── Layout wrappers are unwrapped, not passed through ──────────────
+
+
+def test_div_is_unwrapped_keeping_only_its_content():
+    md = html_to_markdown('<div class="note"><p>Careful.</p></div>')
+    assert md == "Careful.\n"
+
+
+def test_span_is_unwrapped_inline():
+    md = html_to_markdown('<p>Water is <span class="chem">H2O</span>.</p>')
+    assert md == "Water is H2O.\n"
+
+
+def test_sectioning_tags_are_unwrapped():
+    md = html_to_markdown(
+        "<header class='top'><h1>Title</h1></header>"
+        "<main><article><section><p>Body.</p></section></article></main>"
+        "<footer><p>Footer.</p></footer>"
+    )
+    assert md == "# Title\n\nBody.\n\nFooter.\n"
+    assert "<" not in md
 
 
 def test_html_comment_round_trips():
