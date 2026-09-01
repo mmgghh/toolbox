@@ -141,22 +141,26 @@ pydata keys staff.xlsx --sheet Q1       # just that sheet's header
 
 Names are folded to snake_case, the same as `tree`, `summary` and `sql`;
 `--raw-names` prints them exactly as they appear in the file. For a workbook
-read without `--sheet`, every sheet's headers are printed, one row each:
+read without `--sheet`, sheets that share the exact same columns are grouped
+so the columns are not repeated once per sheet:
 
 ```
 $ pydata keys staff.xlsx
-sheet | key
-------+-----------
-Q1    | id
-Q1    | full_name
-Q2    | id
-Q2    | amount
+Q1, Q2:
+  id
+  full_name
+  hired
+
+Notes:
+  id
+  text
 ```
 
 Unlike an explicit `--sheet`, a sheet with a header row but no data still
 lists its keys instead of failing, since this is meant to survey a workbook,
-not load it. `--format csv|markdown|json|excel` and `-o FILE` work as they do
-everywhere else in the toolbox.
+not load it. `--format csv|markdown|json|excel` write one `sheet, key` row
+per column instead -- ungrouped, for a consumer that wants every pair -- and
+`-o FILE` works as it does everywhere else in the toolbox.
 
 ## `sql` — the table
 

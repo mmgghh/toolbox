@@ -290,10 +290,16 @@ def keys(
     resolved_kind = kind or readers.detect_kind(path)
     if resolved_kind == "excel" and sheet is None and str(path) != "-":
         headers = readers.read_excel_headers(path)
-        rows = [
-            {"sheet": sheet_name, "key": key}
+        folded = {
+            sheet_name: naming.unique(sheet_headers, raw=raw_names)
             for sheet_name, sheet_headers in headers.items()
-            for key in naming.unique(sheet_headers, raw=raw_names)
+        }
+        if output_format == "table":
+            text = _sheet_keys_table(folded)
+            _write_text(text, output)
+            return
+        rows = [
+            {"sheet": sheet_name, "key": key} for sheet_name, keys in folded.items() for key in keys
         ]
         tables.emit(rows, ["sheet", "key"], output_format=output_format, output=output)
         return
@@ -301,6 +307,40 @@ def keys(
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
     rows = [{"key": name} for name in naming.unique(source.columns, raw=raw_names)]
     tables.emit(rows, ["key"], output_format=output_format, output=output)
+
+
+def _sheet_keys_table(headers: dict[str, list[str]]) -> str:
+    """One block per distinct set of keys, naming every sheet that shares it.
+
+    Workbooks commonly repeat the same columns across many sheets; listing
+    each sheet's keys separately would just be that list over and over, so
+    sheets with identical keys are grouped and the keys shown once.
+    """
+    groups: list[tuple[list[str], list[str]]] = []
+    for sheet_name, sheet_keys in headers.items():
+        for sheet_names, keys in groups:
+            if keys == sheet_keys:
+                sheet_names.append(sheet_name)
+                break
+        else:
+            groups.append(([sheet_name], sheet_keys))
+
+    blocks = []
+    for sheet_names, keys in groups:
+        lines = [", ".join(sheet_names) + ":"]
+        lines.extend(f"  {key}" for key in keys)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
+def _write_text(text: str, output: Optional[Path]) -> None:
+    """Print ``text``, or write it to ``output`` with the usual stderr note."""
+    if output is None:
+        click.echo(text)
+        return
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text + "\n", encoding="utf-8")
+    console.success(f"Written to {output}.", threshold=0)
 
 
 @data_cli.command("edit")

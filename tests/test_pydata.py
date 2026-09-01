@@ -253,6 +253,31 @@ def test_keys_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
     assert "Empty" in result.stdout and "only_header" in result.stdout
 
 
+def test_keys_groups_sheets_that_share_the_same_columns(runner, tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    first = wb.active
+    first.title = "Q1"
+    first.append(["ID", "Amount"])
+    first.append([1, 10])
+    second = wb.create_sheet("Q2")
+    second.append(["ID", "Amount"])
+    second.append([1, 20])
+    other = wb.create_sheet("Other")
+    other.append(["Name"])
+    other.append(["x"])
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+
+    result = run(runner, "keys", path)
+    assert result.exit_code == 0
+    assert result.stdout.count("id") == 1
+    assert result.stdout.count("amount") == 1
+    assert "Q1, Q2:" in result.stdout
+    assert "Other:" in result.stdout
+
+
 def test_keys_as_json_stays_parseable(runner, sales):
     result = run(runner, "keys", sales, "--format", "json")
     assert result.exit_code == 0
