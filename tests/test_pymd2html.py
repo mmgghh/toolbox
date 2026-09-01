@@ -99,6 +99,21 @@ def test_unclosed_fence_still_closes_the_document():
     assert body("```\nx\n") == "<pre><code>x</code></pre>"
 
 
+def test_mermaid_fence_becomes_an_embedded_svg_image(monkeypatch):
+    monkeypatch.setattr("pytoolbox.pymd2html.render_mermaid", lambda source, offline=False: b"<svg></svg>")
+    rendered = body("```mermaid\ngraph TD\nA-->B\n```")
+    assert rendered == (
+        '<img class="mermaid" alt="Mermaid diagram" '
+        'src="data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=">'
+    )
+
+
+def test_mermaid_fence_falls_back_to_a_code_block_when_rendering_fails(monkeypatch):
+    monkeypatch.setattr("pytoolbox.pymd2html.render_mermaid", lambda source, offline=False: None)
+    rendered = body("```mermaid\ngraph TD\nA-->B\n```")
+    assert rendered == '<pre><code class="language-mermaid">graph TD\nA--&gt;B</code></pre>'
+
+
 def test_nested_lists():
     rendered = body("- one\n- two\n  - deep\n")
     assert rendered.count("<ul>") == 2
