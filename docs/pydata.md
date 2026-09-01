@@ -6,13 +6,14 @@ Also available as `toolbox data`.
 pydata tree api.json                       # what shape is this?
 pydata summary sales.csv                   # what is in it?
 pydata filter api.json --type int          # show me just the numbers
+pydata count sales.csv                     # how many rows?
 pydata sql sales.csv -t sales --db app.db  # load it into SQLite
 pydata sql api.json -t users --dialect postgres --sql users.sql
 pydata sql api.json -i --db app.db         # ask me about the table first
 pydata edit sales.csv -c "First Name=full_name"   # fix a header in place
 ```
 
-Four subcommands read the same inferred structure, and `edit` writes names
+These subcommands read the same inferred structure, and `edit` writes names
 back into the file. Nothing here needs a
 database driver or an ORM: SQLite comes from the standard library, and
 PostgreSQL is reached by writing a `.sql` file you run yourself.
@@ -103,6 +104,30 @@ and the SQL column name, so either spelling finds the field. `-t/--type` takes
 any container and `mixed` matches a field seen with more than one type.
 Several `--type` values are OR-ed together, while `--key` and `--type` narrow
 the selection together.
+
+## `count` — how many rows or objects
+
+```shell
+pydata count sales.csv                     # 2 records
+pydata count api.json --root data.users    # 3 records
+pydata count staff.xlsx                    # every sheet, since --sheet is not given
+pydata count staff.xlsx --sheet Q1         # just that sheet
+```
+
+Nothing is inferred or typed; `count` only reads far enough to know how many
+records there are. For a workbook read without `--sheet`, every sheet is
+counted rather than just the active one:
+
+```
+$ pydata count staff.xlsx
+sheet | count
+------+------
+Q1    | 42
+Q2    | 0
+```
+
+An empty sheet counts as `0` instead of failing, since counting is meant to
+survey a workbook, not load it.
 
 ## `sql` — the table
 

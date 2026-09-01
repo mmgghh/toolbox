@@ -162,6 +162,50 @@ def test_filter_with_no_match_fails_clearly(runner, api):
     assert "No field matched" in result.stderr
 
 
+# ── count ───────────────────────────────────────────────────────────
+
+
+def test_count_a_json_envelope(runner, api):
+    assert run(runner, "count", api).stdout.strip() == "3 records"
+
+
+def test_count_respects_root(runner, api):
+    assert run(runner, "count", api, "--root", "data.users").stdout.strip() == "3 records"
+
+
+def test_count_a_csv(runner, sales):
+    assert run(runner, "count", sales).stdout.strip() == "2 records"
+
+
+def test_count_stdin_with_from(runner):
+    result = run(runner, "count", "-", "--from", "json", input='[{"a": 1}]')
+    assert result.stdout.strip() == "1 record"
+
+
+def test_count_an_xlsx_sheet_explicitly(runner, book):
+    assert run(runner, "count", book, "--sheet", "Staff").stdout.strip() == "2 records"
+
+
+def test_count_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    staff = wb.active
+    staff.title = "Staff"
+    staff.append(["ID", "Name"])
+    staff.append([1, "ann"])
+    staff.append([2, "bob"])
+    empty = wb.create_sheet("Empty")
+    empty.append(["ID"])
+    path = tmp_path / "book.xlsx"
+    wb.save(path)
+
+    result = run(runner, "count", path)
+    assert result.exit_code == 0
+    assert "Staff" in result.stdout and "2" in result.stdout
+    assert "Empty" in result.stdout and "0" in result.stdout
+
+
 # ── sql: scripts ────────────────────────────────────────────────────
 
 

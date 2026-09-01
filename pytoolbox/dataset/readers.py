@@ -164,7 +164,7 @@ def read_excel(
         columns = _header_columns(["" if cell is None else str(cell) for cell in header])
         records = []
         for row in rows:
-            if all(cell is None or (isinstance(cell, str) and not cell.strip()) for cell in row):
+            if _is_blank_row(row):
                 continue
             record = {}
             for index, column in enumerate(columns):
@@ -181,6 +181,38 @@ def read_excel(
     if not records:
         raise DataError(f"Sheet {worksheet.title!r} has a header row but no data rows.")
     return records, columns
+
+
+def _is_blank_row(row: tuple) -> bool:
+    """True when every cell is empty, the way a spreadsheet's blank rows are."""
+    return all(cell is None or (isinstance(cell, str) and not cell.strip()) for cell in row)
+
+
+def count_excel_sheets(path: Path) -> dict[str, int]:
+    """Count the data rows in every sheet of a workbook, header row excluded.
+
+    Unlike :func:`read_excel`, an empty sheet counts as zero instead of
+    raising -- counting is meant to survey a workbook, not load it.
+    """
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise DataError(
+            "Reading .xlsx needs openpyxl. Install it with: pip install 'pytoolbox[excel]'"
+        ) from exc
+
+    if not path.exists():
+        raise DataError(f"No such file: {path}")
+    workbook = load_workbook(filename=str(path), read_only=True, data_only=True)
+    try:
+        counts = {}
+        for name in workbook.sheetnames:
+            rows = workbook[name].iter_rows(values_only=True)
+            next(rows, None)
+            counts[name] = sum(1 for row in rows if not _is_blank_row(row))
+        return counts
+    finally:
+        workbook.close()
 
 
 def _sniff_delimiter(text: str) -> str:

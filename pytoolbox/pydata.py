@@ -128,6 +128,7 @@ def data_cli() -> None:
       pydata tree api.json
       pydata summary sales.csv
       pydata filter api.json --type int
+      pydata count sales.csv
       pydata sql sales.csv -t sales --db app.db
       pydata edit sales.csv --rename "First Name=full_name"
     """
@@ -232,6 +233,34 @@ def filter_command(
         output_format=output_format,
         output=output,
     )
+
+
+@data_cli.command()
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@source_options
+def count(
+    path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit
+) -> None:
+    """Print how many rows or objects the data has.
+
+    For a workbook read without --sheet, every sheet is counted.
+
+    \b
+    Examples:
+      pydata count sales.csv
+      pydata count api.json --root data.users
+      pydata count staff.xlsx
+      pydata count staff.xlsx --sheet Q1
+    """
+    resolved_kind = kind or readers.detect_kind(path)
+    if resolved_kind == "excel" and sheet is None and str(path) != "-":
+        counts = readers.count_excel_sheets(path)
+        rows = [{"sheet": name, "count": total} for name, total in counts.items()]
+        console.result(tables.render_table(rows, ["sheet", "count"]))
+        return
+
+    source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
+    console.result(console.plural(len(source.records), "record"))
 
 
 @data_cli.command("edit")
