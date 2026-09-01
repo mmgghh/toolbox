@@ -13,6 +13,22 @@ This project follows [Semantic Versioning](https://semver.org/).
   `نقشه شناخت پروژه.md` came out as unjoined letters running the wrong way
   under a title that was set correctly. The cover now carries the title alone.
 
+### Changed
+
+- **`pyssh tunnel`, `double-tunnel` and `rsync-dir` now refuse a stored
+  password to a host missing from `known_hosts`, matching `connect`, `exec`
+  and `copy-id`.** `sshpass` can only answer the password prompt, not a
+  host-key prompt, so these three used to fall back to
+  `StrictHostKeyChecking=accept-new` and hand the password to whoever
+  answered on first contact. They now verify the key up front like the newer
+  commands do, and go strict (`=yes`) once it is verified. Key-based auth is
+  unaffected — ssh does its own host-key prompting in that case, and there is
+  no secret to leak. `double-tunnel`'s second hop is the one exception: its
+  ssh process dials the local loopback bridge rather than the real remote
+  host, so there is no meaningful `known_hosts` entry for it to check
+  strictly against; the real remote key is still verified up front, before
+  either hop opens.
+
 ### Fixed
 
 - **`pymd2pdf` ran a blockquote's indent bar down the side of several

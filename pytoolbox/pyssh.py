@@ -363,8 +363,9 @@ def build_ssh_command(
         cmd[1:1] = ["-o", opt]
     if password_file is not None:
         # sshpass answers the password prompt and nothing else, so a host-key
-        # prompt would hang. The new commands verify the key up front instead
-        # and ask for strictness here; the older ones keep accept-new.
+        # prompt would hang. Every caller with a real known_hosts entry to
+        # check verifies the key up front and asks for strictness here;
+        # double-tunnel's second hop is the one exception (see its call site).
         policy = "yes" if strict_host_keys else "accept-new"
         cmd[1:1] = ["-o", f"StrictHostKeyChecking={policy}"]
     # ``--`` ends option parsing. Without it a destination beginning with ``-`` is read
@@ -599,6 +600,7 @@ def tunnel(
     """
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
     target = apply_stored_secret(hosts.resolve_connection(server, server_conf, "-s/--server"))
+    _guard_host_key(target)
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
     if not port_is_free(local_port, bind_host):
@@ -617,6 +619,7 @@ def tunnel(
             identity=identity,
             password_file=password_file,
             extra_opts=ssh_options,
+            strict_host_keys=bool(target.password),
         )
         process = session.spawn(cmd)
         _wait_for_listener(local_port, bind_host, process, STARTUP_TIMEOUT_SECONDS)
@@ -741,6 +744,8 @@ def double_tunnel(
     _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
     first = apply_stored_secret(hosts.resolve_connection(server1, server1_conf, "--server1"))
     second = apply_stored_secret(hosts.resolve_connection(server2, server2_conf, "--server2"))
+    _guard_host_key(first)
+    _guard_host_key(second)
     second_address = _second_hop_address(second)
     bind_host = "0.0.0.0" if public else "127.0.0.1"
 
@@ -758,6 +763,7 @@ def double_tunnel(
             identity=identity,
             password_file=pass1,
             extra_opts=ssh_options,
+            strict_host_keys=bool(first.password),
         )
         process1 = session.spawn(hop1)
         _wait_for_listener(lp1, "127.0.0.1", process1, STARTUP_TIMEOUT_SECONDS)
@@ -776,6 +782,13 @@ def double_tunnel(
             identity=identity,
             password_file=pass2,
             extra_opts=ssh_options,
+            # Hop 2's ssh connects to the loopback bridge (127.0.0.1:lp1), not
+            # to `second` directly, so it has no known_hosts entry of its own
+            # to check strictly -- `_guard_host_key(second)` above already
+            # verified the real remote key before any password left this
+            # machine. Keep accept-new here so the bridge's synthetic address
+            # doesn't get pinned into known_hosts as a side effect.
+            strict_host_keys=False,
         )
         process2 = session.spawn(hop2)
         _wait_for_listener(lp2, bind_host, process2, STARTUP_TIMEOUT_SECONDS)
@@ -875,8 +888,9 @@ def _rsync_ssh_command(
     for option in ssh_options:
         parts += ["-o", option]
     if password:
-        # Host-key prompts cannot be answered when sshpass drives ssh.
-        parts += ["-o", "StrictHostKeyChecking=accept-new"]
+        # The caller has already checked known_hosts (see rsync_dir), so a
+        # mismatch here is refused rather than silently trusted on first contact.
+        parts += ["-o", "StrictHostKeyChecking=yes"]
     return shlex.join(parts)
 
 
@@ -1096,13 +1110,18 @@ def rsync_dir(
             "Only one side can carry a password; rsync opens a single SSH connection."
         )
     password = source_password or destination_password
+    password_host = rsync_host_of(source if source_password else destination) if password else None
     if password is None:
         for spec in (source, destination):
             host = rsync_host_of(spec)
             if host and "@" not in spec.split(":", 1)[0]:
                 password = store.get_secret(host)
                 if password:
+                    password_host = host
                     break
+
+    if password and password_host:
+        knownhosts.require_known(password_host, password_host, ssh_port)
 
     if exclude_from:
         exclude = (*exclude, *rsync.read_pattern_file(Path(exclude_from)))

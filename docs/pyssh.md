@@ -122,6 +122,10 @@ rebuilds the tunnel when the check fails. It needs the `socks` extra
 (`pip install 'pytoolbox[socks]'`). To test whether a *specific* site is
 reachable, point `--check-url` at it.
 
+**Host keys.** When a password is used, `tunnel` refuses to connect to a host
+that is not already in `~/.ssh/known_hosts`, and prints the command that fixes
+it. Key authentication is unaffected.
+
 ## `double-tunnel`
 
 For when your machine can reach server 1 but not server 2, and only server 2
@@ -136,6 +140,13 @@ pyssh double-tunnel \
 
 `--lp1` is the local port forwarded to server 2's SSH port; `--lp2` is where
 the SOCKS proxy listens. It takes the same options as `tunnel`.
+
+**Host keys.** When a password is used, both hops are checked against
+`~/.ssh/known_hosts` before either connects, and the first hop stays strict
+for its own connection. The second hop's ssh process dials the local loopback
+bridge rather than server 2 directly, so it has no `known_hosts` entry of its
+own to enforce; the pre-flight check against server 2's real key is what
+guards it.
 
 ## `connect`, `forward` and `reverse`
 
@@ -266,6 +277,10 @@ Either side may be `user@host:/path`, and — unlike plain rsync — also
 `user:password@host:/path`, which routes through `sshpass` exactly as the
 tunnel commands do. Only one side may carry a password; rsync opens a single
 SSH connection.
+
+**Host keys.** When a password is used — inline or stored — `rsync-dir`
+refuses to connect to a host that is not already in `~/.ssh/known_hosts`, and
+prints the command that fixes it. Key authentication is unaffected.
 
 ### Patterns
 

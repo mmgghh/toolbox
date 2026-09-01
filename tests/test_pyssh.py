@@ -329,7 +329,8 @@ def test_rsync_dir_passes_extra_ssh_options(runner, fake_rsync):
     assert "-o Compression=yes" in ssh_command
 
 
-def test_rsync_dir_uses_sshpass_for_a_password_spec(runner, fake_rsync):
+def test_rsync_dir_uses_sshpass_for_a_password_spec(runner, fake_rsync, monkeypatch):
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
     result = runner.invoke(
         ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:hunter2@host:/srv"]
     )
@@ -340,10 +341,32 @@ def test_rsync_dir_uses_sshpass_for_a_password_spec(runner, fake_rsync):
     assert cmd[-1] == "me@host:/srv"
 
 
-def test_rsync_dir_removes_the_password_file_afterwards(runner, fake_rsync):
+def test_rsync_dir_removes_the_password_file_afterwards(runner, fake_rsync, monkeypatch):
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
     runner.invoke(ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:pw@host:/srv"])
     pass_file = pyssh.Path(fake_rsync["cmd"][2])
     assert not pass_file.exists()
+
+
+def test_rsync_dir_refuses_a_password_to_an_unknown_host(runner, fake_rsync, monkeypatch):
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:hunter2@host:/srv"]
+    )
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+    assert "cmd" not in fake_rsync
+
+
+def test_rsync_dir_uses_strict_host_keys_with_a_password(runner, fake_rsync, monkeypatch):
+    """A password disables the usual accept-new leniency, same as connect/exec/copy-id."""
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    result = runner.invoke(
+        ssh_management, ["rsync-dir", "-s", "./site", "-d", "me:hunter2@host:/srv"]
+    )
+    assert result.exit_code == 0, result.output
+    ssh_command = fake_rsync["cmd"][fake_rsync["cmd"].index("-e") + 1]
+    assert "StrictHostKeyChecking=yes" in ssh_command
 
 
 def test_rsync_dir_rejects_a_password_on_both_sides(runner, fake_rsync):
@@ -393,6 +416,43 @@ def test_tunnel_refuses_a_busy_port(runner, monkeypatch):
         )
     assert result.exit_code != 0
     assert "already in use" in result.stderr
+
+
+def test_tunnel_refuses_a_password_to_an_unknown_host(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    result = runner.invoke(ssh_management, ["tunnel", "-s", "me:hunter2@host", "-p", "9998"])
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+
+
+def test_tunnel_uses_strict_host_keys_with_a_password(runner, monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.update(cmd=cmd), FakeProcess())[1]
+    )
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    result = runner.invoke(ssh_management, ["tunnel", "-s", "me:hunter2@host", "-p", "9998", "-b"])
+    assert result.exit_code == 0, result.output
+    assert "StrictHostKeyChecking=yes" in captured["cmd"]
 
 
 # ── targets in command construction ─────────────────────────────────
@@ -547,6 +607,96 @@ def test_double_tunnel_reports_an_unresolvable_name(runner, monkeypatch):
     assert "target" in result.stderr
 
 
+def test_double_tunnel_refuses_a_password_to_an_unknown_first_hop(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    result = runner.invoke(
+        ssh_management,
+        ["double-tunnel", "--server1", "me:hunter2@bridge", "--server2", "me@target"],
+    )
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+
+
+def test_double_tunnel_refuses_a_password_to_an_unknown_second_hop(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    result = runner.invoke(
+        ssh_management,
+        ["double-tunnel", "--server1", "me@bridge", "--server2", "me:hunter2@target"],
+    )
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+
+
+def test_double_tunnel_uses_strict_host_keys_for_the_first_hop_with_a_password(runner, monkeypatch):
+    captured = []
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.append(cmd), FakeProcess())[1]
+    )
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    result = runner.invoke(
+        ssh_management,
+        ["double-tunnel", "--server1", "me:hunter2@bridge", "--server2", "me@target", "-b"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "StrictHostKeyChecking=yes" in captured[0]
+
+
+def test_double_tunnel_keeps_accept_new_for_the_second_hop_bridge(runner, monkeypatch):
+    """Hop 2 dials the local loopback bridge, which has no known_hosts entry of
+    its own -- `_guard_host_key` already verified the real remote key up front,
+    so forcing strict checking here would only break on the bridge's synthetic,
+    per-run address."""
+    captured = []
+
+    class FakeProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            return None
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.append(cmd), FakeProcess())[1]
+    )
+    monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    result = runner.invoke(
+        ssh_management,
+        ["double-tunnel", "--server1", "me@bridge", "--server2", "me:hunter2@target", "-b"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "StrictHostKeyChecking=accept-new" in captured[1]
+
+
 # ── secrets and tags ────────────────────────────────────────────────
 
 @pytest.fixture
@@ -675,6 +825,14 @@ def test_a_stored_password_is_used_for_a_config_name(runner, monkeypatch, workin
         pyssh.subprocess, "Popen", lambda cmd, **kw: (captured.update(cmd=cmd), FakeProcess())[1]
     )
     monkeypatch.setattr(pyssh, "_wait_for_listener", lambda *a, **k: None)
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
     runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
 
     result = runner.invoke(ssh_management, ["tunnel", "-s", "prod-web", "-p", "9998", "-b"])
@@ -697,7 +855,10 @@ def test_a_spec_without_a_password_does_not_consult_the_store(monkeypatch):
     assert pyssh.apply_stored_secret(pyssh.hosts.resolve_target("me@host")).password is None
 
 
-def test_rsync_dir_uses_a_stored_password_for_a_config_name(runner, fake_rsync, working_keyring):
+def test_rsync_dir_uses_a_stored_password_for_a_config_name(
+    runner, fake_rsync, working_keyring, monkeypatch
+):
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
     runner.invoke(ssh_management, ["secret", "set", "prod-web"], input="hunter2\nhunter2\n")
     result = runner.invoke(
         ssh_management, ["rsync-dir", "-s", "./site", "-d", "prod-web:/srv/site"]
