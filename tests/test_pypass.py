@@ -246,3 +246,143 @@ def test_import_chrome_prompts_to_shred(tmp_path, monkeypatch, runner):
 
     assert result.exit_code == 0, result.output
     assert not csv_path.exists()
+
+
+def _make_store(root):
+    store = root / "store"
+    store.mkdir()
+    (store / ".gpg-id").write_text("ABCDEF\n")
+    (store / "alice@example.com.gpg").write_bytes(b"fake-gpg-bytes")
+    (store / "sub").mkdir()
+    (store / "sub" / "bob@example.org.gpg").write_bytes(b"more-fake-bytes")
+    (store / ".git").mkdir()
+    (store / ".git" / "config").write_text("[core]\n")
+    return store
+
+
+def test_export_creates_archive_with_git_by_default(tmp_path, monkeypatch, runner):
+    import tarfile
+
+    store = _make_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+    output = tmp_path / "out.tar.gz"
+
+    result = runner.invoke(pass_cli, ["export", str(output)])
+
+    assert result.exit_code == 0, result.output
+    with tarfile.open(output) as tar:
+        names = set(tar.getnames())
+    assert "alice@example.com.gpg" in names
+    assert "sub/bob@example.org.gpg" in names
+    assert ".gpg-id" in names
+    assert any(n.startswith(".git") for n in names)
+
+
+def test_export_no_git_excludes_git_dir(tmp_path, monkeypatch, runner):
+    import tarfile
+
+    store = _make_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+    output = tmp_path / "out.tar.gz"
+
+    result = runner.invoke(pass_cli, ["export", str(output), "--no-git"])
+
+    assert result.exit_code == 0, result.output
+    with tarfile.open(output) as tar:
+        names = set(tar.getnames())
+    assert not any(n.startswith(".git") for n in names)
+
+
+def test_export_default_output_name(tmp_path, monkeypatch, runner):
+    store = _make_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(pass_cli, ["export"])
+
+    assert result.exit_code == 0, result.output
+    archives = list(tmp_path.glob("password-store-*.tar.gz"))
+    assert len(archives) == 1
+
+
+def test_export_missing_store(tmp_path, monkeypatch, runner):
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path / "nope"))
+    result = runner.invoke(pass_cli, ["export", str(tmp_path / "out.tar.gz")])
+    assert result.exit_code != 0
+    assert "No password store" in result.output
+
+
+def test_import_restores_the_tree(tmp_path, monkeypatch, runner):
+    import tarfile
+
+    store = _make_store(tmp_path)
+    archive = tmp_path / "out.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for child in store.iterdir():
+            tar.add(child, arcname=child.name)
+    dest = tmp_path / "restored"
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(dest))
+
+    result = runner.invoke(pass_cli, ["import", str(archive)])
+
+    assert result.exit_code == 0, result.output
+    assert (dest / "alice@example.com.gpg").exists()
+    assert (dest / "sub" / "bob@example.org.gpg").exists()
+    assert (dest / ".gpg-id").exists()
+
+
+def test_import_refuses_nonempty_destination_without_force(tmp_path, monkeypatch, runner):
+    import tarfile
+
+    store = _make_store(tmp_path)
+    archive = tmp_path / "out.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for child in store.iterdir():
+            tar.add(child, arcname=child.name)
+    dest = tmp_path / "existing"
+    dest.mkdir()
+    (dest / "already-here.gpg").touch()
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(dest))
+
+    result = runner.invoke(pass_cli, ["import", str(archive)])
+
+    assert result.exit_code != 0
+    assert "--force" in result.output
+
+
+def test_import_force_overwrites(tmp_path, monkeypatch, runner):
+    import tarfile
+
+    store = _make_store(tmp_path)
+    archive = tmp_path / "out.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for child in store.iterdir():
+            tar.add(child, arcname=child.name)
+    dest = tmp_path / "existing"
+    dest.mkdir()
+    (dest / "stale.gpg").touch()
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(dest))
+
+    result = runner.invoke(pass_cli, ["import", str(archive), "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert not (dest / "stale.gpg").exists()
+    assert (dest / "alice@example.com.gpg").exists()
+
+
+def test_import_rejects_path_traversal(tmp_path, runner):
+    import io
+    import tarfile
+
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo(name="../escape.gpg")
+        data = b"x"
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+    dest = tmp_path / "dest"
+
+    result = runner.invoke(pass_cli, ["import", str(archive), "--store", str(dest)])
+
+    assert result.exit_code != 0
+    assert "unsafe" in result.output.lower()
