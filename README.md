@@ -44,6 +44,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pydocx2md` | `toolbox docx2md` | Word to Markdown, with every comment anchored to its text      | [docs/pydocx2md.md](docs/pydocx2md.md) |
 | `pydocx2pdf` | `toolbox docx2pdf` | Word to PDF, via LibreOffice when it is installed           | [docs/pydocx2pdf.md](docs/pydocx2pdf.md) |
 | `pypdf2md` | `toolbox pdf2md` | PDF to Markdown, structure inferred from the page               | [docs/pypdf2md.md](docs/pypdf2md.md) |
+| `pyhtml2md` | `toolbox html2md` | HTML to Markdown, no dependencies, nothing dropped            | [docs/pyhtml2md.md](docs/pyhtml2md.md) |
 
 Every command supports `-h/--help` and `-V/--version`, accepts unambiguous
 subcommand prefixes (`pyfm part` == `pyfm partition`), suggests alternatives

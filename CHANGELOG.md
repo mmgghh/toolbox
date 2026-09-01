@@ -5,6 +5,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **`pyhtml2md`, also `toolbox html2md`.** Converts HTML to Markdown with no
+  optional dependency, using the standard library's `html.parser`. Tags with
+  a clean Markdown equivalent (headings, lists, tables, links, images,
+  emphasis, code, blockquotes...) convert to it; anything else — `<div>`,
+  `<span>`, `<iframe>`, custom elements, HTML comments — passes through
+  verbatim as raw HTML, so nothing reader-visible is ever silently dropped.
+
 ### Removed
 
 - **`pymd2pdf` no longer prints the source file's name on the cover page.**

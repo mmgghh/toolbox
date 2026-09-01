@@ -35,6 +35,7 @@ SUBCOMMANDS: dict[str, tuple[str, str, str]] = {
     "docx2md": ("pytoolbox.pydocx2md", "docx2md_cli", "Word to Markdown (pydocx2md)"),
     "docx2pdf": ("pytoolbox.pydocx2pdf", "docx2pdf_cli", "Word to PDF (pydocx2pdf)"),
     "pdf2md": ("pytoolbox.pypdf2md", "pdf2md_cli", "PDF to Markdown (pypdf2md)"),
+    "html2md": ("pytoolbox.pyhtml2md", "html2md_cli", "HTML to Markdown (pyhtml2md)"),
 }
 
 
@@ -133,6 +134,7 @@ def toolbox() -> None:
       toolbox docx2md ... ==  pydocx2md ...
       toolbox docx2pdf ... == pydocx2pdf ...
       toolbox pdf2md ...  ==  pypdf2md ...
+      toolbox html2md ... ==  pyhtml2md ...
 
     \b
     Examples:
