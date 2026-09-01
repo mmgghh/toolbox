@@ -127,16 +127,23 @@ def ensure_dir(path: Path, private: bool = False) -> Path:
 
 
 def write_private_file(path: Path, content: str) -> Path:
-    """Write ``content`` to ``path`` with owner-only permissions.
+    """Write ``content`` to ``path`` with owner-only permissions, atomically.
 
-    The file is created with the restrictive mode already in place, so the
-    secret is never briefly readable by other users.
+    The write lands in a temp file next to ``path`` (created with the
+    restrictive mode already in place, so the secret is never briefly
+    readable by other users) and is moved into place with :func:`os.replace`.
+    Without that, a process interrupted between truncating and writing would
+    leave ``path`` empty -- and this may be the only copy of a stored secret.
     """
     ensure_dir(path.parent, private=True)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-    fd = os.open(path, flags, stat.S_IRUSR | stat.S_IWUSR)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(content)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+        os.replace(tmp_name, path)
+    except BaseException:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
     return path
 
 

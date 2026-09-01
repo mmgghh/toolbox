@@ -163,6 +163,35 @@ def test_write_private_file_is_owner_only(tmp_path):
     assert stat.S_IMODE(target.stat().st_mode) == 0o600
 
 
+def test_write_private_file_overwrites_atomically(tmp_path):
+    """A second write must not leave a truncated file if it were interrupted --
+    it lands in a temp file and is swapped into place with os.replace."""
+    target = tmp_path / "pass"
+    paths.write_private_file(target, "first")
+    paths.write_private_file(target, "second")
+    assert target.read_text(encoding="utf-8") == "second"
+    assert list(tmp_path.iterdir()) == [target]  # no leftover temp file
+
+
+def test_write_private_file_leaves_the_previous_content_on_failure(tmp_path, monkeypatch):
+    """A crash mid-write must not truncate the file: the old content (or
+    nothing, on a first write) survives, and the failed temp file is cleaned up."""
+    target = tmp_path / "pass"
+    paths.write_private_file(target, "first")
+
+    class Boom(Exception):
+        pass
+
+    def fail_replace(src, dst):
+        raise Boom("disk full")
+
+    monkeypatch.setattr(paths.os, "replace", fail_replace)
+    with pytest.raises(Boom):
+        paths.write_private_file(target, "second")
+    assert target.read_text(encoding="utf-8") == "first"
+    assert list(tmp_path.iterdir()) == [target]  # no leftover temp file
+
+
 def test_find_font_returns_none_for_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "font_dirs", lambda: [tmp_path])
     assert paths.find_font("DefinitelyNotAFont.ttf") is None
