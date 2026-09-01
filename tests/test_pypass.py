@@ -386,3 +386,20 @@ def test_import_rejects_path_traversal(tmp_path, runner):
 
     assert result.exit_code != 0
     assert "unsafe" in result.output.lower()
+
+
+def test_import_rejects_symlink_members(tmp_path, runner):
+    import tarfile
+
+    archive = tmp_path / "evil.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        info = tarfile.TarInfo(name="link")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/"
+        tar.addfile(info)
+    dest = tmp_path / "dest"
+
+    result = runner.invoke(pass_cli, ["import", str(archive), "--store", str(dest)])
+
+    assert result.exit_code != 0
+    assert "symlink" in result.output.lower()

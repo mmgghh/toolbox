@@ -184,9 +184,22 @@ def _print_import_summary(imported, suffixed, duplicates, failed, unparseable, e
 
 
 def _safe_members(tar: tarfile.TarFile, dest: Path) -> list:
+    """Validate every member before anything is written to disk.
+
+    Rejects a member whose *name* would land outside ``dest``, and rejects
+    symlinks/hardlinks outright -- a `pass` store never has a legitimate
+    reason to contain one, and allowing them would let an early symlink
+    member redirect a later member's write outside ``dest`` once it's
+    created on disk, which a path check made only against member *names*
+    (there is nothing on disk yet to resolve through) cannot catch.
+    """
     dest_resolved = dest.resolve()
     members = []
     for member in tar.getmembers():
+        if member.issym() or member.islnk():
+            raise click.ClickException(
+                f"Refusing to extract archive member with a symlink/hardlink: {member.name!r}"
+            )
         target = (dest / member.name).resolve()
         if target != dest_resolved and dest_resolved not in target.parents:
             raise click.ClickException(f"Refusing to extract unsafe archive member: {member.name!r}")
