@@ -243,6 +243,18 @@ that is not already in `~/.ssh/known_hosts`, and prints the command that fixes
 it — sending a password to an unverified host and then running commands on it
 is exactly the machine-in-the-middle case. Key authentication is unaffected.
 
+**`--tty` with `--tag` or `--json`.** Both capture the remote command's
+output, which "force a TTY" sounds like it would fight with. In practice it
+does not: pyssh sends a single `-t`, and ssh silently declines to allocate one
+whenever its own stdin is not a real terminal — which is exactly the case
+here, since the output is being captured rather than connected to one. The
+remote command runs exactly as it would without `--tty`; ssh only adds a line
+to its own stderr ("Pseudo-terminal will not be allocated because stdin is
+not a terminal"), which pyssh does not surface unless `-v` is given. (This
+was confirmed against a live ssh session, comparing plain, `-t` and `-tt`: only
+`-tt` — which pyssh never sends — actually forces the remote pty and would
+risk mixing pty-formatted output into a captured stream.)
+
 ## `status` and `stop`
 
 Background tunnels record their state under `$XDG_RUNTIME_DIR/pytoolbox`.

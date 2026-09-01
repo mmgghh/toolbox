@@ -1632,7 +1632,12 @@ def reverse(
 @click.option("--env", "env_pairs", multiple=True, metavar="NAME=VALUE",
               help="Export a variable before running. Repeatable.")
 @click.option("--sudo", is_flag=True, help="Run as root with `sudo -n`. Needs passwordless sudo.")
-@click.option("--tty", is_flag=True, help="Force a TTY, for interactive remote programs.")
+@click.option(
+    "--tty", is_flag=True,
+    help="Force a TTY, for interactive remote programs. Inert with --tag or --json: "
+    "ssh sends a single -t, which it silently drops whenever output is captured "
+    "rather than connected to a real terminal (confirmed -- see docs/pyssh.md).",
+)
 @click.option("--identity", type=click.Path(dir_okay=False), help="Private key file.")
 @click.option("--ssh-option", "ssh_options", multiple=True, help="Extra `ssh -o` option.")
 @json_option

@@ -1194,6 +1194,46 @@ def test_exec_applies_cd_and_env_and_sudo(runner, fake_exec):
     assert fake_exec["cmds"][0][-1] == "export CI=1; cd -- /srv/app && sudo -n make"
 
 
+def test_exec_tty_adds_a_single_dash_t(runner, fake_exec):
+    """Never -tt: that forces remote pty allocation even without a local
+    terminal, which would risk mixing pty-formatted output into --json/--tag's
+    captured stream. A single -t is what ssh silently ignores when captured."""
+    runner.invoke(ssh_management, ["exec", "prod", "--tty", "top"])
+    cmd = fake_exec["cmds"][0]
+    assert "-t" in cmd
+    assert "-tt" not in cmd
+
+
+def test_exec_tty_with_json_still_captures_cleanly(runner, fake_exec):
+    """--tty is accepted with --json (which always captures); see
+    docs/pyssh.md for why this is inert rather than corrupting."""
+    result = runner.invoke(ssh_management, ["exec", "prod", "--tty", "--json", "uptime"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload[0]["stdout"] == "ok\n"
+
+
+def test_exec_tty_with_tag_adds_a_single_dash_t_per_host(runner, monkeypatch):
+    """--tty is accepted with --tag (always captured); see docs/pyssh.md for
+    why this is inert rather than corrupting."""
+    calls = []
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        pyssh.remote,
+        "run_many",
+        lambda jobs, parallel=1: [
+            calls.append(cmd)
+            or pyssh.remote.ExecResult(name=name, returncode=0, stdout="up\n")
+            for name, cmd in jobs
+        ],
+    )
+    runner.invoke(ssh_management, ["hosts", "tag", "add", "prod", "web1"])
+    result = runner.invoke(ssh_management, ["exec", "--tag", "prod", "--tty", "uptime"])
+    assert result.exit_code == 0, result.output
+    assert "-t" in calls[0]
+    assert "-tt" not in calls[0]
+
+
 def test_exec_propagates_the_remote_exit_code(runner, monkeypatch):
     monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(
