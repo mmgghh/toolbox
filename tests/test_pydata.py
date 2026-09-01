@@ -44,6 +44,46 @@ def sales(tmp_path):
 
 
 @pytest.fixture
+def orders(tmp_path):
+    path = tmp_path / "orders.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "id": 1,
+                    "address": {"city": "Berlin", "zip": "10115"},
+                    "items": [{"sku": "a", "city": "X"}, {"sku": "b"}],
+                },
+                {"id": 2, "address": {"city": "Rome"}, "items": []},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
+def multi_sheet(tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    q1 = wb.active
+    q1.title = "Q1"
+    q1.append(["ID", "Amount"])
+    q1.append([1, 10])
+    q1.append([2, 20])
+    q2 = wb.create_sheet("Q2")
+    q2.append(["ID", "Amount"])
+    q2.append([3, 30])
+    notes = wb.create_sheet("Notes")
+    notes.append(["ID", "Text"])
+    notes.append([1, "hi"])
+    path = tmp_path / "multi.xlsx"
+    wb.save(path)
+    return path
+
+
+@pytest.fixture
 def book(tmp_path):
     from openpyxl import Workbook
 
@@ -160,6 +200,74 @@ def test_filter_with_no_match_fails_clearly(runner, api):
     result = run(runner, "filter", api, "-k", "zzz")
     assert result.exit_code == 1
     assert "No field matched" in result.stderr
+
+
+def test_filter_deep_finds_a_key_at_any_depth(runner, orders):
+    result = run(runner, "filter", orders, "-k", "city", "--deep")
+    assert result.exit_code == 0
+    assert "address.city" in result.stdout
+    assert "items.[].city" in result.stdout
+    assert "Berlin" in result.stdout
+    assert "Rome" in result.stdout
+    assert "X" in result.stdout
+
+
+def test_filter_deep_reports_the_record_number(runner, orders):
+    result = run(runner, "filter", orders, "-k", "city", "--deep", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert [row["record"] for row in rows] == [1, 1, 2]
+
+
+def test_filter_deep_drop_empty_skips_null_values(runner, tmp_path):
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps([{"a": {"b": None}}, {"a": {"b": 1}}]), encoding="utf-8")
+    result = run(runner, "filter", path, "-k", "b", "--deep", "--drop-empty", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert [row["value"] for row in rows] == [1]
+
+
+def test_filter_deep_rejects_type_mixed(runner, orders):
+    result = run(runner, "filter", orders, "--deep", "--type", "mixed")
+    assert result.exit_code == 1
+    assert "--deep" in result.stderr
+
+
+def test_filter_deep_with_no_match_fails_clearly(runner, orders):
+    result = run(runner, "filter", orders, "-k", "zzz", "--deep")
+    assert result.exit_code == 1
+    assert "No field matched" in result.stderr
+
+
+def test_filter_sheet_wildcard_merges_matching_sheets(runner, multi_sheet):
+    result = run(runner, "filter", multi_sheet, "-k", "amount", "--sheet", "*")
+    assert result.exit_code == 0
+    assert "Q1" in result.stdout and "Q2" in result.stdout
+    assert "Notes" not in result.stdout
+    assert result.stdout.count("10") == 1 and "30" in result.stdout
+
+
+def test_filter_sheet_wildcard_skips_a_sheet_without_the_field(runner, multi_sheet):
+    result = run(runner, "filter", multi_sheet, "-k", "text", "--sheet", "*", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert [row["sheet"] for row in rows] == ["Notes"]
+
+
+def test_filter_sheet_wildcard_rejects_non_excel(runner, sales):
+    result = run(runner, "filter", sales, "-k", "id", "--sheet", "*")
+    assert result.exit_code == 1
+    assert "only applies to Excel" in result.stderr
+
+
+def test_filter_sheet_wildcard_no_match_anywhere(runner, multi_sheet):
+    result = run(runner, "filter", multi_sheet, "-k", "zzz", "--sheet", "*")
+    assert result.exit_code == 1
+    assert "No field matched the filter in any sheet" in result.stderr
+
+
+def test_filter_sheet_wildcard_with_deep(runner, multi_sheet):
+    result = run(runner, "filter", multi_sheet, "-k", "text", "--deep", "--sheet", "*", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert rows == [{"sheet": "Notes", "record": 1, "path": "Text", "value": "hi"}]
 
 
 # ── count ───────────────────────────────────────────────────────────

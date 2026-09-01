@@ -188,6 +188,11 @@ def summary(
 @click.option("-k", "--key", "keys", multiple=True, help="Keep fields matching this glob (repeatable).")
 @click.option("-t", "--type", "types", multiple=True, help="Keep fields of this value type (repeatable).")
 @click.option("--drop-empty", is_flag=True, help="Drop fields that are null in every record.")
+@click.option(
+    "--deep",
+    is_flag=True,
+    help="Search every nested object and list too, not just the top level.",
+)
 @click.option("--rows", type=int, default=None, help="Print only the first N rows.")
 @format_option()
 @click.option("-o", "--output", type=click.Path(path_type=Path), help="Write to this file.")
@@ -205,6 +210,7 @@ def filter_command(
     keys,
     types,
     drop_empty,
+    deep,
     rows,
     output_format,
     output,
@@ -219,13 +225,49 @@ def filter_command(
     Types: null bool int float date datetime str list object json mixed
     ("json" matches any container, "mixed" any field seen with two types.)
 
+    --sheet '*' reads every sheet of a workbook instead of just the active
+    one. Each row is tagged with the sheet it came from, and a sheet where
+    nothing matched is skipped rather than failing the whole command -- so
+    -k amount --sheet '*' prints that column from every sheet that has it.
+
+    --deep looks inside every nested object and list too, at any depth, the
+    way api.json's orders.[].sku would be reached by hand -- not just the
+    top level -k normally stops at. Matching switches from one row per
+    record to one row per match, showing where each value was found. Paths
+    are always the original names, the way tree shows them; --raw-names has
+    no effect here.
+
     \b
     Examples:
       pydata filter api.json --type int --type float
       pydata filter api.json -k 'addr*' -k 'first*'
       pydata filter sales.csv --drop-empty --rows 20 --format csv
+      pydata filter staff.xlsx -k amount --sheet '*'
+      pydata filter api.json -k city --deep
     """
+    resolved_kind = kind or readers.detect_kind(path)
+    if sheet == "*":
+        if resolved_kind != "excel":
+            raise DataError("--sheet '*' only applies to Excel workbooks.")
+        if str(path) == "-":
+            raise DataError("Excel cannot be read from stdin; give a path to the .xlsx file.")
+        printed, headers = _filter_every_sheet(
+            path, kind, root, delimiter, encoding, errors, raw_names, no_infer, limit,
+            keys, types, drop_empty, deep,
+        )
+        if rows is not None:
+            printed = printed[:rows]
+        tables.emit(printed, headers, output_format=output_format, output=output)
+        return
+
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
+    if deep:
+        printed = select.deep_select(source.records, keys=keys, types=types, drop_empty=drop_empty)
+        if rows is not None:
+            printed = printed[:rows]
+        tables.emit(printed, ["record", "path", "value"], output_format=output_format, output=output)
+        return
+
     root_node, columns = _analyze(source, raw_names)
     chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
     printed = select.rows_for(source.records, chosen, limit=rows)
@@ -235,6 +277,46 @@ def filter_command(
         output_format=output_format,
         output=output,
     )
+
+
+def _filter_every_sheet(
+    path, kind, root, delimiter, encoding, errors, raw_names, no_infer, limit,
+    keys, types, drop_empty, deep,
+) -> tuple[list[dict], list[str]]:
+    """Run the filter on every sheet, skipping one where nothing matched.
+
+    Different sheets can select different columns -- one may have a field
+    the others lack -- so the header is the union of every column seen,
+    in the order sheets contributed them, rather than fixed in advance.
+    """
+    printed: list[dict] = []
+    headers = ["sheet"]
+    seen_headers = {"sheet"}
+    matched_any = False
+    for name in readers.list_excel_sheets(path):
+        sheet_source = _load(path, kind, root, name, delimiter, encoding, errors, no_infer, limit)
+        try:
+            if deep:
+                sheet_rows = select.deep_select(
+                    sheet_source.records, keys=keys, types=types, drop_empty=drop_empty
+                )
+            else:
+                root_node, columns = _analyze(sheet_source, raw_names)
+                chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
+                sheet_rows = select.rows_for(sheet_source.records, chosen)
+        except DataError:
+            continue
+        matched_any = True
+        for row in sheet_rows:
+            for header_name in row:
+                if header_name not in seen_headers:
+                    seen_headers.add(header_name)
+                    headers.append(header_name)
+            printed.append({"sheet": name, **row})
+
+    if not matched_any:
+        raise DataError("No field matched the filter in any sheet.")
+    return printed, headers
 
 
 @data_cli.command()

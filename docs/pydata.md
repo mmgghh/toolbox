@@ -106,6 +106,58 @@ any container and `mixed` matches a field seen with more than one type.
 Several `--type` values are OR-ed together, while `--key` and `--type` narrow
 the selection together.
 
+### Every sheet at once: `--sheet '*'`
+
+```shell
+pydata filter staff.xlsx -k amount --sheet '*'
+```
+
+Instead of just the active sheet, `--sheet '*'` reads every sheet of a
+workbook and runs the same filter on each. Every row is tagged with the sheet
+it came from, and a sheet where nothing matched is skipped rather than
+failing the whole command -- so `-k amount --sheet '*'` prints that column
+from every sheet that has an `amount`, however differently the rest of each
+sheet is shaped:
+
+```
+$ pydata filter staff.xlsx -k amount --sheet '*'
+sheet | amount
+------+-------
+Q1    | 120.50
+Q1    | 7
+Q2    | 340
+```
+
+Only Excel accepts `'*'` here; CSV and JSON are already one table.
+
+### Any depth: `--deep`
+
+```shell
+pydata filter api.json -k city --deep
+```
+
+`-k`/`-t` normally only look at the top level -- `address` matches, but
+`address.city` does not. `--deep` looks inside every nested object and list
+too, at any depth, the way `orders.[].sku` would be reached by hand. The
+output changes shape to match: one row per match instead of one row per
+record, naming the path each value was found at.
+
+```
+$ pydata filter api.json -k city --deep
+record | path          | value
+-------+---------------+-------
+1      | address.city  | Berlin
+1      | items.[].city | X
+2      | address.city  | Rome
+```
+
+A path is always the original key names, dot-joined, with `.[]` for "an
+element of this list" -- the same notation the inferred schema uses
+internally. `--raw-names` has no effect here since there is no SQL name to
+fold to. `--type mixed` describes a whole column across records, which has
+no meaning for a single matched value, so it is rejected with `--deep`.
+`--sheet '*'` and `--deep` combine, searching every sheet at any depth.
+
 ## `count` — how many rows or objects
 
 ```shell

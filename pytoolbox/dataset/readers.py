@@ -188,6 +188,24 @@ def _is_blank_row(row: tuple) -> bool:
     return all(cell is None or (isinstance(cell, str) and not cell.strip()) for cell in row)
 
 
+def list_excel_sheets(path: Path) -> list[str]:
+    """The name of every sheet in a workbook, in workbook order."""
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise DataError(
+            "Reading .xlsx needs openpyxl. Install it with: pip install 'pytoolbox[excel]'"
+        ) from exc
+
+    if not path.exists():
+        raise DataError(f"No such file: {path}")
+    workbook = load_workbook(filename=str(path), read_only=True)
+    try:
+        return list(workbook.sheetnames)
+    finally:
+        workbook.close()
+
+
 def count_excel_sheets(path: Path) -> dict[str, int]:
     """Count the data rows in every sheet of a workbook, header row excluded.
 
