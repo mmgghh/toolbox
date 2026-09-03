@@ -8,18 +8,15 @@ the only parts of the renderer that may touch the network, which is why
 
 from __future__ import annotations
 
-import base64
 import io
 import re
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 
 import requests
 from fpdf.svg import Percent, SVGObject
 from PIL import Image as PILImage
 
+from pytoolbox.core import console, mermaid
 from pytoolbox.mdpdf import document, fonts, render, shaping, state
 
 # A standalone Markdown image line: ![alt](src "optional title")
@@ -93,70 +90,13 @@ def add_image(pdf, src, alt, base_dir):
             data = path.read_bytes()
         _place_image(pdf, data, alt)
     except Exception as exc:
-        print(f"WARN: could not load image '{src}': {exc}", file=sys.stderr)
+        console.warn(f"could not load image '{src}': {exc}")
         render.add_paragraph(pdf, f"[image: {alt or src}]")
-
-
-def _render_mermaid_mmdc(source):
-    """Render via a local mermaid-cli install. Returns PNG bytes or None."""
-    with tempfile.TemporaryDirectory() as tmp:
-        in_path = Path(tmp) / "diagram.mmd"
-        out_path = Path(tmp) / "diagram.png"
-        in_path.write_text(source, encoding="utf-8")
-        result = subprocess.run(
-            ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "white", "-s", "2"],
-            capture_output=True, timeout=30, check=False,
-        )
-        if result.returncode == 0 and out_path.is_file():
-            return out_path.read_bytes()
-    return None
-
-
-def render_mermaid_ink(source):
-    """Render via the mermaid.ink web API. Returns PNG bytes; raises on failure."""
-    b64 = base64.urlsafe_b64encode(source.encode("utf-8")).decode("ascii")
-    resp = requests.get(f"https://mermaid.ink/img/{b64}?bgColor=white", timeout=15)
-    resp.raise_for_status()
-    return resp.content
 
 
 def render_mermaid(source):
     """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
-    if state.HAS_MMDC:
-        try:
-            data = _render_mermaid_mmdc(source)
-            if data:
-                return data
-        except Exception:
-            pass
-    if state.offline:
-        if not state.mermaid_net_warned:
-            print(
-                "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
-                "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
-                file=sys.stderr,
-            )
-            state.mermaid_net_warned = True
-        return None
-    try:
-        try:
-            return render_mermaid_ink(source)
-        except requests.exceptions.RequestException:
-            # Transient failures (dropped connections, timeouts) are common
-            # enough on this public endpoint to warrant one retry before
-            # falling back to showing the raw source.
-            return render_mermaid_ink(source)
-    except Exception as exc:
-        if not state.mermaid_net_warned:
-            print(
-                "WARN: could not render Mermaid diagram "
-                f"({'mmdc failed and ' if state.HAS_MMDC else ''}mermaid.ink request "
-                f"failed: {exc}); showing raw source instead. Install mermaid-cli "
-                "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
-                file=sys.stderr,
-            )
-            state.mermaid_net_warned = True
-        return None
+    return mermaid.render(source, fmt="png", offline=state.offline)
 
 
 def add_mermaid(pdf, lines):
@@ -169,5 +109,5 @@ def add_mermaid(pdf, lines):
             _place_image(pdf, data)
             return
         except Exception as exc:
-            print(f"WARN: could not embed rendered Mermaid diagram: {exc}", file=sys.stderr)
+            console.warn(f"could not embed rendered Mermaid diagram: {exc}")
     render.add_code_block(pdf, lines)

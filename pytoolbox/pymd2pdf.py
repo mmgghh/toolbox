@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Optional
 
 import click
 
@@ -24,12 +25,21 @@ from pytoolbox.mdpdf import document, fonts, media, render, shaping, state, tabl
 PAGE_SIZES = ("a3", "a4", "a5", "letter", "legal")
 
 
-
-
-# Text helpers
 # ═══════════════════════════════════════════════════════════════════
-# Main converter
+# Parsing and rendering
 # ═══════════════════════════════════════════════════════════════════
+
+#: A fenced code block's opening/closing marker, and the language tag on
+#: the opening one. Matched against the stripped line, so an indented fence
+#: (e.g. inside a blockquote-less nested context) is still recognised.
+_FENCE_RE = re.compile(r'^```\s*(\S*)')
+#: A table's separator/rule row, e.g. ``|---|:--:|``.
+_TABLE_SEP_RE = re.compile(r'^[\s|:-]+$')
+_HR_RE = re.compile(r'^---+\s*$')
+_HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)')
+_ORDERED_RE = re.compile(r'^(\s*)(\d+)\.\s+(.*)')
+_BULLET_RE = re.compile(r'^(\s*)[-*+]\s+(.*)')
+
 
 def _extract_title(lines):
     """Return the first H1 text, or empty string."""
@@ -38,6 +48,185 @@ def _extract_title(lines):
         if m:
             return render.strip_md(m.group(1))
     return ""
+
+
+def _wrap_title_words(pdf, title: str) -> list[str]:
+    """Split a long title into lines that fit the page width."""
+    words = title.split()
+    chunk: list[str] = []
+    chunks: list[str] = []
+    for word in words:
+        chunk.append(word)
+        if pdf.get_string_width(" ".join(chunk)) > 140:
+            chunks.append(" ".join(chunk[:-1]))
+            chunk = [word]
+    chunks.append(" ".join(chunk))
+    return chunks
+
+
+def _add_title_page(pdf, title: str) -> None:
+    pdf.add_page()
+    pdf.ln(40)
+    pdf.set_text_color(*document.CLR_HEADING)
+    if shaping.is_rtl(title) and pdf.has_persian:
+        pdf.set_font(fonts.FONT_FA, "B", 24)
+        pdf.multi_cell(
+            0, 14, shaping.shape_rtl(title),
+            align="C", new_x="LMARGIN", new_y="NEXT",
+        )
+        return
+    pdf.set_font(fonts.FONT_SANS, "B", 24)
+    for chunk in _wrap_title_words(pdf, title):
+        pdf.cell(0, 14, chunk, align="C", new_x="LMARGIN", new_y="NEXT")
+
+
+class _Renderer:
+    """Draws Markdown ``lines`` onto ``pdf``, one block at a time.
+
+    Flat and line-oriented, like the source format it reads: no recursive
+    block content (a blockquote's lines are not themselves re-parsed for
+    nested markdown), matching ``add_blockquote`` and friends in
+    :mod:`pytoolbox.mdpdf.render`, which each take already-resolved text.
+    """
+
+    def __init__(self, pdf, lines: list[str], md_path: Path) -> None:
+        self.pdf = pdf
+        self.lines = lines
+        self.md_path = md_path
+        self._in_code = False
+        self._code_lines: list[str] = []
+        self._code_lang = ""
+        self._in_table = False
+        self._table_header: list[str] = []
+        self._table_rows: list[list[str]] = []
+
+    def run(self) -> None:
+        index = 0
+        while index < len(self.lines):
+            line = self.lines[index]
+
+            consumed = self._code_fence(index)
+            if consumed is not None:
+                index = consumed
+                continue
+
+            consumed = self._table_row(index)
+            if consumed is not None:
+                index = consumed
+                continue
+            self._flush_table()
+
+            if _HR_RE.match(line.strip()):
+                render.add_hr(self.pdf)
+                index += 1
+                continue
+
+            heading = _HEADING_RE.match(line)
+            if heading:
+                render.add_heading(self.pdf, len(heading.group(1)), heading.group(2))
+                index += 1
+                continue
+
+            ordered = _ORDERED_RE.match(line)
+            if ordered:
+                indent, number, text = ordered.groups()
+                render.add_list_item(self.pdf, f"  {number}. ", text, len(indent))
+                index += 1
+                continue
+
+            if line.lstrip().startswith('>'):
+                index = self._blockquote(index)
+                continue
+
+            bullet = _BULLET_RE.match(line)
+            if bullet:
+                self._bullet_item(bullet)
+                index += 1
+                continue
+
+            image = media.IMG_RE.match(line.strip())
+            if image:
+                media.add_image(self.pdf, image.group(2), image.group(1), self.md_path.parent)
+                index += 1
+                continue
+
+            if line.strip() == '':
+                self.pdf.ln(3)
+                index += 1
+                continue
+
+            render.add_paragraph(self.pdf, line)
+            index += 1
+
+        self._flush_table()
+
+    # ── one block per method ────────────────────────────────────
+
+    def _code_fence(self, index: int) -> Optional[int]:
+        """Open/close a fenced block, or absorb one of its lines. ``None`` if not one."""
+        line = self.lines[index]
+        fence = _FENCE_RE.match(line.strip())
+        if fence:
+            if self._in_code:
+                if self._code_lang == 'mermaid':
+                    media.add_mermaid(self.pdf, self._code_lines)
+                else:
+                    render.add_code_block(self.pdf, self._code_lines)
+                self._code_lines, self._in_code, self._code_lang = [], False, ""
+            else:
+                self._flush_table()
+                self._in_code, self._code_lang = True, fence.group(1).lower()
+            return index + 1
+        if self._in_code:
+            self._code_lines.append(line)
+            return index + 1
+        return None
+
+    def _table_row(self, index: int) -> Optional[int]:
+        """Consume one header/separator/data row. ``None`` to fall through.
+
+        Falls through (rather than starting a table) when a ``|``-led line's
+        next line is not a valid separator row -- it is then read as whatever
+        other block it turns out to be, typically a paragraph.
+        """
+        line = self.lines[index]
+        if not ('|' in line and line.strip().startswith('|')):
+            return None
+        cells = tables.parse_table_row(line)
+        if not self._in_table:
+            if index + 1 < len(self.lines) and _TABLE_SEP_RE.match(self.lines[index + 1]):
+                self._in_table, self._table_header = True, cells
+                return index + 2
+            return None
+        if _TABLE_SEP_RE.match(line):
+            return index + 1
+        self._table_rows.append(cells)
+        if index + 1 >= len(self.lines) or not self.lines[index + 1].strip().startswith('|'):
+            self._flush_table()
+        return index + 1
+
+    def _flush_table(self) -> None:
+        if self._in_table:
+            tables.add_table(self.pdf, self._table_header, self._table_rows)
+            self._in_table, self._table_header, self._table_rows = False, [], []
+
+    def _blockquote(self, index: int) -> int:
+        quote_lines = []
+        while index < len(self.lines) and self.lines[index].lstrip().startswith('>'):
+            quote_lines.append(re.sub(r'^\s*>\s?', '', self.lines[index]))
+            index += 1
+        render.add_blockquote(self.pdf, quote_lines)
+        return index
+
+    def _bullet_item(self, match: re.Match) -> None:
+        indent = len(match.group(1))
+        body = match.group(2)
+        task = render.TASK_RE.match(body)
+        if task:
+            marker = "  [x] " if task.group(1).lower() == "x" else "  [ ] "
+            render.add_list_item(self.pdf, marker, task.group(2), indent)
+        else:
+            render.add_list_item(self.pdf, f"  {render.bullet_char(indent)} ", body, indent)
 
 
 def convert(
@@ -81,152 +270,11 @@ def convert(
     latin_chars = len(re.findall(r'[A-Za-z]', md_text))
     pdf.doc_is_rtl = rtl_chars > latin_chars
 
-    # ── Title page ──────────────────────────────────────────────
     if title:
-        pdf.add_page()
-        pdf.ln(40)
-        pdf.set_text_color(*document.CLR_HEADING)
-        title_rtl = shaping.is_rtl(title) and pdf.has_persian
-        if title_rtl:
-            pdf.set_font(fonts.FONT_FA, "B", 24)
-            pdf.multi_cell(
-                0, 14, shaping.shape_rtl(title),
-                align="C", new_x="LMARGIN", new_y="NEXT",
-            )
-        else:
-            pdf.set_font(fonts.FONT_SANS, "B", 24)
-            # Split long titles across lines
-            words = title.split()
-            chunk, chunks = [], []
-            for w in words:
-                chunk.append(w)
-                if pdf.get_string_width(" ".join(chunk)) > 140:
-                    chunks.append(" ".join(chunk[:-1]))
-                    chunk = [w]
-            chunks.append(" ".join(chunk))
-            for c in chunks:
-                pdf.cell(0, 14, c, align="C", new_x="LMARGIN", new_y="NEXT")
+        _add_title_page(pdf, title)
 
     pdf.add_page()
-
-    # ── Parse & render ──────────────────────────────────────────
-    i = 0
-    in_code = False
-    code_buf = []
-    code_lang = ""
-    in_table = False
-    tbl_hdr = []
-    tbl_rows = []
-
-    def _flush_table():
-        nonlocal in_table, tbl_hdr, tbl_rows
-        if in_table:
-            tables.add_table(pdf, tbl_hdr, tbl_rows)
-            in_table, tbl_hdr, tbl_rows = False, [], []
-
-    while i < len(lines):
-        line = lines[i]
-
-        # ── code fence ──────────────────────────────────────────
-        fence_m = re.match(r'^```\s*(\S*)', line.strip())
-        if fence_m:
-            if in_code:
-                if code_lang == 'mermaid':
-                    media.add_mermaid(pdf, code_buf)
-                else:
-                    render.add_code_block(pdf, code_buf)
-                code_buf, in_code, code_lang = [], False, ""
-            else:
-                _flush_table()
-                in_code = True
-                code_lang = fence_m.group(1).lower()
-            i += 1
-            continue
-        if in_code:
-            code_buf.append(line)
-            i += 1
-            continue
-
-        # ── table ───────────────────────────────────────────────
-        if '|' in line and line.strip().startswith('|'):
-            cells = tables.parse_table_row(line)
-            if not in_table:
-                if i + 1 < len(lines) and re.match(r'^[\s|:-]+$', lines[i + 1]):
-                    in_table, tbl_hdr = True, cells
-                    i += 2
-                    continue
-            if in_table:
-                if re.match(r'^[\s|:-]+$', line):
-                    i += 1
-                    continue
-                tbl_rows.append(cells)
-                if i + 1 >= len(lines) or not lines[i + 1].strip().startswith('|'):
-                    _flush_table()
-                i += 1
-                continue
-        _flush_table()
-
-        # ── horizontal rule ─────────────────────────────────────
-        if re.match(r'^---+\s*$', line.strip()):
-            render.add_hr(pdf)
-            i += 1
-            continue
-
-        # ── heading ─────────────────────────────────────────────
-        m = re.match(r'^(#{1,6})\s+(.*)', line)
-        if m:
-            render.add_heading(pdf, len(m.group(1)), m.group(2))
-            i += 1
-            continue
-
-        # ── numbered list ───────────────────────────────────────
-        m = re.match(r'^(\s*)(\d+)\.\s+(.*)', line)
-        if m:
-            render.add_list_item(pdf, f"  {m.group(2)}. ", m.group(3), len(m.group(1)))
-            i += 1
-            continue
-
-        # ── blockquote ──────────────────────────────────────────
-        if line.lstrip().startswith('>'):
-            quote_lines = []
-            while i < len(lines) and lines[i].lstrip().startswith('>'):
-                quote_lines.append(re.sub(r'^\s*>\s?', '', lines[i]))
-                i += 1
-            render.add_blockquote(pdf, quote_lines)
-            continue
-
-        # ── bullet list (including task lists) ──────────────────
-        m = re.match(r'^(\s*)[-*+]\s+(.*)', line)
-        if m:
-            indent = len(m.group(1))
-            body = m.group(2)
-            task = render.TASK_RE.match(body)
-            if task:
-                marker = "  [x] " if task.group(1).lower() == "x" else "  [ ] "
-                render.add_list_item(pdf, marker, task.group(2), indent)
-            else:
-                render.add_list_item(pdf, f"  {render.bullet_char(indent)} ", body, indent)
-            i += 1
-            continue
-
-        # ── image ───────────────────────────────────────────────
-        m = media.IMG_RE.match(line.strip())
-        if m:
-            media.add_image(pdf, m.group(2), m.group(1), md_path.parent)
-            i += 1
-            continue
-
-        # ── blank line ──────────────────────────────────────────
-        if line.strip() == '':
-            pdf.ln(3)
-            i += 1
-            continue
-
-        # ── paragraph ───────────────────────────────────────────
-        render.add_paragraph(pdf, line)
-        i += 1
-
-    _flush_table()
+    _Renderer(pdf, lines, md_path).run()
 
     try:
         pdf.output(str(pdf_path))

@@ -7,10 +7,9 @@ scattered across the renderers that use them.
 
 from __future__ import annotations
 
-import sys
-
 from fpdf import FPDF
 
+from pytoolbox.core import console
 from pytoolbox.mdpdf import fonts, shaping, state
 
 # ── Colour palette ──────────────────────────────────────────────────
@@ -64,18 +63,16 @@ class PDF(FPDF):
         self._register_fallback_fonts()
 
         if not shaping.HAS_SHAPER:
-            print(
-                "WARN: arabic-reshaper / python-bidi not installed; Persian text "
+            console.warn(
+                "arabic-reshaper / python-bidi not installed; Persian text "
                 "will not be shaped correctly. Install with:\n"
-                "  pip install arabic-reshaper python-bidi",
-                file=sys.stderr,
+                "  pip install arabic-reshaper python-bidi"
             )
         if not self.has_persian:
-            print(
-                "WARN: Vazir font not found; Persian text will fall back to DejaVu "
+            console.warn(
+                "Vazir font not found; Persian text will fall back to DejaVu "
                 "(limited Arabic-script coverage). Place Vazir.ttf / Vazir-Bold.ttf "
-                "in ~/.local/share/fonts or /usr/share/fonts/truetype/vazir.",
-                file=sys.stderr,
+                "in ~/.local/share/fonts or /usr/share/fonts/truetype/vazir."
             )
 
     def set_doc_title(self, title):
@@ -103,7 +100,7 @@ class PDF(FPDF):
             try:
                 self.add_font(family, "", str(path))
             except Exception as exc:  # pragma: no cover - malformed font file
-                print(f"WARN: could not load fallback font '{path}': {exc}", file=sys.stderr)
+                console.warn(f"could not load fallback font '{path}': {exc}")
                 continue
             fallbacks.append(family)
         self.set_fallback_fonts(fallbacks, exact_match=False)

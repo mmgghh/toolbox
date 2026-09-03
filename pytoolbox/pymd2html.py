@@ -24,16 +24,12 @@ from __future__ import annotations
 import base64
 import html
 import re
-import shutil
-import subprocess
-import sys
-import tempfile
 from pathlib import Path
 from typing import Optional
 
 import click
-import requests
 
+from pytoolbox.core import mermaid
 from pytoolbox.core.options import CONTEXT_SETTINGS, quiet_option, version_option
 
 # ═══════════════════════════════════════════════════════════════════
@@ -167,79 +163,9 @@ img { max-width: 100%; height: auto; }
 hr { height: 1px; margin: 2rem 0; background: var(--border); border: 0; }
 """
 
-#: mermaid-cli (`mmdc`), if installed, renders diagrams locally and offline.
-#: Otherwise a ```` ```mermaid ```` fence falls back to the mermaid.ink web
-#: API, and finally to showing the raw source as a code block.
-_HAS_MMDC = shutil.which("mmdc") is not None
-
-#: Whether the "no network for Mermaid" warning has already been printed, so a
-#: document full of diagrams says it once rather than once per diagram.
-_mermaid_net_warned = False
-
-
-def _render_mermaid_mmdc(source: str) -> Optional[bytes]:
-    """Render via a local mermaid-cli install. Returns SVG bytes or None."""
-    with tempfile.TemporaryDirectory() as tmp:
-        in_path = Path(tmp) / "diagram.mmd"
-        out_path = Path(tmp) / "diagram.svg"
-        in_path.write_text(source, encoding="utf-8")
-        result = subprocess.run(
-            ["mmdc", "-i", str(in_path), "-o", str(out_path), "-b", "transparent"],
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-        if result.returncode == 0 and out_path.is_file():
-            return out_path.read_bytes()
-    return None
-
-
-def _render_mermaid_ink(source: str) -> bytes:
-    """Render via the mermaid.ink web API. Returns SVG bytes; raises on failure."""
-    b64 = base64.urlsafe_b64encode(source.encode("utf-8")).decode("ascii")
-    resp = requests.get(f"https://mermaid.ink/svg/{b64}", timeout=15)
-    resp.raise_for_status()
-    return resp.content
-
-
 def render_mermaid(source: str, offline: bool = False) -> Optional[bytes]:
     """Best-effort Mermaid render: local mmdc, then mermaid.ink, then None."""
-    global _mermaid_net_warned
-    if _HAS_MMDC:
-        try:
-            data = _render_mermaid_mmdc(source)
-            if data:
-                return data
-        except Exception:
-            pass
-    if offline:
-        if not _mermaid_net_warned:
-            print(
-                "WARN: --offline is set and mermaid-cli is unavailable; showing raw "
-                "diagram source. Install it with `npm install -g @mermaid-js/mermaid-cli`.",
-                file=sys.stderr,
-            )
-            _mermaid_net_warned = True
-        return None
-    try:
-        try:
-            return _render_mermaid_ink(source)
-        except requests.exceptions.RequestException:
-            # Transient failures (dropped connections, timeouts) are common
-            # enough on this public endpoint to warrant one retry before
-            # falling back to showing the raw source.
-            return _render_mermaid_ink(source)
-    except Exception as exc:
-        if not _mermaid_net_warned:
-            print(
-                "WARN: could not render Mermaid diagram "
-                f"({'mmdc failed and ' if _HAS_MMDC else ''}mermaid.ink request "
-                f"failed: {exc}); showing raw source instead. Install mermaid-cli "
-                "(`npm install -g @mermaid-js/mermaid-cli`) for offline rendering.",
-                file=sys.stderr,
-            )
-            _mermaid_net_warned = True
-        return None
+    return mermaid.render(source, fmt="svg", offline=offline)
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -10,7 +10,7 @@ import re
 import pytest
 
 from pytoolbox import pymd2pdf
-from pytoolbox.core import paths
+from pytoolbox.core import mermaid, paths
 from pytoolbox.mdpdf import document, fonts, media, render, shaping, state, tables
 from pytoolbox.pymd2pdf import pymd2pdf_cli
 
@@ -566,13 +566,13 @@ def test_cli_rejects_output_and_output_dir_together(runner, tmp_path):
 
 def test_offline_blocks_the_mermaid_web_fallback(monkeypatch):
     monkeypatch.setattr(state, "offline", True)
-    monkeypatch.setattr(state, "HAS_MMDC", False)
-    monkeypatch.setattr(state, "mermaid_net_warned", False)
+    monkeypatch.setattr(mermaid, "HAS_MMDC", False)
+    monkeypatch.setattr(mermaid, "_warned", False)
 
     def explode(*args, **kwargs):  # pragma: no cover - must never run
         raise AssertionError("the network was used despite --offline")
 
-    monkeypatch.setattr(media, "render_mermaid_ink", explode)
+    monkeypatch.setattr(mermaid, "render_ink", explode)
     assert media.render_mermaid("graph TD; A-->B;") is None
 
 

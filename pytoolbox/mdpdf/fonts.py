@@ -7,10 +7,9 @@ as per-glyph fallbacks are each searched for here rather than assumed.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
-from pytoolbox.core import paths
+from pytoolbox.core import console, paths
 from pytoolbox.mdpdf import state
 
 # ── Font search paths ───────────────────────────────────────────────
@@ -69,17 +68,15 @@ def find_dejavu_faces() -> dict[str, Path]:
         if match is not None:
             found[name] = match
     if "DejaVuSans.ttf" not in found:
-        print(
-            "ERROR: DejaVu fonts not found. Install them:\n"
+        raise console.fail(
+            "DejaVu fonts not found. Install them:\n"
             "  Debian/Ubuntu : sudo apt-get install fonts-dejavu-core\n"
             "  Fedora/RHEL   : sudo dnf install dejavu-sans-fonts dejavu-sans-mono-fonts\n"
             "  Arch          : sudo pacman -S ttf-dejavu\n"
             "  Termux        : pkg install fontconfig-utils ttf-dejavu\n"
             "  macOS (brew)  : brew install --cask font-dejavu\n"
-            "Or point pymd2pdf at a font directory with --font-dir.",
-            file=sys.stderr,
+            "Or point pymd2pdf at a font directory with --font-dir."
         )
-        sys.exit(1)
     # Fall back to the regular face for any variant that is missing, so a
     # partial install degrades to plain text instead of crashing.
     for name in _REQUIRED_FACES:
@@ -148,10 +145,9 @@ def find_fallback_fonts():
     found = []
     for path in state.extra_fallback_fonts:
         if not has_outlines(path):
-            print(
-                f"WARN: ignoring --fallback-font '{path}': not a font with drawable "
-                "outlines (colour-bitmap emoji fonts are not supported).",
-                file=sys.stderr,
+            console.warn(
+                f"ignoring --fallback-font '{path}': not a font with drawable "
+                "outlines (colour-bitmap emoji fonts are not supported)."
             )
             continue
         found.append(path)

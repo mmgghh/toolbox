@@ -14,7 +14,6 @@ the rebinding this module exists to propagate.
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 #: Body text size in points. ``convert`` rebinds this for --font-size and
@@ -31,12 +30,3 @@ extra_fallback_fonts: tuple[Path, ...] = ()
 #: str.translate table built by ``PDF.__init__`` once the loaded faces (and
 #: hence the set of drawable code points) are known.
 glyph_translation: dict[int, str] = {}
-
-#: mermaid-cli (`mmdc`), if installed, renders Mermaid diagrams locally and
-#: offline. Otherwise diagrams fall back to the mermaid.ink web API, and
-#: finally to showing the raw source as a code block.
-HAS_MMDC = shutil.which("mmdc") is not None
-
-#: Whether the "no network for Mermaid" warning has already been printed, so a
-#: document full of diagrams says it once rather than once per diagram.
-mermaid_net_warned = False
