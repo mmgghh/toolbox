@@ -283,3 +283,91 @@ def test_json_has_no_delimiter(tmp_path):
     path = tmp_path / "rows.json"
     path.write_text('[{"id": 1}]', encoding="utf-8")
     assert sources.load(path).delimiter == ""
+
+
+# ── count ───────────────────────────────────────────────────────────
+
+
+def test_count_a_csv(tmp_path):
+    path = write(tmp_path, "a.csv", "n\n1\n2\n3\n")
+    total, notes = sources.count(path)
+    assert total == 3
+    assert notes == []
+
+
+def test_count_skips_blank_csv_rows(tmp_path):
+    path = write(tmp_path, "a.csv", "n\n1\n\n2\n")
+    assert sources.count(path)[0] == 2
+
+
+def test_count_a_header_only_csv_is_an_error(tmp_path):
+    path = write(tmp_path, "a.csv", "a,b\n")
+    with pytest.raises(DataError, match="no data rows"):
+        sources.count(path)
+
+
+def test_count_rejects_root_for_csv(tmp_path):
+    path = write(tmp_path, "a.csv", "a\n1\n")
+    with pytest.raises(DataError, match="JSON only"):
+        sources.count(path, root="x")
+
+
+def test_count_a_top_level_json_list(tmp_path):
+    path = write(tmp_path, "a.json", json.dumps([{"a": 1}, {"a": 2}]))
+    assert sources.count(path)[0] == 2
+
+
+def test_count_a_json_envelope_reports_the_root(tmp_path):
+    document = {"meta": {}, "data": {"items": [{"a": 1}, {"a": 2}]}}
+    path = write(tmp_path, "a.json", json.dumps(document))
+    total, notes = sources.count(path)
+    assert total == 2
+    assert any("data.items" in note for note in notes)
+
+
+def test_count_respects_an_explicit_root(tmp_path):
+    document = {"data": {"items": [{"a": 1}, {"a": 2}, {"a": 3}]}}
+    path = write(tmp_path, "a.json", json.dumps(document))
+    assert sources.count(path, root="data.items")[0] == 3
+
+
+def test_count_ndjson(tmp_path):
+    path = write(tmp_path, "a.json", '{"a": 1}\n{"a": 2}\n{"a": 3}\n')
+    assert sources.count(path)[0] == 3
+
+
+def test_count_rejects_malformed_multiline_json(tmp_path):
+    path = write(tmp_path, "a.json", '{\n  "a": 1,\n]\n')
+    with pytest.raises(DataError, match="Not valid JSON"):
+        sources.count(path)
+
+
+def test_count_an_empty_json_list_is_an_error(tmp_path):
+    path = write(tmp_path, "a.json", "[]")
+    with pytest.raises(DataError, match="empty list"):
+        sources.count(path)
+
+
+def test_count_applies_the_limit(tmp_path):
+    path = write(tmp_path, "a.json", json.dumps([{"a": i} for i in range(10)]))
+    total, notes = sources.count(path, limit=3)
+    assert total == 3
+    assert any("--limit 3" in note for note in notes)
+
+
+def test_count_an_xlsx_sheet(workbook):
+    assert sources.count(workbook, sheet="Q2")[0] == 1
+
+
+def test_count_an_xlsx_defaults_to_the_active_sheet(workbook):
+    assert sources.count(workbook)[0] == 2
+
+
+def test_count_an_unknown_xlsx_sheet_lists_the_real_ones(workbook):
+    with pytest.raises(DataError, match="Q1, Q2"):
+        sources.count(workbook, sheet="Nope")
+
+
+def test_count_excel_cannot_read_stdin():
+    with pytest.raises(DataError, match="stdin"):
+        sources.count("-", kind="excel")

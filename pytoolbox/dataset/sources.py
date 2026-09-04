@@ -207,3 +207,59 @@ def load(
 def _reject_root(root: Optional[str], kind: str) -> None:
     if root:
         raise DataError(f"--root applies to JSON only; {kind} input is already a table.")
+
+
+def count(
+    path: Path,
+    kind: Optional[str] = None,
+    root: Optional[str] = None,
+    sheet: Optional[str] = None,
+    delimiter: Optional[str] = None,
+    encoding: str = "utf-8",
+    errors: str = "replace",
+    limit: Optional[int] = None,
+) -> tuple[int, list[str]]:
+    """How many records ``path`` has, doing as little work as :func:`load` does.
+
+    A JSON envelope or an explicit --root still needs the whole document
+    parsed to find the rows -- there is no way around that -- but this skips
+    CSV's per-cell type inference and never builds a list of record dicts,
+    which is what makes a full :func:`load` slow on a large file.
+    """
+    kind = kind or readers.detect_kind(path)
+    if kind is None:
+        if str(path) == "-":
+            raise DataError("Reading from stdin needs --from json|csv|excel.")
+        raise DataError(
+            f"Cannot tell what kind of file {path.name!r} is; "
+            "say so with --from json|csv|excel."
+        )
+
+    notes: list[str] = []
+    if kind == "excel":
+        if str(path) == "-":
+            raise DataError("Excel cannot be read from stdin; give a path to the .xlsx file.")
+        _reject_root(root, kind)
+        total = readers.count_excel_sheet(path, sheet=sheet)
+    elif kind == "csv":
+        _reject_root(root, kind)
+        text = readers.read_text(path, encoding=encoding, errors=errors)
+        used_delimiter = readers.resolve_delimiter(text, path, delimiter)
+        total = readers.count_csv_rows(text, used_delimiter)
+    elif kind == "json":
+        text = readers.read_text(path, encoding=encoding, errors=errors)
+        document, ndjson_total = readers.parse_json_for_count(text)
+        if ndjson_total is not None:
+            total = ndjson_total
+        else:
+            records, _, _, record_notes = records_from(document, root)
+            notes.extend(record_notes)
+            total = len(records)
+    else:
+        raise DataError(f"Unknown input kind {kind!r}; use one of: {', '.join(readers.KINDS)}.")
+
+    if limit is not None and limit >= 0 and total > limit:
+        notes.append(f"Stopped at --limit {limit} of {total} records.")
+        total = limit
+
+    return total, notes

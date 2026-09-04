@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import sys
 from pathlib import Path
 from typing import Optional
@@ -132,6 +133,7 @@ def data_cli() -> None:
       pydata summary sales.csv
       pydata filter api.json --type int
       pydata count sales.csv
+      pydata head sales.csv
       pydata keys staff.xlsx
       pydata sql sales.csv -t sales --db app.db
       pydata edit sales.csv --rename "First Name=full_name"
@@ -396,8 +398,160 @@ def count(
         console.result(tables.render_table(rows, ["sheet", "count"]))
         return
 
+    total, notes = sources.count(
+        path,
+        kind=kind,
+        root=root,
+        sheet=sheet,
+        delimiter=delimiter,
+        encoding=encoding,
+        errors=errors,
+        limit=limit,
+    )
+    for note in notes:
+        console.info(note)
+    console.result(console.plural(total, "record"))
+
+
+#: Suffixes read line by line instead of parsed as one JSON document.
+_NDJSON_SUFFIXES = {".ndjson", ".jsonl"}
+
+
+def _edge_options(func):
+    """The options ``head`` and ``tail`` add on top of ``source_options``."""
+    func = click.option("-o", "--output", type=click.Path(path_type=Path), help="Write to this file.")(func)
+    func = format_option()(func)
+    return click.option(
+        "-n", "--lines", "lines", type=int, default=10, show_default=True,
+        help="Number of records to print.",
+    )(func)
+
+
+@data_cli.command()
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@source_options
+@_edge_options
+def head(
+    path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+    lines, output_format, output,
+) -> None:
+    """Print the first N records.
+
+    Reads only as much of the source as it takes to find them: a CSV or
+    Excel file is streamed and reading stops once N rows are collected, and
+    a .ndjson/.jsonl file is read line by line the same way. A plain JSON
+    document has to be parsed whole regardless, the same as every other
+    command that reads one.
+
+    \b
+    Examples:
+      pydata head sales.csv
+      pydata head api.json -n 5
+      pydata head events.ndjson -n 20
+      pydata head staff.xlsx --sheet Q1
+    """
+    _edge(
+        path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+        lines, output_format, output, from_end=False,
+    )
+
+
+@data_cli.command()
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@source_options
+@_edge_options
+def tail(
+    path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+    lines, output_format, output,
+) -> None:
+    """Print the last N records.
+
+    A CSV, Excel or .ndjson/.jsonl file is still read all the way through --
+    there is no way to find the true end without it -- but only the last N
+    rows are ever held in memory, not the whole file. A plain JSON document
+    has to be parsed whole regardless, the same as every other command that
+    reads one.
+
+    \b
+    Examples:
+      pydata tail sales.csv
+      pydata tail api.json -n 5
+      pydata tail events.ndjson -n 20
+      pydata tail staff.xlsx --sheet Q1
+    """
+    _edge(
+        path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+        lines, output_format, output, from_end=True,
+    )
+
+
+def _edge(
+    path, root, kind, sheet, delimiter, encoding, errors, raw_names, no_infer, limit,
+    lines, output_format, output, from_end,
+) -> None:
+    """Shared body of ``head`` and ``tail``: pick the cheapest way to get N rows."""
+    resolved_kind = kind or readers.detect_kind(path)
+
+    if resolved_kind == "csv":
+        if root:
+            raise DataError("--root applies to JSON only; csv input is already a table.")
+        records, columns, notes = readers.edge_csv_records(
+            path, encoding=encoding, errors=errors, delimiter=delimiter,
+            infer=not no_infer, n=lines, from_end=from_end, limit=limit,
+        )
+        for note in notes:
+            console.info(note)
+        _emit_edge(records, columns, raw_names, output_format, output)
+        return
+
+    if resolved_kind == "excel" and str(path) != "-":
+        records, columns, notes = readers.edge_excel_records(
+            path, sheet=sheet, infer=not no_infer, n=lines, from_end=from_end, limit=limit,
+        )
+        for note in notes:
+            console.info(note)
+        _emit_edge(records, columns, raw_names, output_format, output)
+        return
+
+    if (
+        resolved_kind == "json"
+        and not root
+        and str(path) != "-"
+        and path.suffix.lower() in _NDJSON_SUFFIXES
+    ):
+        raw_lines, notes = readers.edge_ndjson_lines(
+            path, encoding=encoding, errors=errors, n=lines, from_end=from_end, limit=limit,
+        )
+        for note in notes:
+            console.info(note)
+        try:
+            records = [json.loads(line) for line in raw_lines]
+        except json.JSONDecodeError as exc:
+            raise DataError(f"Not valid JSON: {exc.msg} (column {exc.colno}).") from exc
+        columns = sources.ordered_columns(records)
+        _emit_edge(records, columns, raw_names, output_format, output)
+        return
+
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
-    console.result(console.plural(len(source.records), "record"))
+    if lines <= 0:
+        records = []
+    elif from_end:
+        records = source.records[-lines:]
+    else:
+        records = source.records[:lines]
+    _emit_edge(records, source.columns, raw_names, output_format, output)
+
+
+def _emit_edge(
+    records: list[dict], columns: list[str], raw_names: bool, output_format: str, output: Optional[Path]
+) -> None:
+    """Fold column names and print one row per record, the way ``filter`` does."""
+    names = naming.unique(columns, raw=raw_names)
+    rows = [
+        {display: select.display(record.get(source_name)) for source_name, display in zip(columns, names)}
+        for record in records
+    ]
+    tables.emit(rows, names, output_format=output_format, output=output)
 
 
 @data_cli.command()

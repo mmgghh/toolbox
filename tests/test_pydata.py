@@ -343,6 +343,19 @@ def test_count_an_xlsx_sheet_explicitly(runner, book):
     assert run(runner, "count", book, "--sheet", "Staff").stdout.strip() == "2 records"
 
 
+def test_count_reports_the_limit_note_on_stderr(runner, tmp_path):
+    path = tmp_path / "a.json"
+    path.write_text(json.dumps([{"a": i} for i in range(5)]), encoding="utf-8")
+    result = run(runner, "count", path, "--limit", "2")
+    assert result.stdout.strip() == "2 records"
+    assert "--limit 2" in result.stderr
+
+
+def test_count_ndjson_stdin(runner):
+    result = run(runner, "count", "-", "--from", "json", input='{"a": 1}\n{"a": 2}\n')
+    assert result.stdout.strip() == "2 records"
+
+
 def test_count_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
     from openpyxl import Workbook
 
@@ -361,6 +374,191 @@ def test_count_an_xlsx_without_sheet_lists_every_sheet(runner, tmp_path):
     assert result.exit_code == 0
     assert "Staff" in result.stdout and "2" in result.stdout
     assert "Empty" in result.stdout and "0" in result.stdout
+
+
+# ── head / tail ─────────────────────────────────────────────────────
+
+
+def test_head_prints_the_first_n_records(runner, sales):
+    result = run(runner, "head", sales, "-n", "1")
+    assert result.exit_code == 0
+    assert "ann" in result.stdout
+    assert "bob" not in result.stdout
+
+
+def test_tail_prints_the_last_n_records(runner, sales):
+    result = run(runner, "tail", sales, "-n", "1")
+    assert result.exit_code == 0
+    assert "bob" in result.stdout
+    assert "ann" not in result.stdout
+
+
+def test_head_defaults_to_ten_records(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("n\n" + "\n".join(str(i) for i in range(1, 21)) + "\n", encoding="utf-8")
+    result = run(runner, "head", path)
+    assert "10" in result.stdout
+    assert "11" not in result.stdout
+
+
+def test_tail_defaults_to_ten_records(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("n\n" + "\n".join(str(i) for i in range(1, 21)) + "\n", encoding="utf-8")
+    result = run(runner, "tail", path)
+    assert "11" in result.stdout
+    assert "10" not in result.stdout
+
+
+def test_head_json_envelope(runner, api):
+    result = run(runner, "head", api, "-n", "2")
+    assert result.exit_code == 0
+    assert "ann" in result.stdout and "bob" in result.stdout
+    assert "cy" not in result.stdout
+
+
+def test_tail_json_envelope(runner, api):
+    result = run(runner, "tail", api, "-n", "2")
+    assert result.exit_code == 0
+    assert "bob" in result.stdout and "cy" in result.stdout
+    assert "ann" not in result.stdout
+
+
+def test_head_ndjson_streams_only_the_first_lines(runner, tmp_path):
+    path = tmp_path / "a.ndjson"
+    path.write_text("\n".join(json.dumps({"n": i}) for i in range(1, 6)) + "\n", encoding="utf-8")
+    result = run(runner, "head", path, "-n", "2")
+    assert result.exit_code == 0
+    assert "1" in result.stdout and "2" in result.stdout
+    assert "3" not in result.stdout
+
+
+def test_tail_ndjson(runner, tmp_path):
+    path = tmp_path / "a.ndjson"
+    path.write_text("\n".join(json.dumps({"n": i}) for i in range(1, 6)) + "\n", encoding="utf-8")
+    result = run(runner, "tail", path, "-n", "2")
+    assert result.exit_code == 0
+    assert "4" in result.stdout and "5" in result.stdout
+    assert "3" not in result.stdout
+
+
+def test_head_an_xlsx_sheet(runner, book):
+    result = run(runner, "head", book, "--sheet", "Staff", "-n", "1")
+    assert result.exit_code == 0
+    assert "ann" in result.stdout
+    assert "bob" not in result.stdout
+
+
+def test_tail_an_xlsx_sheet(runner, book):
+    result = run(runner, "tail", book, "--sheet", "Staff", "-n", "1")
+    assert result.exit_code == 0
+    assert "bob" in result.stdout
+    assert "ann" not in result.stdout
+
+
+def test_head_as_json_stays_parseable(runner, sales):
+    result = run(runner, "head", sales, "-n", "1", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "ann"
+
+
+def test_head_raw_names_keeps_the_original_spelling(runner, api):
+    result = run(runner, "head", api, "-n", "1", "--raw-names")
+    assert "First Name" in result.stdout
+
+
+def test_head_zero_lines_prints_nothing(runner, sales):
+    result = run(runner, "head", sales, "-n", "0")
+    assert result.exit_code == 0
+    assert result.stdout.strip() == ""
+
+
+def test_head_respects_limit(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("n\n1\n2\n3\n4\n5\n", encoding="utf-8")
+    result = run(runner, "head", path, "-n", "10", "--limit", "2")
+    assert "1" in result.stdout and "2" in result.stdout
+    assert "3" not in result.stdout
+
+
+def test_tail_respects_limit(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("n\n1\n2\n3\n4\n5\n", encoding="utf-8")
+    result = run(runner, "tail", path, "-n", "1", "--limit", "3")
+    assert "3" in result.stdout
+    assert "4" not in result.stdout and "5" not in result.stdout
+
+
+def test_head_csv_stdin(runner):
+    result = run(runner, "head", "-", "--from", "csv", "-n", "1", input="n\n1\n2\n")
+    assert result.exit_code == 0
+    assert "1" in result.stdout
+    assert "2" not in result.stdout
+
+
+def test_head_writes_a_file(runner, sales, tmp_path):
+    out = tmp_path / "h.csv"
+    result = run(runner, "head", sales, "-n", "1", "--format", "csv", "-o", out)
+    assert result.exit_code == 0
+    assert "ann" in out.read_text()
+    assert "bob" not in out.read_text()
+
+
+def test_head_a_malformed_ndjson_line_fails_clearly(runner, tmp_path):
+    path = tmp_path / "a.ndjson"
+    path.write_text('{"a": 1}\nnot json\n{"a": 2}\n', encoding="utf-8")
+    result = run(runner, "head", path)
+    assert result.exit_code == 1
+    assert "Not valid JSON" in result.stderr
+
+
+def test_head_a_header_only_csv_fails_clearly(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("a,b\n", encoding="utf-8")
+    result = run(runner, "head", path)
+    assert result.exit_code == 1
+    assert "no data rows" in result.stderr
+
+
+def test_tail_a_header_only_csv_fails_clearly(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("a,b\n", encoding="utf-8")
+    result = run(runner, "tail", path)
+    assert result.exit_code == 1
+    assert "no data rows" in result.stderr
+
+
+def test_head_a_header_only_xlsx_sheet_fails_clearly(runner, tmp_path):
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    sheet = wb.active
+    sheet.title = "S1"
+    sheet.append(["a", "b"])
+    path = tmp_path / "a.xlsx"
+    wb.save(path)
+
+    result = run(runner, "head", path)
+    assert result.exit_code == 1
+    assert "no data rows" in result.stderr
+
+
+def test_head_still_prints_zero_lines_on_a_non_empty_csv(runner, sales):
+    result = run(runner, "head", sales, "-n", "0")
+    assert result.exit_code == 0
+    assert result.stdout.strip() == ""
+
+
+def test_head_reports_the_limit_note_on_stderr(runner, tmp_path):
+    path = tmp_path / "a.csv"
+    path.write_text("n\n1\n2\n3\n4\n5\n", encoding="utf-8")
+    result = run(runner, "head", path, "-n", "10", "--limit", "2")
+    assert "--limit 2" in result.stderr
+
+
+def test_head_limit_note_is_silent_when_the_limit_does_not_bind(runner, sales):
+    result = run(runner, "head", sales, "-n", "10", "--limit", "100")
+    assert "--limit" not in result.stderr
 
 
 # ── keys ────────────────────────────────────────────────────────────

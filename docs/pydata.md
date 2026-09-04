@@ -7,6 +7,7 @@ pydata tree api.json                       # what shape is this?
 pydata summary sales.csv                   # what is in it?
 pydata filter api.json --type int          # show me just the numbers
 pydata count sales.csv                     # how many rows?
+pydata head sales.csv                      # the first 10 rows
 pydata keys staff.xlsx                     # what are the headers?
 pydata sql sales.csv -t sales --db app.db  # load it into SQLite
 pydata sql api.json -t users --dialect postgres --sql users.sql
@@ -207,6 +208,31 @@ Q2    | 0
 
 An empty sheet counts as `0` instead of failing, since counting is meant to
 survey a workbook, not load it.
+
+## `head` / `tail` — the first or last N records
+
+```shell
+pydata head sales.csv                 # first 10 rows
+pydata tail sales.csv -n 5            # last 5 rows
+pydata head events.ndjson -n 20
+pydata tail staff.xlsx --sheet Q1
+```
+
+`-n/--lines` sets how many records to print (default 10). Columns and
+formatting follow the same rules as `filter`: names are folded to
+snake_case unless `--raw-names` is given, and `--format`/`-o` work the
+same way.
+
+Both read only as much of the source as they have to. `head` on a CSV,
+Excel or `.ndjson`/`.jsonl` file stops once it has collected N rows and
+never reads the rest of the file. `tail` on those same kinds still reads
+the whole file -- there is no way to find the true end without it -- but
+only ever keeps the last N rows in memory, not the whole file, and skips
+CSV's per-cell type inference over rows it isn't going to show. A plain
+JSON document (an envelope, or an array not named `.ndjson`/`.jsonl`) has
+to be parsed whole either way, the same as every other command that reads
+one; `head`/`tail` there is just a slice of the same records `filter`
+would load.
 
 ## `keys` — the keys, titles or headers
 
