@@ -262,4 +262,14 @@ def test_multi_field_add_and_remove():
             argv = screen._current_argv()
             assert argv == ["toolbox", "tools", "collect", "a", "b"]
 
+            from textual.widgets import Button
+
+            remove_button = items_widget.query_one("#remove-0", Button)
+            await pilot.click(remove_button)
+            await pilot.pause()
+
+            assert items_widget.values == ["b"]
+            argv = screen._current_argv()
+            assert argv == ["toolbox", "tools", "collect", "b"]
+
     run(scenario())
