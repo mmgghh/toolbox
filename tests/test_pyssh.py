@@ -1419,6 +1419,151 @@ def test_exec_passes_parallel_through_to_run_many(runner, monkeypatch):
     assert captured["parallel"] == 8
 
 
+# ── clipboard ───────────────────────────────────────────────────────
+
+
+class FakeCompletedProcess:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_clipboard_push_sends_the_local_clipboard(runner, monkeypatch):
+    captured = {}
+
+    def fake_run(cmd, input=None, capture_output=True, text=True):
+        captured["cmd"] = cmd
+        captured["input"] = input
+        return FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(pyssh.subprocess, "run", fake_run)
+    monkeypatch.setattr(pyssh.clipboard, "get_text", lambda: "hello clipboard")
+
+    result = runner.invoke(ssh_management, ["clipboard", "push", "prod"])
+    assert result.exit_code == 0, result.output
+    assert captured["input"] == "hello clipboard"
+    cmd = captured["cmd"]
+    assert cmd[-2] == "prod"
+    assert cmd[-1] == "mkdir -p ~/.cache/pytoolbox && cat > ~/.cache/pytoolbox/clipboard"
+
+
+def test_clipboard_push_reports_ssh_failure(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(
+        pyssh.subprocess,
+        "run",
+        lambda cmd, input=None, capture_output=True, text=True: FakeCompletedProcess(
+            returncode=1, stderr="Permission denied"
+        ),
+    )
+    monkeypatch.setattr(pyssh.clipboard, "get_text", lambda: "hi")
+    result = runner.invoke(ssh_management, ["clipboard", "push", "prod"])
+    assert result.exit_code != 0
+    assert "Permission denied" in result.stderr
+
+
+def test_clipboard_pull_sets_the_local_clipboard(runner, monkeypatch):
+    captured = {}
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(
+        pyssh.subprocess,
+        "run",
+        lambda cmd, capture_output=True, text=True: FakeCompletedProcess(
+            returncode=0, stdout="pulled text"
+        ),
+    )
+    monkeypatch.setattr(pyssh.clipboard, "set_text", lambda text: captured.update(text=text))
+
+    result = runner.invoke(ssh_management, ["clipboard", "pull", "prod"])
+    assert result.exit_code == 0, result.output
+    assert captured["text"] == "pulled text"
+
+
+def test_clipboard_pull_hints_at_push_when_nothing_is_stored(runner, monkeypatch):
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: "/usr/bin/ssh")
+    monkeypatch.setattr(
+        pyssh.subprocess,
+        "run",
+        lambda cmd, capture_output=True, text=True: FakeCompletedProcess(
+            returncode=1,
+            stderr="cat: /home/me/.cache/pytoolbox/clipboard: No such file or directory",
+        ),
+    )
+    result = runner.invoke(ssh_management, ["clipboard", "pull", "prod"])
+    assert result.exit_code != 0
+    assert "pyssh clipboard push prod" in result.stderr
+
+
+def test_clipboard_push_refuses_a_password_to_an_unknown_host(runner, monkeypatch, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: False)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    monkeypatch.setattr(pyssh.clipboard, "get_text", lambda: "hi")
+    result = runner.invoke(ssh_management, ["clipboard", "push", "prod"])
+    assert result.exit_code != 0
+    assert "known_hosts" in result.stderr
+
+
+def test_clipboard_push_uses_strict_host_keys_when_a_password_is_present(
+    runner, monkeypatch, working_keyring
+):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    monkeypatch.setattr(pyssh.clipboard, "get_text", lambda: "hi")
+    captured = {}
+
+    def fake_run(cmd, input=None, capture_output=True, text=True):
+        captured["cmd"] = cmd
+        return FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(pyssh.subprocess, "run", fake_run)
+    result = runner.invoke(ssh_management, ["clipboard", "push", "prod"])
+    assert result.exit_code == 0, result.output
+    assert "StrictHostKeyChecking=yes" in captured["cmd"]
+    assert "hunter2" not in " ".join(captured["cmd"])
+
+
+def test_clipboard_push_removes_the_password_file_afterwards(runner, monkeypatch, working_keyring):
+    runner.invoke(ssh_management, ["secret", "set", "prod"], input="hunter2\nhunter2\n")
+    monkeypatch.setattr(pyssh.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(pyssh.knownhosts, "is_known", lambda host, port=22: True)
+    monkeypatch.setattr(
+        pyssh.hosts,
+        "resolve_config",
+        lambda name, options=(): pyssh.hosts.ResolvedConfig(
+            name=name, hostname="10.0.0.5", user="me", port=22
+        ),
+    )
+    monkeypatch.setattr(pyssh.clipboard, "get_text", lambda: "hi")
+    captured = {}
+
+    def fake_run(cmd, input=None, capture_output=True, text=True):
+        captured["cmd"] = cmd
+        return FakeCompletedProcess(returncode=0)
+
+    monkeypatch.setattr(pyssh.subprocess, "run", fake_run)
+    runner.invoke(ssh_management, ["clipboard", "push", "prod"])
+    pass_file = pyssh.Path(captured["cmd"][2])
+    assert not pass_file.exists()
+
+
 # ── onboarding ──────────────────────────────────────────────────────
 
 def test_keygen_makes_an_ed25519_key_by_default(runner, monkeypatch, tmp_path):

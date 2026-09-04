@@ -24,7 +24,7 @@ from typing import Optional, Union
 
 import click
 
-from pytoolbox.core import console, paths, rsync
+from pytoolbox.core import clipboard, console, paths, rsync
 from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
@@ -1758,6 +1758,150 @@ def _exec_row(result: remote.ExecResult) -> dict:
         "stdout": result.stdout,
         "stderr": result.stderr,
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Clipboard
+# ═══════════════════════════════════════════════════════════════════
+
+
+#: Directory holding the relayed clipboard file on the remote host.
+CLIPBOARD_REMOTE_DIR = "~/.cache/pytoolbox"
+#: Where a pushed clipboard is stored on the remote host.
+CLIPBOARD_REMOTE_PATH = f"{CLIPBOARD_REMOTE_DIR}/clipboard"
+
+
+def _clipboard_ssh_command(
+    target: hosts.Target,
+    remote_command: str,
+    identity: Optional[str],
+    ssh_options: Sequence[str],
+    password_file: Optional[Path],
+) -> list[str]:
+    cmd = build_ssh_command(
+        target,
+        [],
+        identity=identity,
+        password_file=password_file,
+        extra_opts=ssh_options,
+        no_command=False,
+        strict_host_keys=bool(target.password),
+    )
+    cmd.append(remote_command)
+    return cmd
+
+
+def _clipboard_options(func):
+    func = verbose_option(func)
+    func = click.option(
+        "-o", "--ssh-option", "ssh_options", multiple=True,
+        help="Extra `ssh -o` option, repeatable.",
+    )(func)
+    func = click.option(
+        "-i", "--identity", type=click.Path(dir_okay=False),
+        help="Private key file to authenticate with.",
+    )(func)
+    return func
+
+
+@ssh_management.group(cls=AliasedGroup, name="clipboard")
+def clipboard_group() -> None:
+    """Relay clipboard text through a remote host.
+
+    \b
+    Not a real remote GUI clipboard: push and pull a plain text file kept at
+    ~/.cache/pytoolbox/clipboard on the remote side, so it works on any host
+    you can SSH into, headless or not -- and doubles as a way to move text
+    between two machines that share a host but not a clipboard.
+
+    \b
+    Examples:
+      pyssh clipboard push prod
+      pyssh clipboard pull prod
+    """
+
+
+@clipboard_group.command("push")
+@click.argument("name")
+@_clipboard_options
+def clipboard_push(
+    name: str, identity: Optional[str], ssh_options: tuple[str, ...], verbose: int
+) -> None:
+    """Send the local clipboard to NAME.
+
+    \b
+    Examples:
+      pyssh clipboard push prod
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+    text = clipboard.get_text()
+    target = apply_stored_secret(hosts.resolve_target(name))
+    _guard_host_key(target)
+
+    password_file = _password_file(target.password, "clip")
+    try:
+        cmd = _clipboard_ssh_command(
+            target,
+            f"mkdir -p {CLIPBOARD_REMOTE_DIR} && cat > {CLIPBOARD_REMOTE_PATH}",
+            identity,
+            ssh_options,
+            password_file,
+        )
+        console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+        completed = subprocess.run(cmd, input=text, capture_output=True, text=True)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
+
+    if completed.returncode != 0:
+        raise click.ClickException(
+            completed.stderr.strip() or f"ssh exited with code {completed.returncode}."
+        )
+    console.success(
+        f"Sent {console.plural(len(text), 'character')} of clipboard to {name}.", verbose
+    )
+
+
+@clipboard_group.command("pull")
+@click.argument("name")
+@_clipboard_options
+def clipboard_pull(
+    name: str, identity: Optional[str], ssh_options: tuple[str, ...], verbose: int
+) -> None:
+    """Write NAME's clipboard buffer to the local clipboard.
+
+    \b
+    Examples:
+      pyssh clipboard pull prod
+    """
+    _require("ssh", "Install OpenSSH (Termux: `pkg install openssh`).")
+    target = apply_stored_secret(hosts.resolve_target(name))
+    _guard_host_key(target)
+
+    password_file = _password_file(target.password, "clip")
+    try:
+        cmd = _clipboard_ssh_command(
+            target, f"cat {CLIPBOARD_REMOTE_PATH}", identity, ssh_options, password_file
+        )
+        console.info(f"$ {' '.join(cmd)}", verbose, threshold=1)
+        completed = subprocess.run(cmd, capture_output=True, text=True)
+    finally:
+        if password_file is not None:
+            password_file.unlink(missing_ok=True)
+
+    if completed.returncode != 0:
+        hint = (
+            f"No clipboard is stored on {name}. Push something there first with "
+            f"`pyssh clipboard push {name}`."
+        )
+        detail = completed.stderr.strip()
+        raise click.ClickException(f"{detail}\n{hint}" if detail else hint)
+
+    clipboard.set_text(completed.stdout)
+    console.success(
+        f"Pulled {console.plural(len(completed.stdout), 'character')} from {name}'s clipboard.",
+        verbose,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════

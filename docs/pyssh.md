@@ -9,6 +9,7 @@ reverse         Expose a local service on the remote server
 tunnel          SOCKS5 proxy through one remote server
 double-tunnel   SOCKS5 proxy to server 2, reached through server 1
 exec            Run a command on one host, or on every host with a tag
+clipboard       Relay clipboard text through a remote host
 rsync-dir       Copy a directory over SSH with rsync
 hosts           List the hosts pyssh can reach, and manage their tags
 secret          Passwords for hosts in your ~/.ssh/config
@@ -254,6 +255,28 @@ not a terminal"), which pyssh does not surface unless `-v` is given. (This
 was confirmed against a live ssh session, comparing plain, `-t` and `-tt`: only
 `-tt` — which pyssh never sends — actually forces the remote pty and would
 risk mixing pty-formatted output into a captured stream.)
+
+## `clipboard`
+
+Relays clipboard text through a remote host. Not a real remote GUI
+clipboard: `push` and `pull` move a plain text file kept at
+`~/.cache/pytoolbox/clipboard` on the remote side, so it works on any host
+you can SSH into, headless or not -- and doubles as a way to move text
+between two machines that share a host but not a clipboard.
+
+```shell
+pyssh clipboard push prod   # send the local clipboard to prod
+pyssh clipboard pull prod   # write prod's stored clipboard to the local clipboard
+```
+
+Reads and writes the local clipboard with the same cross-platform helper
+`pystr` uses (Termux, Linux/Wayland, Linux/X11, macOS, Windows). `pull`
+reports a clear error, naming the `push` that would fix it, when nothing has
+been stored on the host yet.
+
+**Host keys.** When a password is used, `clipboard` refuses to connect to a
+host that is not already in `~/.ssh/known_hosts`, and prints the command
+that fixes it. Key authentication is unaffected.
 
 ## `status` and `stop`
 
