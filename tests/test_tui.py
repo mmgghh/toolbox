@@ -103,7 +103,7 @@ def test_selecting_a_group_pushes_a_scoped_browse_screen():
             await pilot.pause()
             assert isinstance(app.screen, BrowseScreen)
             assert app.screen.path == ["toolbox", "tools"]
-            assert app.screen._names == ["greet"]
+            assert app.screen._names == ["collect", "greet"]
 
     run(scenario())
 
@@ -205,5 +205,61 @@ def test_run_action_invokes_app_run_leaf_with_the_built_argv(monkeypatch):
             await pilot.pause()
 
         assert seen["argv"] == ["toolbox", "tools", "greet", "bob"]
+
+    run(scenario())
+
+
+@tools.command()
+@click.argument("items", nargs=-1)
+@click.option("--tag", multiple=True, help="Repeatable tag.")
+def collect(items, tag) -> None:
+    click.echo(f"items={list(items)} tag={list(tag)}")
+
+
+async def _open_collect_form(pilot, app):
+    from textual.widgets import OptionList
+
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("tools")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("collect")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_multi_field_add_and_remove():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_collect_form(pilot, app)
+
+            from pytoolbox.tui.screens import MultiInput
+
+            screen = app.screen
+            items_widget = screen.entries[0][1]
+            tag_widget = screen.entries[1][1]
+            assert isinstance(items_widget, MultiInput)
+            assert isinstance(tag_widget, MultiInput)
+
+            entry = items_widget.query_one("#entry")
+            entry.value = "a"
+            await pilot.pause()
+            await entry.action_submit()  # posts Input.Submitted
+            await pilot.pause()
+            entry.value = "b"
+            await pilot.pause()
+            await entry.action_submit()
+            await pilot.pause()
+
+            assert items_widget.values == ["a", "b"]
+            argv = screen._current_argv()
+            assert argv == ["toolbox", "tools", "collect", "a", "b"]
 
     run(scenario())

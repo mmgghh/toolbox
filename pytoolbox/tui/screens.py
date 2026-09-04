@@ -9,15 +9,18 @@ import shlex
 import click
 from textual import on
 from textual.app import ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
+from textual.message import Message
 from textual.screen import Screen
-from textual.widgets import Footer, Header, Input, OptionList, Select, Static, Switch
+from textual.widget import Widget
+from textual.widgets import Button, Footer, Header, Input, Label, OptionList, Select, Static, Switch
 from textual.widgets.option_list import Option
 
 from pytoolbox.tui.fields import (
     ChoiceField,
     CountField,
     FlagField,
+    MultiField,
     TextField,
     build_field,
     render_tokens,
@@ -96,6 +99,50 @@ def _is_hidden(group: click.Group, ctx: click.Context, name: str) -> bool:
     return bool(cmd and cmd.hidden)
 
 
+class MultiInput(Widget):
+    """A repeatable-value control: an entry box plus removable value rows."""
+
+    class Changed(Message):
+        pass
+
+    def __init__(self, spec: MultiField) -> None:
+        super().__init__()
+        self.spec = spec
+        self.values: list = []
+
+    def compose(self) -> ComposeResult:
+        yield Label(self.spec.label)
+        yield Input(placeholder="value, Enter to add", id="entry")
+        yield Vertical(id="values")
+
+    @on(Input.Submitted, "#entry")
+    async def _add(self, event: Input.Submitted) -> None:
+        value = event.value.strip()
+        if not value:
+            return
+        self.values.append(value)
+        entry = self.query_one("#entry", Input)
+        entry.value = ""
+        await self._render_values()
+        self.post_message(self.Changed())
+
+    @on(Button.Pressed)
+    async def _remove(self, event: Button.Pressed) -> None:
+        button_id = event.button.id or ""
+        if not button_id.startswith("remove-"):
+            return
+        index = int(button_id.removeprefix("remove-"))
+        del self.values[index]
+        await self._render_values()
+        self.post_message(self.Changed())
+
+    async def _render_values(self) -> None:
+        container = self.query_one("#values", Vertical)
+        await container.remove_children()
+        for i, value in enumerate(self.values):
+            await container.mount(Horizontal(Label(value), Button("x", id=f"remove-{i}")))
+
+
 class FormScreen(Screen):
     """One widget per parameter of `command`, a live command-line preview, and run/back."""
 
@@ -141,6 +188,7 @@ class FormScreen(Screen):
     @on(Input.Changed)
     @on(Select.Changed)
     @on(Switch.Changed)
+    @on(MultiInput.Changed)
     def _on_change(self) -> None:
         self._refresh_preview()
 
@@ -163,7 +211,9 @@ def _widget_for(spec):
         return Switch(value=spec.default)
     if isinstance(spec, CountField):
         return Input(value=str(spec.default), placeholder=spec.label, restrict=r"[0-9]*")
-    raise TypeError(f"No widget for {spec!r}")  # MultiField is handled in Task 3
+    if isinstance(spec, MultiField):
+        return MultiInput(spec)
+    raise TypeError(f"No widget for {spec!r}")
 
 
 def _value_of(spec, widget):
@@ -173,4 +223,6 @@ def _value_of(spec, widget):
         # Select's "nothing chosen" sentinel is Select.NULL, not None --
         # normalize it so render_tokens' `value is None` check works.
         return None if widget.value is Select.NULL else widget.value
+    if isinstance(spec, MultiField):
+        return list(widget.values)
     return widget.value
