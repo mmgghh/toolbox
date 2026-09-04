@@ -96,6 +96,16 @@ Subcommands, options, `--format` choices and path arguments all complete. A
 missing optional dependency only affects its own command: `toolbox <TAB>` keeps
 working even without the `pdf` extra installed.
 
+### Interactive menu
+
+```shell
+toolbox menu
+```
+
+Don't remember the flags? Browse the sixteen commands, pick a subcommand, and
+answer a prompt per argument/option -- it prints the equivalent command line
+before running it, so you can learn it for next time.
+
 ### Check your setup
 
 ```shell
@@ -156,7 +166,7 @@ instead of the XDG ones.
 
 ```shell
 pip install -e ".[all,dev]"
-pytest              # 864 tests
+pytest              # 877 tests
 ruff check .
 ```
 

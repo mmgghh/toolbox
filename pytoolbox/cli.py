@@ -144,6 +144,7 @@ def toolbox() -> None:
       toolbox fm duplicates ~/downloads
       toolbox net ip
       toolbox doctor
+      toolbox menu
     """
 
 
@@ -217,6 +218,20 @@ def doctor() -> None:
     click.echo(f"  data     {paths.data_dir()}")
     click.echo(f"  cache    {paths.cache_dir()}")
     click.echo(f"  runtime  {paths.runtime_dir()}")
+
+
+@toolbox.command()
+def menu() -> None:
+    """Browse every command interactively and build its arguments step by step.
+
+    \b
+    Picks a tool, then a subcommand, then prompts for its arguments and
+    options one at a time -- useful when you don't remember the exact flags.
+    Prints the equivalent command line before running it.
+    """
+    from pytoolbox.core.menu import run_menu
+
+    run_menu(toolbox)
 
 
 @toolbox.command()

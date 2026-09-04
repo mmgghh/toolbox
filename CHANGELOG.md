@@ -7,6 +7,13 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`toolbox menu`.** Browses every command interactively: pick a tool, pick
+  a subcommand, then answer a prompt per argument and option -- flags,
+  choices, repeatable and variadic values all included -- built generically
+  from Click's own parameter metadata, so it stays correct as commands gain
+  or lose options without carrying its own per-command wizard code. Prints
+  the equivalent command line before running it.
+
 - **`pyhtml2md`, also `toolbox html2md`.** Converts HTML to Markdown with no
   optional dependency, using the standard library's `html.parser`. Tags with
   a clean Markdown equivalent (headings, lists, tables, links, images,
