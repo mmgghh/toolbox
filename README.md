@@ -106,6 +106,17 @@ Don't remember the flags? Browse the sixteen commands, pick a subcommand, and
 answer a prompt per argument/option -- it prints the equivalent command line
 before running it, so you can learn it for next time.
 
+### Full-screen interface
+
+```shell
+toolbox tui
+```
+
+Same job as `toolbox menu`, full-screen: search and browse every command,
+fill in its arguments with real widgets, and see a live preview of the
+command line before running it. Needs the `tui` extra
+(`pip install 'pytoolbox[tui]'`).
+
 ### Check your setup
 
 ```shell

@@ -8,7 +8,6 @@ exercises menu.py's equivalent prompt-based logic.
 from __future__ import annotations
 
 import click
-import pytest
 
 from pytoolbox.tui.fields import (
     ChoiceField,

@@ -145,6 +145,7 @@ def toolbox() -> None:
       toolbox net ip
       toolbox doctor
       toolbox menu
+      toolbox tui
     """
 
 
@@ -176,6 +177,7 @@ def doctor() -> None:
         ("arabic_reshaper", "Persian shaping in pymd2pdf", "rtl"),
         ("bidi", "Persian shaping in pymd2pdf", "rtl"),
         ("socks", "SOCKS proxy checks in pyssh", "socks"),
+        ("textual", "toolbox tui", "tui"),
     ):
         try:
             importlib.import_module(module)
@@ -232,6 +234,28 @@ def menu() -> None:
     from pytoolbox.core.menu import run_menu
 
     run_menu(toolbox)
+
+
+@toolbox.command()
+def tui() -> None:
+    """Browse commands and build their arguments in a full-screen interface.
+
+    \b
+    Same job as `toolbox menu`, but full-screen: search and browse every
+    command, fill in its arguments with real widgets, and see a live
+    preview of the command line before running it.
+    """
+    try:
+        importlib.import_module("textual")
+    except ImportError as exc:
+        raise click.ClickException(
+            f"`toolbox tui` needs a dependency that is not installed: {exc}. "
+            f"Try `pip install 'pytoolbox[tui]'`."
+        ) from exc
+
+    from pytoolbox.tui import run_tui
+
+    run_tui(toolbox)
 
 
 @toolbox.command()

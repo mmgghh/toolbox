@@ -201,3 +201,33 @@ def test_pdf2md_is_registered():
 
     assert "pdf2md" in SUBCOMMANDS
     assert "pypdf2md" in console_scripts()
+
+
+def test_tui_is_listed_and_documented(runner):
+    result = runner.invoke(toolbox, ["--help"])
+    assert result.exit_code == 0, result.output
+    assert "tui" in result.stdout
+
+    result = runner.invoke(toolbox, ["tui", "--help"])
+    assert result.exit_code == 0, result.output
+
+
+def test_tui_reports_a_missing_dependency(runner, monkeypatch):
+    real_import = importlib.import_module
+
+    def fake_import(name, *args, **kwargs):
+        if name == "textual":
+            raise ImportError("No module named 'textual'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("pytoolbox.cli.importlib.import_module", fake_import)
+
+    result = runner.invoke(toolbox, ["tui"])
+    assert result.exit_code != 0
+    assert "pip install 'pytoolbox[tui]'" in result.stderr
+
+
+def test_doctor_reports_textual(runner):
+    result = runner.invoke(toolbox, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "textual" in result.stdout
