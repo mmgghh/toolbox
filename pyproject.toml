@@ -48,6 +48,8 @@ pdf2md = ["pypdf>=4.0", "python-bidi>=0.4"]
 excel = ["openpyxl>=3.0"]
 # SOCKS support so pyssh can verify a tunnel really works.
 socks = ["requests[socks]>=2.25"]
+# Full-screen wizard (toolbox tui).
+tui = ["textual>=1.0"]
 # OS keyring storage for pyssh server passwords.
 secrets = ["keyring>=23.0"]
 all = [
@@ -59,6 +61,7 @@ all = [
     "openpyxl>=3.0",
     "requests[socks]>=2.25",
     "keyring>=23.0",
+    "textual>=1.0",
 ]
 dev = [
     "pytest>=7.0",

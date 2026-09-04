@@ -1,0 +1,24 @@
+Screen {
+    background: $surface;
+}
+
+#search {
+    dock: top;
+}
+
+#commands {
+    height: 1fr;
+}
+
+#fields {
+    height: 1fr;
+    padding: 1 2;
+}
+
+#preview {
+    dock: bottom;
+    height: auto;
+    padding: 1 2;
+    background: $panel;
+    color: $success;
+}
