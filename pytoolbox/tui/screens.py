@@ -180,7 +180,11 @@ class FormScreen(Screen):
         tokens: list = []
         for spec, widget in self.entries:
             tokens += render_tokens(spec, _value_of(spec, widget))
-        return [*self.prefix, self.command.name, *tokens]
+        # self.prefix[0] is always the literal "toolbox" root element (seeded
+        # once in ToolboxApp.on_mount, only ever extended -- never replaced);
+        # drop it here so the built argv doesn't include it twice when passed
+        # to root.main(args=...), which expects args *after* the prog name.
+        return [*self.prefix[1:], self.command.name, *tokens]
 
     def _refresh_preview(self) -> None:
         self.query_one("#preview", Static).update("$ toolbox " + shlex.join(self._current_argv()))

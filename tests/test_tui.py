@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("textual", reason="TUI is an optional extra")
 
-from pytoolbox.tui.app import ToolboxApp  # noqa: E402
+from pytoolbox.tui.app import ToolboxApp, _invoke  # noqa: E402
 from pytoolbox.tui.screens import BrowseScreen, FormScreen  # noqa: E402
 
 
@@ -177,7 +177,7 @@ def test_form_preview_updates_as_fields_change():
             name_input.value = "bob"
             await pilot.pause()
             preview = screen.query_one("#preview", Static)
-            assert "toolbox tools greet bob" in preview.content
+            assert preview.content == "$ toolbox tools greet bob"
 
     run(scenario())
 
@@ -204,9 +204,18 @@ def test_run_action_invokes_app_run_leaf_with_the_built_argv(monkeypatch):
             screen.action_run()
             await pilot.pause()
 
-        assert seen["argv"] == ["toolbox", "tools", "greet", "bob"]
+        assert seen["argv"] == ["tools", "greet", "bob"]
 
     run(scenario())
+
+
+def test_invoke_runs_a_correct_argv_with_no_leading_toolbox_element(capsys):
+    # Regression test for the argv-building bug: root.main(args=...) expects
+    # args *after* the prog name, so a leading "toolbox" element would make
+    # every real invocation fail with "Error: No such command 'toolbox'".
+    code = _invoke(fake_root, ["tools", "greet", "bob"])
+    capsys.readouterr()
+    assert code == 0
 
 
 @tools.command()
@@ -260,7 +269,7 @@ def test_multi_field_add_and_remove():
 
             assert items_widget.values == ["a", "b"]
             argv = screen._current_argv()
-            assert argv == ["toolbox", "tools", "collect", "a", "b"]
+            assert argv == ["tools", "collect", "a", "b"]
 
             from textual.widgets import Button
 
@@ -270,6 +279,6 @@ def test_multi_field_add_and_remove():
 
             assert items_widget.values == ["b"]
             argv = screen._current_argv()
-            assert argv == ["toolbox", "tools", "collect", "b"]
+            assert argv == ["tools", "collect", "b"]
 
     run(scenario())
