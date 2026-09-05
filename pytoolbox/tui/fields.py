@@ -15,6 +15,22 @@ from typing import Optional, Union
 
 import click
 
+try:
+    from click.core import UNSET as _CLICK_UNSET
+except ImportError:  # Click <8.4 has no UNSET sentinel -- "no default" is None/().
+    _CLICK_UNSET = None
+
+
+def _default_str(value) -> Optional[str]:
+    """Render a Click parameter's default as a string, or None if there isn't one.
+
+    Click >=8.4 uses a ``Sentinel.UNSET`` object instead of ``None``/``()`` to mean
+    "no default was given".
+    """
+    if value is None or value == () or (_CLICK_UNSET is not None and value is _CLICK_UNSET):
+        return None
+    return str(value)
+
 
 @dataclass
 class TextField:
@@ -70,7 +86,7 @@ def _build_argument_field(param: click.Argument) -> FieldSpec:
         return MultiField(label=label, opt=None)
 
     choices = getattr(param.type, "choices", None)
-    default = None if param.default in (None, ()) else str(param.default)
+    default = _default_str(param.default)
     if choices:
         return ChoiceField(label=label, opt=None, choices=list(choices), default=default)
     return TextField(label=label, opt=None, default=default or "", required=param.required)
@@ -96,7 +112,7 @@ def _build_option_field(param: click.Option) -> Optional[FieldSpec]:
         return MultiField(label=label, opt=opt)
 
     choices = getattr(param.type, "choices", None)
-    default = None if param.default is None else str(param.default)
+    default = _default_str(param.default)
     if choices:
         return ChoiceField(label=label, opt=opt, choices=list(choices), default=default)
 
