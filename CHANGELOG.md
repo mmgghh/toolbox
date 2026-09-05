@@ -13,6 +13,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   `-k`/`-t`/`--drop-empty` narrow the columns the same way they do for
   `filter`.
 
+- **`-s`/`--sort` on `pydata filter` and `pydata convert`.** Orders rows by
+  one or more output columns, e.g. `--sort amount:desc`; repeat it and later
+  keys break ties. Applied before `--rows` caps the count, so `--rows` keeps
+  the top N. Rows missing the column sort after the rest ascending, before
+  it descending -- the same default SQL uses.
+
 - **`toolbox menu`.** Browses every command interactively: pick a tool, pick
   a subcommand, then answer a prompt per argument and option -- flags,
   choices, repeatable and variadic values all included -- built generically

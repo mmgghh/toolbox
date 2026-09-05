@@ -195,3 +195,41 @@ def display(value: object) -> object:
     if isinstance(value, bool):
         return "true" if value else "false"
     return value
+
+
+def parse_sort(spec: str) -> tuple[str, bool]:
+    """Split "name" or "name:asc"/"name:desc" into (name, descending)."""
+    name, sep, direction = spec.rpartition(":")
+    if not sep:
+        return spec, False
+    direction = direction.lower()
+    if direction == "asc":
+        return name, False
+    if direction == "desc":
+        return name, True
+    raise DataError(f"Unknown sort direction {direction!r} in {spec!r}; use :asc or :desc.")
+
+
+def sort_rows(rows: Sequence[dict], headers: Sequence[str], specs: Sequence[str]) -> list[dict]:
+    """Stably sort rows by one or more column names, later specs breaking ties.
+
+    Each spec names one of ``headers``, optionally suffixed ``:asc``/``:desc``
+    (default ascending). A row missing a value for the column sorts after the
+    rest ascending, before it descending -- the same default SQL uses.
+    """
+    if not specs:
+        return list(rows)
+    parsed = [parse_sort(spec) for spec in specs]
+    for name, _ in parsed:
+        if name not in headers:
+            raise DataError(
+                f"Can't sort by {name!r}; it isn't one of the output columns ({', '.join(headers)})."
+            )
+
+    result = list(rows)
+    for name, descending in reversed(parsed):
+        try:
+            result.sort(key=lambda row, name=name: (row.get(name) is None, row.get(name)), reverse=descending)
+        except TypeError as exc:
+            raise DataError(f"Can't sort by {name!r}: values aren't comparable ({exc}).") from exc
+    return result

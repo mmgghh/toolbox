@@ -200,6 +200,13 @@ def summary(
 )
 @click.option("--rows", type=int, default=None, help="Print only the first N rows.")
 @click.option(
+    "-s",
+    "--sort",
+    "sort_specs",
+    multiple=True,
+    help="Sort by this output column (repeatable; later ones break ties). Suffix :desc to reverse.",
+)
+@click.option(
     "--concise",
     is_flag=True,
     help="Print bare values only -- no header, sheet or path -- CSV rows for more than one column.",
@@ -222,6 +229,7 @@ def filter_command(
     drop_empty,
     deep,
     rows,
+    sort_specs,
     concise,
     output_format,
     output,
@@ -248,6 +256,11 @@ def filter_command(
     are always the original names, the way tree shows them; --raw-names has
     no effect here.
 
+    -s/--sort orders the rows by one of the output columns -- record/path/
+    value under --deep, sheet plus the matched columns under --sheet '*' --
+    applied before --rows caps the count, so --rows keeps the top N. Rows
+    missing the column sort after the rest ascending, before it descending.
+
     --concise drops every bookkeeping column -- sheet, record, path -- and
     prints just the matched values: one bare value per line for a single
     column, or unheaded CSV rows once more than one column is selected.
@@ -258,6 +271,7 @@ def filter_command(
       pydata filter api.json --type int --type float
       pydata filter api.json -k 'addr*' -k 'first*'
       pydata filter sales.csv --drop-empty --rows 20 --format csv
+      pydata filter sales.csv -k amount -k name --sort amount:desc --rows 5
       pydata filter staff.xlsx -k amount --sheet '*'
       pydata filter api.json -k city --deep
       pydata filter staff.xlsx -k amount --sheet '*' --concise
@@ -272,6 +286,7 @@ def filter_command(
             path, kind, root, delimiter, encoding, errors, raw_names, no_infer, limit,
             keys, types, drop_empty, deep,
         )
+        printed = select.sort_rows(printed, headers, sort_specs)
         if rows is not None:
             printed = printed[:rows]
         _emit_filtered(printed, headers, concise, output_format, output)
@@ -280,6 +295,7 @@ def filter_command(
     source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
     if deep:
         printed = select.deep_select(source.records, keys=keys, types=types, drop_empty=drop_empty)
+        printed = select.sort_rows(printed, ["record", "path", "value"], sort_specs)
         if rows is not None:
             printed = printed[:rows]
         _emit_filtered(printed, ["record", "path", "value"], concise, output_format, output)
@@ -287,7 +303,10 @@ def filter_command(
 
     root_node, columns = _analyze(source, raw_names)
     chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
-    printed = select.rows_for(source.records, chosen, limit=rows)
+    printed = select.rows_for(source.records, chosen)
+    printed = select.sort_rows(printed, [column.name for column in chosen], sort_specs)
+    if rows is not None:
+        printed = printed[:rows]
     _emit_filtered(printed, [column.name for column in chosen], concise, output_format, output)
 
 
@@ -387,6 +406,13 @@ CONVERT_FORMATS = ("json", "csv", "markdown", "excel")
 @click.option("-t", "--type", "types", multiple=True, help="Keep fields of this value type (repeatable).")
 @click.option("--drop-empty", is_flag=True, help="Drop fields that are null in every record.")
 @click.option(
+    "-s",
+    "--sort",
+    "sort_specs",
+    multiple=True,
+    help="Sort by this output column (repeatable; later ones break ties). Suffix :desc to reverse.",
+)
+@click.option(
     "--to",
     "to_format",
     type=click.Choice(CONVERT_FORMATS, case_sensitive=False),
@@ -408,6 +434,7 @@ def convert(
     keys,
     types,
     drop_empty,
+    sort_specs,
     to_format,
 ) -> None:
     """Convert JSON, CSV or Excel into another of the three, or Markdown.
@@ -415,12 +442,16 @@ def convert(
     The output format comes from DESTINATION's suffix (.json, .csv, .xlsx,
     .md) unless --to says otherwise. -k/-t/--drop-empty narrow the columns
     the same way they do for filter; leave them out to keep every column.
+    -s/--sort orders the rows by one of the kept columns -- a name that
+    isn't one of them is an error. Rows missing the column sort after the
+    rest ascending, before it descending.
 
     \b
     Examples:
       pydata convert sales.csv sales.xlsx
       pydata convert api.json users.csv -k id -k first_name
       pydata convert staff.xlsx staff.json --sheet Q1
+      pydata convert sales.csv top.csv --sort amount:desc
       pydata convert data.txt data.json --to json
     """
     resolved_format = to_format or tables.detect_format(destination)
@@ -431,6 +462,7 @@ def convert(
     root_node, columns = _analyze(source, raw_names)
     chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
     rows = select.rows_for(source.records, chosen)
+    rows = select.sort_rows(rows, [column.name for column in chosen], sort_specs)
     tables.emit(rows, [column.name for column in chosen], output_format=resolved_format, output=destination)
 
 

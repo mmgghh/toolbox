@@ -319,6 +319,59 @@ def test_filter_concise_writes_a_file(runner, api, tmp_path):
     assert out.read_text() == "1,ann\n2,bob\n3,cy\n"
 
 
+def test_filter_sort_ascending_puts_missing_values_last(runner, api):
+    result = run(runner, "filter", api, "-k", "id", "-k", "age", "--sort", "age", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert [row["id"] for row in rows] == [2, 1, 3]
+
+
+def test_filter_sort_descending_puts_missing_values_first(runner, api):
+    result = run(
+        runner, "filter", api, "-k", "id", "-k", "age", "--sort", "age:desc", "--format", "json"
+    )
+    rows = json.loads(result.stdout)
+    assert [row["id"] for row in rows] == [3, 1, 2]
+
+
+def test_filter_sort_multi_key_breaks_ties(runner, api):
+    result = run(
+        runner, "filter", api, "-k", "id", "-k", "active", "--sort", "active", "--sort", "id",
+        "--format", "json",
+    )
+    rows = json.loads(result.stdout)
+    assert [row["id"] for row in rows] == [2, 1, 3]
+
+
+def test_filter_sort_then_rows_keeps_the_top_n(runner, sales):
+    result = run(
+        runner, "filter", sales, "-k", "id", "-k", "amount", "--sort", "amount:desc", "--rows", "1",
+        "--format", "json",
+    )
+    rows = json.loads(result.stdout)
+    assert [row["id"] for row in rows] == [1]
+
+
+def test_filter_sort_unknown_column_fails_clearly(runner, api):
+    result = run(runner, "filter", api, "-k", "id", "--sort", "zzz")
+    assert result.exit_code == 1
+    assert "isn't one of the output columns" in result.stderr
+
+
+def test_filter_sort_deep_by_value(runner, orders):
+    result = run(runner, "filter", orders, "-k", "city", "--deep", "--sort", "value", "--format", "json")
+    rows = json.loads(result.stdout)
+    assert [row["value"] for row in rows] == ["Berlin", "Rome", "X"]
+
+
+def test_filter_sort_sheet_wildcard(runner, multi_sheet):
+    result = run(
+        runner, "filter", multi_sheet, "-k", "amount", "--sheet", "*", "--sort", "amount:desc",
+        "--format", "json",
+    )
+    rows = json.loads(result.stdout)
+    assert [row["amount"] for row in rows] == [30, 20, 10]
+
+
 # ── convert ─────────────────────────────────────────────────────────
 
 
@@ -378,6 +431,30 @@ def test_convert_to_overrides_suffix(runner, sales, tmp_path):
     result = run(runner, "convert", sales, out, "--to", "json")
     assert result.exit_code == 0
     assert json.loads(out.read_text())[0]["name"] == "ann"
+
+
+def test_convert_sort_descending(runner, sales, tmp_path):
+    out = tmp_path / "sales.json"
+    result = run(runner, "convert", sales, out, "--sort", "amount:desc")
+    assert result.exit_code == 0
+    rows = json.loads(out.read_text())
+    assert [row["id"] for row in rows] == [1, 2]
+
+
+def test_convert_sort_unknown_column_fails_clearly(runner, sales, tmp_path):
+    out = tmp_path / "sales.json"
+    result = run(runner, "convert", sales, out, "-k", "id", "--sort", "zzz")
+    assert result.exit_code == 1
+    assert "isn't one of the output columns" in result.stderr
+
+
+def test_convert_sort_rejects_incomparable_values(runner, tmp_path):
+    source = tmp_path / "mixed.json"
+    source.write_text(json.dumps([{"a": 1}, {"a": "x"}]), encoding="utf-8")
+    out = tmp_path / "result.json"
+    result = run(runner, "convert", source, out, "--sort", "a")
+    assert result.exit_code == 1
+    assert "values aren't comparable" in result.stderr
 
 
 # ── count ───────────────────────────────────────────────────────────
