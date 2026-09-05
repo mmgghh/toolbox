@@ -168,7 +168,13 @@ class FormScreen(Screen):
                     continue
                 widget = _widget_for(spec)
                 self.entries.append((spec, widget))
-                yield widget
+                if isinstance(widget, MultiInput):
+                    yield widget
+                else:
+                    label_text = spec.label
+                    if isinstance(spec, TextField) and spec.required:
+                        label_text += " (required)"
+                    yield Vertical(Label(label_text), widget, classes="field")
         yield Static(id="preview")
         yield Footer()
 

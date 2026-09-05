@@ -15,6 +15,15 @@ Screen {
     padding: 1 2;
 }
 
+.field {
+    height: auto;
+    margin-bottom: 1;
+}
+
+MultiInput {
+    height: auto;
+}
+
 #preview {
     dock: bottom;
     height: auto;
