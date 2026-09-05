@@ -114,7 +114,8 @@ toolbox tui
 
 Same job as `toolbox menu`, full-screen: search and browse every command,
 fill in its arguments with real widgets, and see a live preview of the
-command line before running it. Needs the `tui` extra
+command line before running it. Every command is numbered -- type its
+number to jump straight to it, no mouse required. Needs the `tui` extra
 (`pip install 'pytoolbox[tui]'`).
 
 ### Check your setup

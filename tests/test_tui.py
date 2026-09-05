@@ -17,7 +17,7 @@ import pytest
 pytest.importorskip("textual", reason="TUI is an optional extra")
 
 from pytoolbox.tui.app import ToolboxApp, _invoke  # noqa: E402
-from pytoolbox.tui.screens import BrowseScreen, FormScreen  # noqa: E402
+from pytoolbox.tui.screens import NUMBER_ENTRY_DELAY, BrowseScreen, FormScreen  # noqa: E402
 
 
 @click.group()
@@ -104,6 +104,67 @@ def test_selecting_a_group_pushes_a_scoped_browse_screen():
             assert isinstance(app.screen, BrowseScreen)
             assert app.screen.path == ["toolbox", "tools"]
             assert app.screen._names == ["collect", "greet"]
+
+    run(scenario())
+
+
+def test_numbers_are_shown_and_select_by_position():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            from textual.widgets import OptionList
+
+            option_list = app.screen.query_one("#commands", OptionList)
+            # Sorted top-level names are barren, solo, tools -> tools is #3.
+            assert option_list.get_option_at_index(2).prompt.startswith("3. tools")
+
+            option_list.focus()
+            await pilot.press("3")
+            await pilot.pause(NUMBER_ENTRY_DELAY + 0.1)
+            assert isinstance(app.screen, BrowseScreen)
+            assert app.screen.path == ["toolbox", "tools"]
+
+    run(scenario())
+
+
+def test_multi_digit_number_waits_for_the_second_digit():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            from textual.widgets import OptionList
+
+            option_list = app.screen.query_one("#commands", OptionList)
+            option_list.clear_options()
+            names = [f"cmd{i}" for i in range(1, 13)]
+            app.screen._names = names
+            option_list.add_options(app.screen._options(names))
+
+            option_list.focus()
+            await pilot.press("1")
+            await pilot.pause(0.1)
+            # Still on the same screen -- the "1" hasn't fired yet.
+            assert app.screen._number_buffer == "1"
+            await pilot.press("2")
+            await pilot.pause(NUMBER_ENTRY_DELAY + 0.1)
+            # "12" selected cmd12 (index 11), not "1" selecting cmd1.
+            assert app.screen._number_buffer == ""
+
+    run(scenario())
+
+
+def test_digits_typed_into_search_box_are_not_treated_as_a_jump():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await pilot.click("#search")
+            await pilot.press("3")
+            await pilot.pause(NUMBER_ENTRY_DELAY + 0.1)
+            assert isinstance(app.screen, BrowseScreen)
+            assert app.screen.path == ["toolbox"]
+            assert app.screen._number_buffer == ""
 
     run(scenario())
 

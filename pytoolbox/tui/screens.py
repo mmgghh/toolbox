@@ -7,7 +7,7 @@ from __future__ import annotations
 import shlex
 
 import click
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
@@ -26,6 +26,10 @@ from pytoolbox.tui.fields import (
     render_tokens,
 )
 
+# How long a typed digit sequence waits for another digit before it fires,
+# so "1" then "2" resolves to item 12 instead of jumping to item 1 first.
+NUMBER_ENTRY_DELAY = 0.6
+
 
 class BrowseScreen(Screen):
     """Lists one group's subcommands, live-filtered by a search box."""
@@ -42,10 +46,12 @@ class BrowseScreen(Screen):
         self.ctx = ctx
         self.path = path
         self._names = sorted(n for n in group.list_commands(ctx) if not _is_hidden(group, ctx, n))
+        self._number_buffer = ""
+        self._number_timer = None
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield Input(placeholder="Search commands...", id="search")
+        yield Input(placeholder="Search commands... (or type a number)", id="search")
         yield OptionList(*self._options(self._names), id="commands")
         yield Footer()
 
@@ -55,10 +61,10 @@ class BrowseScreen(Screen):
             self.notify(f"`{' '.join(self.path)}` has no subcommands.", severity="warning")
 
     def _options(self, names: list):
-        for name in names:
+        for i, name in enumerate(names, start=1):
             cmd = self.group.get_command(self.ctx, name)
             summary = cmd.get_short_help_str(limit=70).strip() if cmd else ""
-            yield Option(f"{name}  {summary}", id=name)
+            yield Option(f"{i}. {name}  {summary}", id=name)
 
     def _help(self, name: str) -> str:
         cmd = self.group.get_command(self.ctx, name)
@@ -74,7 +80,9 @@ class BrowseScreen(Screen):
 
     @on(OptionList.OptionSelected, "#commands")
     def _choose(self, event: OptionList.OptionSelected) -> None:
-        name = event.option.id
+        self._select(event.option.id)
+
+    def _select(self, name: str) -> None:
         command = self.group.get_command(self.ctx, name)
         if command is None:
             return
@@ -83,6 +91,38 @@ class BrowseScreen(Screen):
             self.app.push_screen(BrowseScreen(command, sub_ctx, [*self.path, command.name or name]))
             return
         self.app.push_screen(FormScreen([*self.path], command))
+
+    def on_key(self, event: events.Key) -> None:
+        # Ignore digits typed into the search box -- they're search text there,
+        # not a jump-to-number (e.g. searching a command whose help mentions a
+        # port number).
+        if isinstance(self.focused, Input):
+            return
+        if not event.character or not event.character.isdigit():
+            return
+        event.stop()
+        self._number_buffer += event.character
+        self.sub_title = f"Go to #{self._number_buffer}"
+        if self._number_timer is not None:
+            self._number_timer.stop()
+        self._number_timer = self.set_timer(NUMBER_ENTRY_DELAY, self._select_by_number)
+
+    def _select_by_number(self) -> None:
+        buffer, self._number_buffer = self._number_buffer, ""
+        self._number_timer = None
+        self.sub_title = ""
+        if not buffer or not self.is_mounted:
+            return
+        option_list = self.query_one("#commands", OptionList)
+        index = int(buffer) - 1
+        if 0 <= index < option_list.option_count:
+            option = option_list.get_option_at_index(index)
+            option_list.highlighted = index
+            self._select(option.id)
+
+    def on_unmount(self) -> None:
+        if self._number_timer is not None:
+            self._number_timer.stop()
 
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
