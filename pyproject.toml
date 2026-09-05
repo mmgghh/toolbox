@@ -96,6 +96,9 @@ pyhtml2md = "pytoolbox.pyhtml2md:html2md_cli"
 [tool.setuptools.packages.find]
 include = ["pytoolbox*"]
 
+[tool.setuptools.package-data]
+"pytoolbox.tui" = ["*.tcss"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
