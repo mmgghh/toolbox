@@ -319,6 +319,67 @@ def test_filter_concise_writes_a_file(runner, api, tmp_path):
     assert out.read_text() == "1,ann\n2,bob\n3,cy\n"
 
 
+# ── convert ─────────────────────────────────────────────────────────
+
+
+def test_convert_json_to_csv(runner, api, tmp_path):
+    out = tmp_path / "users.csv"
+    result = run(runner, "convert", api, out, "-k", "id", "-k", "first_name")
+    assert result.exit_code == 0
+    assert out.read_text().splitlines()[:4] == ["id,first_name", "1,ann", "2,bob", "3,cy"]
+
+
+def test_convert_csv_to_excel(runner, sales, tmp_path):
+    out = tmp_path / "sales.xlsx"
+    result = run(runner, "convert", sales, out)
+    assert result.exit_code == 0
+    wb = openpyxl.load_workbook(out)
+    rows = list(wb.active.iter_rows(values_only=True))
+    assert rows[0] == ("id", "name", "joined", "zip", "amount")
+    assert rows[1][1] == "ann"
+
+
+def test_convert_excel_to_json(runner, book, tmp_path):
+    out = tmp_path / "staff.json"
+    result = run(runner, "convert", book, out, "--sheet", "Staff")
+    assert result.exit_code == 0
+    rows = json.loads(out.read_text())
+    assert rows[0]["full_name"] == "ann"
+
+
+def test_convert_narrows_columns_like_filter(runner, api, tmp_path):
+    out = tmp_path / "ages.json"
+    result = run(runner, "convert", api, out, "--type", "int")
+    assert result.exit_code == 0
+    rows = json.loads(out.read_text())
+    assert list(rows[0]) == ["id"]
+
+
+def test_convert_drop_empty(runner, tmp_path):
+    source = tmp_path / "a.json"
+    source.write_text(
+        json.dumps([{"id": 1, "note": None}, {"id": 2, "note": None}]), encoding="utf-8"
+    )
+    out = tmp_path / "a.csv"
+    result = run(runner, "convert", source, out, "--drop-empty")
+    assert result.exit_code == 0
+    assert out.read_text().splitlines()[:3] == ["id", "1", "2"]
+
+
+def test_convert_unknown_suffix_needs_to(runner, sales, tmp_path):
+    out = tmp_path / "sales.dat"
+    result = run(runner, "convert", sales, out)
+    assert result.exit_code == 1
+    assert "--to" in result.stderr
+
+
+def test_convert_to_overrides_suffix(runner, sales, tmp_path):
+    out = tmp_path / "sales.dat"
+    result = run(runner, "convert", sales, out, "--to", "json")
+    assert result.exit_code == 0
+    assert json.loads(out.read_text())[0]["name"] == "ann"
+
+
 # ── count ───────────────────────────────────────────────────────────
 
 

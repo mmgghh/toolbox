@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydata convert`.** Converts JSON, CSV or Excel into another of the
+  three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output
+  format comes from the destination's suffix, or `--to` when it doesn't say.
+  `-k`/`-t`/`--drop-empty` narrow the columns the same way they do for
+  `filter`.
+
 - **`toolbox menu`.** Browses every command interactively: pick a tool, pick
   a subcommand, then answer a prompt per argument and option -- flags,
   choices, repeatable and variadic values all included -- built generically

@@ -132,6 +132,7 @@ def data_cli() -> None:
       pydata tree api.json
       pydata summary sales.csv
       pydata filter api.json --type int
+      pydata convert sales.csv sales.xlsx
       pydata count sales.csv
       pydata head sales.csv
       pydata keys staff.xlsx
@@ -372,6 +373,65 @@ def _concise_text(rows: list[dict], headers: list[str]) -> str:
 
 def _cell(value: object) -> str:
     return "" if value is None else str(value)
+
+
+#: ``--to`` choices for ``convert`` -- every format ``tables.emit`` can write to a file.
+CONVERT_FORMATS = ("json", "csv", "markdown", "excel")
+
+
+@data_cli.command("convert")
+@click.argument("path", type=click.Path(path_type=Path, allow_dash=True))
+@click.argument("destination", type=click.Path(path_type=Path))
+@source_options
+@click.option("-k", "--key", "keys", multiple=True, help="Keep fields matching this glob (repeatable).")
+@click.option("-t", "--type", "types", multiple=True, help="Keep fields of this value type (repeatable).")
+@click.option("--drop-empty", is_flag=True, help="Drop fields that are null in every record.")
+@click.option(
+    "--to",
+    "to_format",
+    type=click.Choice(CONVERT_FORMATS, case_sensitive=False),
+    default=None,
+    help="Output format, when DESTINATION's suffix does not say.",
+)
+def convert(
+    path,
+    destination,
+    root,
+    kind,
+    sheet,
+    delimiter,
+    encoding,
+    errors,
+    raw_names,
+    no_infer,
+    limit,
+    keys,
+    types,
+    drop_empty,
+    to_format,
+) -> None:
+    """Convert JSON, CSV or Excel into another of the three, or Markdown.
+
+    The output format comes from DESTINATION's suffix (.json, .csv, .xlsx,
+    .md) unless --to says otherwise. -k/-t/--drop-empty narrow the columns
+    the same way they do for filter; leave them out to keep every column.
+
+    \b
+    Examples:
+      pydata convert sales.csv sales.xlsx
+      pydata convert api.json users.csv -k id -k first_name
+      pydata convert staff.xlsx staff.json --sheet Q1
+      pydata convert data.txt data.json --to json
+    """
+    resolved_format = to_format or tables.detect_format(destination)
+    if resolved_format is None:
+        raise DataError(f"Can't tell the output format from {destination.suffix!r}; pass --to.")
+
+    source = _load(path, kind, root, sheet, delimiter, encoding, errors, no_infer, limit)
+    root_node, columns = _analyze(source, raw_names)
+    chosen = select.select(root_node, columns, keys=keys, types=types, drop_empty=drop_empty)
+    rows = select.rows_for(source.records, chosen)
+    tables.emit(rows, [column.name for column in chosen], output_format=resolved_format, output=destination)
 
 
 @data_cli.command()

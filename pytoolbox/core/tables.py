@@ -114,6 +114,25 @@ def suffix_for(output_format: str) -> str:
     }.get(output_format, ".txt")
 
 
+#: Suffix -> output format, for detecting ``convert``'s destination format.
+_FORMAT_SUFFIXES = {
+    ".json": "json",
+    ".ndjson": "json",
+    ".jsonl": "json",
+    ".csv": "csv",
+    ".tsv": "csv",
+    ".md": "markdown",
+    ".markdown": "markdown",
+    ".xlsx": "excel",
+    ".xlsm": "excel",
+}
+
+
+def detect_format(path: Path) -> str | None:
+    """Guess the output format from a filename, or return None if the suffix is new."""
+    return _FORMAT_SUFFIXES.get(path.suffix.lower())
+
+
 def emit(
     rows: Sequence[dict],
     headers: Sequence[str],
