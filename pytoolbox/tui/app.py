@@ -44,7 +44,20 @@ def _invoke(root: click.Group, argv: list) -> int:
         print("Aborted!")
         return 1
     except SystemExit as exc:
-        return exc.code if isinstance(exc.code, int) else 0
+        if isinstance(exc.code, int):
+            return exc.code
+        if exc.code is not None:
+            print(exc.code)
+        return 1
+    except Exception:
+        # Commands run in-process, not as a subprocess -- an uncaught bug in
+        # one of them must not take down the whole TUI. Print the traceback
+        # (visible thanks to the suspended terminal in run_leaf) and let the
+        # user return to the app instead of losing the session.
+        import traceback
+
+        traceback.print_exc()
+        return 1
     return code if isinstance(code, int) else 0
 
 
