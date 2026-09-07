@@ -9,9 +9,10 @@ import shlex
 import click
 from textual import events, on
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.message import Message
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import Button, Footer, Header, Input, Label, OptionList, Select, Static, Switch
 from textual.widgets.option_list import Option
@@ -25,11 +26,43 @@ from pytoolbox.tui.fields import (
     build_field,
     render_tokens,
 )
-from pytoolbox.tui.paths import PathSuggester
+from pytoolbox.tui.paths import PathInput
 
 # How long a typed digit sequence waits for another digit before it fires,
 # so "1" then "2" resolves to item 12 instead of jumping to item 1 first.
 NUMBER_ENTRY_DELAY = 0.6
+
+HELP_TEXT = """\
+[bold]Navigation[/bold]
+  /              search commands
+  ↑ / ↓          move the selection
+  1-9            jump to a numbered command
+  enter          select / run
+  tab            next field
+  shift+tab      previous field ([dim]ctrl+b if your terminal eats shift+tab[/dim])
+  escape         back
+  q              quit ([dim]command list[/dim])
+  ctrl+r         run ([dim]a command's form[/dim])
+
+[bold]Path fields[/bold]
+  right / end    accept the suggested completion
+  ctrl+space     show every matching entry
+  ↑ / ↓          move through the list
+  enter          pick the highlighted entry
+  escape         close the list
+
+[bold]F1[/bold]  toggles this help"""
+
+
+class HelpScreen(ModalScreen):
+    """Keybinding reference, opened with F1 from anywhere in the app."""
+
+    BINDINGS = [
+        ("escape,f1", "dismiss", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static(HELP_TEXT, id="help-body")
 
 
 class BrowseScreen(Screen):
@@ -39,6 +72,11 @@ class BrowseScreen(Screen):
         ("slash", "focus_search", "Search"),
         ("escape", "back", "Back"),
         ("q", "quit", "Quit"),
+        # Backup for shift+tab, whose escape sequence some terminals/multiplexers
+        # mangle in transit -- ctrl+b is a single control byte, not an escape
+        # sequence, so it can't suffer the same fate. (ctrl+p is taken globally
+        # by Textual's command palette.)
+        Binding("ctrl+b", "app.focus_previous", "Focus previous", show=False),
     ]
 
     def __init__(self, group: click.Group, ctx: click.Context, path: list) -> None:
@@ -152,9 +190,11 @@ class MultiInput(Widget):
         self.values: list = []
 
     def compose(self) -> ComposeResult:
-        suggester = PathSuggester(dirs_only=self.spec.dirs_only) if self.spec.is_path else None
         yield Label(self.spec.label)
-        yield Input(placeholder="value, Enter to add", id="entry", suggester=suggester)
+        if self.spec.is_path:
+            yield PathInput(dirs_only=self.spec.dirs_only, placeholder="value, Enter to add", id="entry")
+        else:
+            yield Input(placeholder="value, Enter to add", id="entry")
         yield Vertical(id="values")
 
     @on(Input.Submitted, "#entry")
@@ -191,6 +231,8 @@ class FormScreen(Screen):
     BINDINGS = [
         ("ctrl+r", "run", "Run"),
         ("escape", "back", "Back"),
+        # See BrowseScreen's ctrl+b binding.
+        Binding("ctrl+b", "app.focus_previous", "Focus previous", show=False),
     ]
 
     def __init__(self, prefix: list, command: click.Command) -> None:
@@ -255,8 +297,9 @@ class FormScreen(Screen):
 
 def _widget_for(spec):
     if isinstance(spec, TextField):
-        suggester = PathSuggester(dirs_only=spec.dirs_only) if spec.is_path else None
-        return Input(value=spec.default, placeholder=spec.label, password=spec.password, suggester=suggester)
+        if spec.is_path:
+            return PathInput(dirs_only=spec.dirs_only, value=spec.default, placeholder=spec.label, password=spec.password)
+        return Input(value=spec.default, placeholder=spec.label, password=spec.password)
     if isinstance(spec, ChoiceField):
         options = [(choice, choice) for choice in spec.choices]
         return Select(options, value=spec.default if spec.default is not None else Select.NULL, allow_blank=spec.default is None)

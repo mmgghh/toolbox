@@ -24,10 +24,33 @@ MultiInput {
     height: auto;
 }
 
+PathInput {
+    height: auto;
+}
+
+PathInput > OptionList {
+    height: auto;
+    max-height: 8;
+}
+
 #preview {
     dock: bottom;
     height: auto;
     padding: 1 2;
     background: $panel;
     color: $success;
+}
+
+HelpScreen {
+    align: center middle;
+    background: $background 60%;
+}
+
+#help-body {
+    width: auto;
+    max-width: 70;
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    background: $panel;
 }

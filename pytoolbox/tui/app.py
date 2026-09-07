@@ -7,8 +7,9 @@ from pathlib import Path
 
 import click
 from textual.app import App
+from textual.binding import Binding
 
-from pytoolbox.tui.screens import BrowseScreen
+from pytoolbox.tui.screens import BrowseScreen, HelpScreen
 
 
 class ToolboxApp(App):
@@ -16,6 +17,7 @@ class ToolboxApp(App):
 
     CSS_PATH = Path(__file__).parent / "app.tcss"
     TITLE = "toolbox"
+    BINDINGS = [Binding("f1", "help", "Help")]
 
     def __init__(self, root: click.Group) -> None:
         super().__init__()
@@ -24,6 +26,9 @@ class ToolboxApp(App):
     def on_mount(self) -> None:
         root_ctx = click.Context(self.root_group, info_name="toolbox")
         self.push_screen(BrowseScreen(self.root_group, root_ctx, ["toolbox"]))
+
+    def action_help(self) -> None:
+        self.push_screen(HelpScreen())
 
     def run_leaf(self, argv: list) -> int:
         """Suspend the TUI, run `argv` for real, and return its exit code."""

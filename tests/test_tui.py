@@ -47,6 +47,17 @@ def greet(name, loud, mode, verbose, label) -> None:
 
 
 @fake_root.group()
+def files() -> None:
+    """A group of path-taking commands, for exercising PathInput."""
+
+
+@files.command()
+@click.option("--dir", "directory", type=click.Path(), help="Where to look.")
+def locate(directory) -> None:
+    click.echo(f"dir={directory}")
+
+
+@fake_root.group()
 def barren() -> None:
     """A group with no subcommands."""
 
@@ -66,7 +77,7 @@ def test_root_lists_top_level_commands():
             await _mount_root_browse(pilot)
             screen = app.screen
             assert isinstance(screen, BrowseScreen)
-            assert screen._names == ["barren", "solo", "tools"]
+            assert screen._names == ["barren", "files", "solo", "tools"]
 
     run(scenario())
 
@@ -116,11 +127,11 @@ def test_numbers_are_shown_and_select_by_position():
             from textual.widgets import OptionList
 
             option_list = app.screen.query_one("#commands", OptionList)
-            # Sorted top-level names are barren, solo, tools -> tools is #3.
-            assert option_list.get_option_at_index(2).prompt.startswith("3. tools")
+            # Sorted top-level names are barren, files, solo, tools -> tools is #4.
+            assert option_list.get_option_at_index(3).prompt.startswith("4. tools")
 
             option_list.focus()
-            await pilot.press("3")
+            await pilot.press("4")
             await pilot.pause(NUMBER_ENTRY_DELAY + 0.1)
             assert isinstance(app.screen, BrowseScreen)
             assert app.screen.path == ["toolbox", "tools"]
@@ -341,5 +352,221 @@ def test_multi_field_add_and_remove():
             assert items_widget.values == ["b"]
             argv = screen._current_argv()
             assert argv == ["tools", "collect", "b"]
+
+    run(scenario())
+
+
+async def _open_locate_form(pilot, app):
+    from textual.widgets import OptionList
+
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("files")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("locate")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_path_field_uses_path_input(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "alpha").mkdir()
+        (tmp_path / "alphabet").mkdir()
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_locate_form(pilot, app)
+
+            from pytoolbox.tui.paths import PathInput
+
+            screen = app.screen
+            dir_field = screen.entries[0][1]
+            assert isinstance(dir_field, PathInput)
+
+    run(scenario())
+
+
+def test_ctrl_space_opens_a_dropdown_of_every_match_and_picking_one_fills_the_field(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "alpha").mkdir()
+        (tmp_path / "alphabet").mkdir()
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_locate_form(pilot, app)
+
+            from textual.widgets import Input, OptionList
+
+            screen = app.screen
+            dir_field = screen.entries[0][1]
+            dir_field.value = "al"
+            await pilot.pause()
+            dir_field.focus()
+            await pilot.pause()
+
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+            options = dir_field.query_one(OptionList)
+            assert options.display is True
+            assert [options.get_option_at_index(i).prompt for i in range(options.option_count)] == [
+                "alpha/",
+                "alphabet/",
+            ]
+
+            await pilot.press("down")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert dir_field.value == "alphabet/"
+            assert options.display is False
+            assert app.focused is dir_field.query_one(Input)
+
+    run(scenario())
+
+
+def test_ctrl_at_also_opens_the_dropdown(tmp_path, monkeypatch):
+    # A real terminal's Ctrl+Space keystroke decodes to Textual's "ctrl+@" key,
+    # not the "ctrl+space" name -- Pilot.press("ctrl+space") only exercises the
+    # literal string, which a real terminal never sends, so this pins down the
+    # binding actually used outside of tests. Regression test for a bug caught
+    # by driving a real Textual driver (not Pilot) over a pty with a raw NUL byte.
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "alpha").mkdir()
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_locate_form(pilot, app)
+
+            from textual.widgets import OptionList
+
+            screen = app.screen
+            dir_field = screen.entries[0][1]
+            dir_field.value = "al"
+            await pilot.pause()
+            dir_field.focus()
+            await pilot.pause()
+
+            await pilot.press("ctrl+@")
+            await pilot.pause()
+            options = dir_field.query_one(OptionList)
+            assert options.display is True
+
+    run(scenario())
+
+
+def test_escape_closes_the_dropdown_without_leaving_the_form(tmp_path, monkeypatch):
+    async def scenario():
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "alpha").mkdir()
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_locate_form(pilot, app)
+
+            from textual.widgets import OptionList
+
+            screen = app.screen
+            dir_field = screen.entries[0][1]
+            dir_field.value = "al"
+            await pilot.pause()
+            dir_field.focus()
+            await pilot.pause()
+            await pilot.press("ctrl+space")
+            await pilot.pause()
+
+            options = dir_field.query_one(OptionList)
+            assert options.display is True
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert options.display is False
+            assert isinstance(app.screen, FormScreen)  # dropdown-close, not "back"
+
+            # With the dropdown closed, escape falls through to "back" as usual.
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, BrowseScreen)
+
+    run(scenario())
+
+
+def test_ctrl_b_is_a_focus_previous_fallback_for_shift_tab():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_greet_form(pilot, app)
+
+            screen = app.screen
+            name_input = screen.entries[0][1]
+            name_input.focus()
+            await pilot.pause()
+            await pilot.press("tab")
+            await pilot.pause()
+            assert app.focused is not name_input
+
+            await pilot.press("ctrl+b")
+            await pilot.pause()
+            assert app.focused is name_input
+
+    run(scenario())
+
+
+def test_f1_opens_and_closes_the_help_screen():
+    async def scenario():
+        from pytoolbox.tui.screens import HelpScreen
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+
+            await pilot.press("f1")
+            await pilot.pause()
+            assert isinstance(app.screen, HelpScreen)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, BrowseScreen)
+
+            # F1 toggles rather than stacking a second help screen.
+            stack_depth = len(app.screen_stack)
+            await pilot.press("f1")
+            await pilot.pause()
+            await pilot.press("f1")
+            await pilot.pause()
+            assert isinstance(app.screen, BrowseScreen)
+            assert len(app.screen_stack) == stack_depth
+
+    run(scenario())
+
+
+def test_f1_works_from_inside_a_form_without_eating_typed_text():
+    async def scenario():
+        from pytoolbox.tui.screens import HelpScreen
+
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_greet_form(pilot, app)
+
+            await pilot.press("f1")
+            await pilot.pause()
+            assert isinstance(app.screen, HelpScreen)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert isinstance(app.screen, FormScreen)
 
     run(scenario())

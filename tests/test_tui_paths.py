@@ -8,7 +8,7 @@ import pytest
 
 pytest.importorskip("textual", reason="TUI is an optional extra")
 
-from pytoolbox.tui.paths import PathSuggester  # noqa: E402
+from pytoolbox.tui.paths import PathSuggester, list_path_matches  # noqa: E402
 
 
 def suggest(suggester: PathSuggester, value: str):
@@ -72,3 +72,21 @@ def test_home_expansion_is_used_only_for_the_filesystem_lookup(tree, monkeypatch
     suggestion = suggest(PathSuggester(), "~/al")
     # The suggestion keeps the user's "~" spelling rather than expanding it.
     assert suggestion == "~/alpha.txt"
+
+
+def test_list_matches_returns_every_matching_entry_not_just_the_first(tree):
+    # "alpha.txt" sorts before "alphabet", both match "al" -- the Ctrl+Space
+    # dropdown should offer both, unlike the single-suggestion ghost text.
+    assert list_path_matches("al") == ["alpha.txt", "alphabet/"]
+
+
+def test_list_matches_respects_dirs_only(tree):
+    assert list_path_matches("al", dirs_only=True) == ["alphabet/"]
+
+
+def test_list_matches_is_empty_for_empty_input(tree):
+    assert list_path_matches("") == []
+
+
+def test_list_matches_is_empty_for_no_match(tree):
+    assert list_path_matches("zzz-does-not-exist") == []
