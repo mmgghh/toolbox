@@ -171,7 +171,7 @@ class _Renderer:
                 if self._code_lang == 'mermaid':
                     media.add_mermaid(self.pdf, self._code_lines)
                 else:
-                    render.add_code_block(self.pdf, self._code_lines)
+                    render.add_code_block(self.pdf, self._code_lines, self._code_lang)
                 self._code_lines, self._in_code, self._code_lang = [], False, ""
             else:
                 self._flush_table()

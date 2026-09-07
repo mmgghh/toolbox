@@ -131,41 +131,49 @@ def add_heading(pdf, level, text):
     pdf.set_text_color(*document.CLR_BODY)
 
 
-def code_block_is_rtl(pdf, lines):
+def code_block_is_rtl(pdf, lines, language=""):
     """Whether a fenced block should be laid out right-to-left.
 
     Unlike prose, a code fence does not follow the document's base direction:
     an ASCII snippet in a Persian document is still code, and right-aligning
-    it would be wrong. Only the characters actually inside the fence decide.
+    it would be wrong. A fence with an explicit language (```json, ```python,
+    ...) is always left-aligned -- a Persian string literal inside it does
+    not make the language itself RTL. Only an untagged fence looks at its own
+    characters to decide.
     """
+    if language:
+        return False
     return shaping.is_rtl("\n".join(lines)) and getattr(pdf, "has_persian", False)
 
 
-def _code_line(line, rtl):
+def _code_line(line, has_persian, align_rtl):
     """The string to draw for one code line, and the face to draw it with.
 
-    An RTL line is shaped and bidi-reordered like any other Persian text.
-    Its indent moves to the far side of the reordered string so it still
-    reads as indentation once the line is right-aligned, and it is drawn in
-    the Persian face -- the mono face has no Arabic-script glyphs, so the
-    shaped presentation forms would come out of a fallback face or not at all.
+    Shaping is decided per line, independent of the block's own alignment: a
+    Persian run needs the Persian face to render at all -- the mono face has
+    no Arabic-script glyphs -- whether or not the block around it is
+    left-aligned. Its indent moves to the far side of the reordered string
+    when the block is right-aligned, so it still reads as indentation; a
+    left-aligned block keeps the indent in front, as plain leading spaces.
     """
-    if not rtl or not shaping.is_rtl(line):
+    if not has_persian or not shaping.is_rtl(line):
         return line, fonts.FONT_MONO
     body = line.lstrip(' ')
     indent = ' ' * (len(line) - len(body))
-    return shaping.shape_rtl(body) + indent, fonts.FONT_FA
+    shaped = shaping.shape_rtl(body)
+    return (shaped + indent if align_rtl else indent + shaped), fonts.FONT_FA
 
 
-def add_code_block(pdf, lines):
+def add_code_block(pdf, lines, language=""):
     pdf.ln(2)
-    rtl = code_block_is_rtl(pdf, lines)
+    rtl = code_block_is_rtl(pdf, lines, language)
+    has_persian = getattr(pdf, "has_persian", False)
     w = pdf.w - pdf.l_margin - pdf.r_margin
     x0 = pdf.l_margin
     for ln in lines:
         document.ensure_space(pdf, document.CODE_LH)
         display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
-        display, family = _code_line(display, rtl)
+        display, family = _code_line(display, has_persian, rtl)
         pdf.set_fill_color(*document.CLR_CODE_BG)
         pdf.set_text_color(*document.CLR_CODE_FG)
         pdf.set_font(family, "", document.CODE_SIZE)

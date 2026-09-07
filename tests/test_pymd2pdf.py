@@ -524,6 +524,47 @@ def test_ascii_code_fence_in_an_rtl_document_stays_ltr():
     pdf.doc_is_rtl = True
     assert not render.code_block_is_rtl(pdf, ["def f():", "    return 1"])
     assert render.code_block_is_rtl(pdf, ["# \u0633\u0644\u0627\u0645"])
+    # An explicit language always wins, however Persian the content is.
+    assert not render.code_block_is_rtl(pdf, ["# \u0633\u0644\u0627\u0645"], language="python")
+
+
+LANG_CODE_FENCE = """# \u0633\u0646\u0627\u0631\u06cc\u0648
+
+```json
+{
+  "\u06a9\u0644\u06cc\u062f": "\u0645\u0642\u062f\u0627\u0631"
+}
+```
+"""
+
+
+@needs_fonts
+def test_language_tagged_code_fence_stays_ltr_even_with_persian_content(monkeypatch, tmp_path):
+    """A fence with an explicit language is code, not prose: Persian content
+    inside it must not flip the block to right-aligned, even though an
+    untagged fence with the same text would. The Persian line still needs
+    the Persian face to render at all, alignment aside.
+    """
+    drawn = []
+    orig_cell = document.PDF.cell
+
+    def spy(self, w=None, h=None, text="", *args, **kwargs):
+        if kwargs.get("fill"):
+            drawn.append((text, self.font_family, kwargs.get("align")))
+        return orig_cell(self, w, h, text, *args, **kwargs)
+
+    monkeypatch.setattr(document.PDF, "cell", spy)
+
+    source = tmp_path / "doc.md"
+    source.write_text(LANG_CODE_FENCE, encoding="utf-8")
+    pymd2pdf.convert(source, tmp_path / "doc.pdf", title_page=False, quiet=True)
+    if not document.PDF(format="A4").has_persian:
+        pytest.skip("no Persian font installed")
+
+    persian = [d for d in drawn if shaping.is_rtl(d[0])]
+    assert persian, "no Persian code line was drawn"
+    assert all(align == "L" for _, _, align in drawn)
+    assert all(family == fonts.FONT_FA.lower() for _, family, _ in persian)
 
 
 @needs_fonts

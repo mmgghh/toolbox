@@ -197,6 +197,14 @@ def test_persian_documents_get_a_right_to_left_page():
     assert 'dir="rtl"' not in render_document("متن فارسی", rtl=False)
 
 
+def test_code_fences_stay_ltr_in_an_rtl_document():
+    # A page-wide dir="rtl" must not carry into <pre>: a fence with Persian
+    # string content -- tagged or not -- is still code, read left to right.
+    rendered = render_document('# سلام\n\n```json\n{"کلید": "مقدار"}\n```')
+    assert '<html dir="rtl">' in rendered
+    assert 'direction: ltr' in DEFAULT_CSS and 'text-align: left' in DEFAULT_CSS
+
+
 # ── CLI ─────────────────────────────────────────────────────────────
 
 
