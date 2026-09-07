@@ -104,6 +104,45 @@ def test_multiple_option():
     assert render_tokens(spec, ["t1", "t2"]) == ["--tag", "t1", "--tag", "t2"]
 
 
+def test_path_argument_is_flagged_for_autocomplete():
+    param = _argument(["path"], type=click.Path())
+    spec = build_field(param)
+    assert isinstance(spec, TextField)
+    assert spec.is_path is True
+    assert spec.dirs_only is False
+
+
+def test_dir_only_path_option_is_flagged_dirs_only():
+    param = _option(["--output-dir"], type=click.Path(file_okay=False))
+    spec = build_field(param)
+    assert isinstance(spec, TextField)
+    assert spec.is_path is True
+    assert spec.dirs_only is True
+
+
+def test_file_type_option_is_flagged_for_autocomplete():
+    param = _option(["--input"], type=click.File())
+    spec = build_field(param)
+    assert isinstance(spec, TextField)
+    assert spec.is_path is True
+    assert spec.dirs_only is False
+
+
+def test_plain_text_field_is_not_flagged_as_a_path():
+    param = _option(["--label"])
+    spec = build_field(param)
+    assert isinstance(spec, TextField)
+    assert spec.is_path is False
+
+
+def test_variadic_path_argument_is_a_path_flagged_multi_field():
+    param = _argument(["files"], nargs=-1, type=click.Path(dir_okay=False))
+    spec = build_field(param)
+    assert isinstance(spec, MultiField)
+    assert spec.is_path is True
+    assert spec.dirs_only is False
+
+
 def test_flag_with_negation_is_a_two_way_switch():
     param = _option(["--loud/--quiet"], default=False)
     spec = build_field(param)

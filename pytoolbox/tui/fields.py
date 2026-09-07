@@ -39,6 +39,8 @@ class TextField:
     default: str = ""
     required: bool = False
     password: bool = False
+    is_path: bool = False  # Click type is click.Path/click.File -- offer path autocomplete
+    dirs_only: bool = False  # click.Path(file_okay=False) -- only suggest directories
 
 
 @dataclass
@@ -68,6 +70,8 @@ class CountField:
 class MultiField:
     label: str
     opt: Optional[str]  # None for a variadic (nargs=-1) argument
+    is_path: bool = False
+    dirs_only: bool = False
 
 
 FieldSpec = Union[TextField, ChoiceField, FlagField, CountField, MultiField]
@@ -83,13 +87,17 @@ def build_field(param: click.Parameter) -> Optional[FieldSpec]:
 def _build_argument_field(param: click.Argument) -> FieldSpec:
     label = param.human_readable_name
     if param.nargs == -1:
-        return MultiField(label=label, opt=None)
+        is_path, dirs_only = _path_hint(param.type)
+        return MultiField(label=label, opt=None, is_path=is_path, dirs_only=dirs_only)
 
     choices = getattr(param.type, "choices", None)
     default = _default_str(param.default)
     if choices:
         return ChoiceField(label=label, opt=None, choices=list(choices), default=default)
-    return TextField(label=label, opt=None, default=default or "", required=param.required)
+    is_path, dirs_only = _path_hint(param.type)
+    return TextField(
+        label=label, opt=None, default=default or "", required=param.required, is_path=is_path, dirs_only=dirs_only
+    )
 
 
 def _build_option_field(param: click.Option) -> Optional[FieldSpec]:
@@ -109,20 +117,33 @@ def _build_option_field(param: click.Option) -> Optional[FieldSpec]:
         return CountField(label=label, opt=opt, default=0)
 
     if param.multiple:
-        return MultiField(label=label, opt=opt)
+        is_path, dirs_only = _path_hint(param.type)
+        return MultiField(label=label, opt=opt, is_path=is_path, dirs_only=dirs_only)
 
     choices = getattr(param.type, "choices", None)
     default = _default_str(param.default)
     if choices:
         return ChoiceField(label=label, opt=opt, choices=list(choices), default=default)
 
+    is_path, dirs_only = _path_hint(param.type)
     return TextField(
         label=label,
         opt=opt,
         default=default or "",
         required=param.required,
         password=bool(getattr(param, "hide_input", False)),
+        is_path=is_path,
+        dirs_only=dirs_only,
     )
+
+
+def _path_hint(param_type) -> tuple:
+    """Return (is_path, dirs_only) for a Click parameter type."""
+    if isinstance(param_type, click.Path):
+        return True, param_type.dir_okay and not param_type.file_okay
+    if isinstance(param_type, click.File):
+        return True, False
+    return False, False
 
 
 def _preferred_opt(opts: Sequence[str]) -> str:

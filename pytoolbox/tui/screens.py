@@ -25,6 +25,7 @@ from pytoolbox.tui.fields import (
     build_field,
     render_tokens,
 )
+from pytoolbox.tui.paths import PathSuggester
 
 # How long a typed digit sequence waits for another digit before it fires,
 # so "1" then "2" resolves to item 12 instead of jumping to item 1 first.
@@ -151,8 +152,9 @@ class MultiInput(Widget):
         self.values: list = []
 
     def compose(self) -> ComposeResult:
+        suggester = PathSuggester(dirs_only=self.spec.dirs_only) if self.spec.is_path else None
         yield Label(self.spec.label)
-        yield Input(placeholder="value, Enter to add", id="entry")
+        yield Input(placeholder="value, Enter to add", id="entry", suggester=suggester)
         yield Vertical(id="values")
 
     @on(Input.Submitted, "#entry")
@@ -253,7 +255,8 @@ class FormScreen(Screen):
 
 def _widget_for(spec):
     if isinstance(spec, TextField):
-        return Input(value=spec.default, placeholder=spec.label, password=spec.password)
+        suggester = PathSuggester(dirs_only=spec.dirs_only) if spec.is_path else None
+        return Input(value=spec.default, placeholder=spec.label, password=spec.password, suggester=suggester)
     if isinstance(spec, ChoiceField):
         options = [(choice, choice) for choice in spec.choices]
         return Select(options, value=spec.default if spec.default is not None else Select.NULL, allow_blank=spec.default is None)
