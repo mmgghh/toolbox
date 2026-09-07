@@ -461,7 +461,13 @@ def _prune_empty_dirs(root: Path, verbose: int = 0) -> int:
     prompt=True,
     help="Python regex. <UUID4> and <DOMAIN_PORT> expand to bundled patterns.",
 )
-@click.option("-r", "--replace", required=True, prompt=True, help="Replacement string (backrefs supported).")
+@click.option(
+    "-r",
+    "--replace",
+    required=True,
+    prompt=True,
+    help="Replacement string. Backrefs: \\1, \\g<name> (also \\g<UUID4>/\\g<DOMAIN_PORT>).",
+)
 @click.option("-R", "--recursive", is_flag=True, help="Descend into subdirectories.")
 @click.option("-n", "--dry-run", is_flag=True, help="Report matches without writing.")
 @verbose_option
@@ -484,6 +490,7 @@ def batch_find_replace(
       pyfm batch-find-replace -d ./docs -x md -x txt -f foo -r bar -v
       pyfm batch-find-replace -d ./cfg -x env -f '<DOMAIN_PORT>' -r 'example.com:443' -n
       pyfm batch-find-replace -d ./src -x py -f 'old_name' -r 'new_name' -R
+      pyfm batch-find-replace -d ./src -x py -f '(\w+)_(\w+)' -r '\\2_\\1' -n
     """
     pattern = compile_find_pattern(find)
     extensions = normalize_extensions(extension)
@@ -525,7 +532,13 @@ def batch_find_replace(
     prompt=True,
     help="Python regex. <UUID4> and <DOMAIN_PORT> expand to bundled patterns.",
 )
-@click.option("-r", "--replace", required=True, prompt=True, help="Replacement string (backrefs supported).")
+@click.option(
+    "-r",
+    "--replace",
+    required=True,
+    prompt=True,
+    help="Replacement string. Backrefs: \\1, \\g<name> (also \\g<UUID4>/\\g<DOMAIN_PORT>).",
+)
 @click.option("--include-dirs", is_flag=True, help="Rename directories as well as files.")
 @click.option("--exclude-files", is_flag=True, help="Rename only directories.")
 @click.option("-D", "--depth", type=click.IntRange(0), default=0, show_default=True, help="Extra levels to descend.")
@@ -548,6 +561,7 @@ def batch_rename(
       pyfm batch-rename -d ./downloads -f ' ' -r '_' -v
       pyfm batch-rename -d ./archive -f '2024' -r '2025' --include-dirs -D 2
       pyfm batch-rename -d . -f '^IMG_' -r 'photo-' --dry-run
+      pyfm batch-rename -d . -f '(\d{4})-(\d{2})-(\d{2})' -r '\\3-\\2-\\1' -n
     """
     pattern = compile_find_pattern(find)
     console.dry_run_notice(dry_run)

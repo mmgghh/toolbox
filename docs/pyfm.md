@@ -80,10 +80,20 @@ children unless `-R/--recursive` is given.
 pyfm batch-find-replace -d ./docs -x md -x txt -f foo -r bar -v
 pyfm batch-find-replace -d ./src -x py -f 'old_name' -r 'new_name' -R
 pyfm batch-find-replace -d ./cfg -x env -f '<DOMAIN_PORT>' -r 'example.com:443' -n
+pyfm batch-find-replace -d ./src -x py -f '(\w+)_(\w+)' -r '\2_\1' -n
 ```
 
-Two bundled shortcuts expand to ready-made patterns, and can be used as named
-backreferences in the replacement (`\g<UUID4>`, `\g<DOMAIN_PORT>`):
+`-f`/`--find` is a Python regex, and `-r`/`--replace` is fed straight to
+[`re.sub`](https://docs.python.org/3/library/re.html#re.sub) as the
+replacement, so it supports the usual backreference syntax:
+
+- `\1`, `\2`, … — numbered capture groups from `-f`, in order.
+- `\g<1>` — same as `\1`, but required when a literal digit follows (e.g.
+  `\g<1>0` instead of the ambiguous `\10`).
+- `\g<name>` — a named group `(?P<name>...)` from `-f`.
+
+Two bundled shortcuts expand to ready-made patterns, and are each a named
+group you can reference the same way (`\g<UUID4>`, `\g<DOMAIN_PORT>`):
 
 - `<UUID4>` — a UUID
 - `<DOMAIN_PORT>` — `sub.domain.tld:port`
@@ -94,7 +104,11 @@ backreferences in the replacement (`\g<UUID4>`, `\g<DOMAIN_PORT>`):
 pyfm batch-rename -d ./downloads -f ' ' -r '_' -v
 pyfm batch-rename -d ./archive -f '2024' -r '2025' --include-dirs -D 2
 pyfm batch-rename -d . -f '^IMG_' -r 'photo-' --dry-run
+pyfm batch-rename -d . -f '(\d{4})-(\d{2})-(\d{2})' -r '\3-\2-\1' -n
 ```
+
+`-r`/`--replace` supports the same backreferences as `batch-find-replace`
+above (`\1`, `\g<name>`, `\g<UUID4>`, `\g<DOMAIN_PORT>`).
 
 `-D/--depth` adds extra levels below the target directory (0 = direct
 children). Deeper levels are processed first so renaming a parent never
