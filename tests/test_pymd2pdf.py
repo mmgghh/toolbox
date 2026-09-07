@@ -491,8 +491,9 @@ def test_rtl_code_fence_is_shaped_and_right_aligned(monkeypatch, tmp_path):
     orig_cell = document.PDF.cell
 
     def spy(self, w=None, h=None, text="", *args, **kwargs):
-        if kwargs.get("fill"):
-            # fpdf2 lower-cases the family it records against the page state.
+        # fpdf2 lower-cases the family it records against the page state;
+        # MONO/FA are only ever set for code-block lines.
+        if self.font_family in (fonts.FONT_MONO.lower(), fonts.FONT_FA.lower()):
             drawn.append((text, self.font_family, kwargs.get("align")))
         return orig_cell(self, w, h, text, *args, **kwargs)
 
@@ -528,11 +529,11 @@ def test_ascii_code_fence_in_an_rtl_document_stays_ltr():
     assert not render.code_block_is_rtl(pdf, ["# \u0633\u0644\u0627\u0645"], language="python")
 
 
-LANG_CODE_FENCE = """# \u0633\u0646\u0627\u0631\u06cc\u0648
+LANG_CODE_FENCE = """# Report
 
 ```json
 {
-  "\u06a9\u0644\u06cc\u062f": "\u0645\u0642\u062f\u0627\u0631"
+  "city": "\u0634\u0647\u0628\u0627\u0632"
 }
 ```
 """
@@ -540,16 +541,16 @@ LANG_CODE_FENCE = """# \u0633\u0646\u0627\u0631\u06cc\u0648
 
 @needs_fonts
 def test_language_tagged_code_fence_stays_ltr_even_with_persian_content(monkeypatch, tmp_path):
-    """A fence with an explicit language is code, not prose: Persian content
-    inside it must not flip the block to right-aligned, even though an
-    untagged fence with the same text would. The Persian line still needs
-    the Persian face to render at all, alignment aside.
+    """A fence with an explicit language is code, not prose: a Persian value
+    inside it must not flip the block to right-aligned, nor drag its ASCII
+    key and punctuation out of place -- only the Persian run itself reorders,
+    in the Persian face, since the mono face has no Arabic-script glyphs.
     """
     drawn = []
     orig_cell = document.PDF.cell
 
     def spy(self, w=None, h=None, text="", *args, **kwargs):
-        if kwargs.get("fill"):
+        if self.font_family in (fonts.FONT_MONO.lower(), fonts.FONT_FA.lower()):
             drawn.append((text, self.font_family, kwargs.get("align")))
         return orig_cell(self, w, h, text, *args, **kwargs)
 
@@ -565,6 +566,62 @@ def test_language_tagged_code_fence_stays_ltr_even_with_persian_content(monkeypa
     assert persian, "no Persian code line was drawn"
     assert all(align == "L" for _, _, align in drawn)
     assert all(family == fonts.FONT_FA.lower() for _, family, _ in persian)
+    # The ASCII key and punctuation are drawn as separate mono-face runs
+    # immediately around it, in their original order -- proving the line
+    # was split in place rather than reordered as a whole.
+    texts = [d[0] for d in drawn]
+    (i,) = (i for i, d in enumerate(drawn) if d is persian[0])
+    assert texts[i - 1 : i + 2] == ['  "city": "', persian[0][0], '"']
+
+
+@needs_fonts
+def test_code_block_is_a_rounded_padded_box(monkeypatch, tmp_path):
+    boxes = []
+    orig_rect = document.PDF.rect
+
+    def spy(self, x, y, w, h, *args, **kwargs):
+        boxes.append((x, y, w, h, kwargs.get("round_corners"), kwargs.get("corner_radius")))
+        return orig_rect(self, x, y, w, h, *args, **kwargs)
+
+    monkeypatch.setattr(document.PDF, "rect", spy)
+
+    source = tmp_path / "doc.md"
+    source.write_text("```python\nx = 1\n```\n", encoding="utf-8")
+    pymd2pdf.convert(source, tmp_path / "doc.pdf", title_page=False, quiet=True)
+
+    assert len(boxes) == 1
+    x, y, w, h, round_corners, radius = boxes[0]
+    assert round_corners is True
+    assert radius == document.CODE_RADIUS
+    # One line of text plus padding on both sides, not a bare text-height box.
+    assert h == pytest.approx(document.CODE_LH + 2 * document.CODE_PAD_Y)
+
+
+@needs_fonts
+def test_long_code_block_gets_one_box_per_page(monkeypatch, tmp_path):
+    pypdf = pytest.importorskip("pypdf")
+    boxes = []
+    orig_rect = document.PDF.rect
+
+    def spy(self, x, y, w, h, *args, **kwargs):
+        boxes.append((self.page_no(), y, h))
+        return orig_rect(self, x, y, w, h, *args, **kwargs)
+
+    monkeypatch.setattr(document.PDF, "rect", spy)
+
+    lines = "\n".join(f'"line{i:03d}": {i},' for i in range(150))
+    source = tmp_path / "doc.md"
+    source.write_text(f"```json\n{{\n{lines}\n}}\n```\n", encoding="utf-8")
+    pdf_path = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, pdf_path, title_page=False, quiet=True)
+
+    reader = pypdf.PdfReader(pdf_path)
+    assert len(reader.pages) > 1
+    assert len(boxes) == len(reader.pages)
+    pdf = document.PDF(format="A4")
+    bottom = pdf.h - pdf.b_margin - 5
+    for _, y, h in boxes:
+        assert y + h <= bottom + 0.01
 
 
 @needs_fonts

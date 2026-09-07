@@ -146,42 +146,100 @@ def code_block_is_rtl(pdf, lines, language=""):
     return shaping.is_rtl("\n".join(lines)) and getattr(pdf, "has_persian", False)
 
 
-def _code_line(line, has_persian, align_rtl):
-    """The string to draw for one code line, and the face to draw it with.
+#: A maximal run of RTL (incl. shaped presentation-form) characters, captured
+#: so ``re.split`` hands back the runs alongside the plain text between them.
+_RTL_RUN_RE = re.compile(f"({shaping.RTL_RE.pattern}+)")
+
+
+def _code_runs(line, has_persian, align_rtl):
+    """The (text, face) segments to draw for one code line, in order.
 
     Shaping is decided per line, independent of the block's own alignment: a
     Persian run needs the Persian face to render at all -- the mono face has
     no Arabic-script glyphs -- whether or not the block around it is
-    left-aligned. Its indent moves to the far side of the reordered string
-    when the block is right-aligned, so it still reads as indentation; a
-    left-aligned block keeps the indent in front, as plain leading spaces.
+    left-aligned.
+
+    A right-aligned block reorders the whole line as one RTL paragraph and
+    draws it as a single Persian-face run, indent moved to the far side so it
+    still reads as indentation. A left-aligned block (e.g. a Persian string
+    literal inside tagged code) instead reorders only the RTL run in place,
+    leaving the ASCII syntax around it -- keys, punctuation, indentation --
+    exactly where it is; drawn as separate mono/Persian runs rather than one
+    Persian-face run, since Vazir is a proportional face and drawing ASCII
+    indentation with it would throw off alignment against the plain-mono
+    lines around it.
     """
     if not has_persian or not shaping.is_rtl(line):
-        return line, fonts.FONT_MONO
-    body = line.lstrip(' ')
-    indent = ' ' * (len(line) - len(body))
-    shaped = shaping.shape_rtl(body)
-    return (shaped + indent if align_rtl else indent + shaped), fonts.FONT_FA
+        return [(line, fonts.FONT_MONO)]
+    if align_rtl:
+        body = line.lstrip(' ')
+        indent = ' ' * (len(line) - len(body))
+        return [(shaping.shape_rtl(body) + indent, fonts.FONT_FA)]
+    shaped = shaping.shape_rtl(line, base_dir='L')
+    return [
+        (part, fonts.FONT_FA if shaping.is_rtl(part) else fonts.FONT_MONO)
+        for part in _RTL_RUN_RE.split(shaped) if part
+    ]
 
 
 def add_code_block(pdf, lines, language=""):
+    """Draw a fenced block as a padded, rounded-corner box, Typora-style.
+
+    Drawn in page-sized chunks rather than one rect for the whole block: a
+    block long enough to cross a page boundary gets one box per page instead
+    of a single rect that would either overflow the page or clip the code
+    drawn on top of it.
+    """
     pdf.ln(2)
     rtl = code_block_is_rtl(pdf, lines, language)
     has_persian = getattr(pdf, "has_persian", False)
+    align = "R" if rtl else "L"
     w = pdf.w - pdf.l_margin - pdf.r_margin
+    inner_w = w - 2 * document.CODE_PAD_X
     x0 = pdf.l_margin
-    for ln in lines:
-        document.ensure_space(pdf, document.CODE_LH)
-        display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
-        display, family = _code_line(display, has_persian, rtl)
-        pdf.set_fill_color(*document.CLR_CODE_BG)
-        pdf.set_text_color(*document.CLR_CODE_FG)
-        pdf.set_font(family, "", document.CODE_SIZE)
-        pdf.set_x(x0)
-        pdf.cell(
-            w, document.CODE_LH, display, fill=True,
-            align="R" if rtl else "L", new_x="LMARGIN", new_y="NEXT",
-        )
+    bottom = pdf.h - pdf.b_margin - 5
+    # fpdf2's default cell padding is meant for isolated cells; back-to-back
+    # runs on one line would each carry it, opening a visible gap between a
+    # Persian run and the ASCII quote right next to it.
+    original_c_margin = pdf.c_margin
+    pdf.c_margin = 0
+    try:
+        index = 0
+        while index < len(lines):
+            if bottom - pdf.get_y() < document.CODE_LH + 2 * document.CODE_PAD_Y:
+                pdf.add_page()
+            room = bottom - pdf.get_y() - 2 * document.CODE_PAD_Y
+            fit = max(1, int(room // document.CODE_LH))
+            chunk = lines[index : index + fit]
+
+            y0 = pdf.get_y()
+            box_h = len(chunk) * document.CODE_LH + 2 * document.CODE_PAD_Y
+            pdf.set_fill_color(*document.CLR_CODE_BG)
+            pdf.rect(x0, y0, w, box_h, style="F", round_corners=True, corner_radius=document.CODE_RADIUS)
+
+            pdf.set_text_color(*document.CLR_CODE_FG)
+            y = y0 + document.CODE_PAD_Y
+            for ln in chunk:
+                display = ln[:document.MAX_CODE_COLS] if len(ln) > document.MAX_CODE_COLS else ln
+                runs = _code_runs(display, has_persian, rtl)
+                if rtl:
+                    text, family = runs[0]
+                    pdf.set_font(family, "", document.CODE_SIZE)
+                    pdf.set_xy(x0 + document.CODE_PAD_X, y)
+                    pdf.cell(inner_w, document.CODE_LH, text, align=align, new_x="LMARGIN", new_y="TOP")
+                else:
+                    pdf.set_xy(x0 + document.CODE_PAD_X, y)
+                    for text, family in runs:
+                        pdf.set_font(family, "", document.CODE_SIZE)
+                        # Auto width, default new_x=RIGHT/new_y=TOP: each run
+                        # starts right where the last one ended, same line.
+                        pdf.cell(None, document.CODE_LH, text, align=align)
+                y += document.CODE_LH
+            pdf.set_y(y0 + box_h)
+            index += fit
+    finally:
+        pdf.c_margin = original_c_margin
+
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*document.CLR_BODY)
     pdf.ln(2)

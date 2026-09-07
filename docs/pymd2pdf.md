@@ -24,7 +24,7 @@ pymd2pdf notes.md --no-title-page --font-size 11 --offline
 | `*italic*` | Italic |
 | `~~strikethrough~~` | Greyed text |
 | `` `code` `` | Monospace |
-| ` ```lang ` fences | Shaded code block |
+| ` ```lang ` fences | Rounded, padded, shaded code block |
 | `[text](url)` | Underlined blue text with a real PDF link |
 | `![alt](src)` | Embedded image, scaled to fit, with a caption |
 | Tables | Auto-sized columns, header fill, zebra rows; a cell that is only a link becomes a clickable link; `<br>` inside a cell is a real line break |
@@ -76,8 +76,10 @@ Handled correctly:
 - A code fence whose text is Persian is shaped and right-aligned, with its
   indentation kept on the right. Only the characters inside the fence decide,
   unless it names a language (` ```json `, ` ```python `, ...), which always
-  stays left-aligned: an ASCII snippet in a Persian document, and a Persian
-  string literal inside tagged code, both read left to right.
+  stays left-aligned: an ASCII snippet in a Persian document reads left to
+  right, and a Persian string literal inside tagged code is reshaped in place
+  -- its surrounding keys and punctuation do not move, and stay in the mono
+  face so indentation still lines up with the plain-ASCII lines around it.
 - Cell text is shaped before the table is laid out, which means its Markdown
   can no longer be parsed: a whole cell wrapped in `**` still renders bold,
   and emphasis around part of a cell has its markers dropped rather than

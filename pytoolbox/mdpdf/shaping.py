@@ -101,35 +101,44 @@ def substitute_glyphs(text):
     return text.translate(state.glyph_translation) if state.glyph_translation else text
 
 
-def _bidi_display(s):
+def _bidi_display(s, base_dir='R'):
     """get_display, but only when ``s`` actually has RTL characters.
 
-    Forcing ``base_dir='R'`` (see ``shape_rtl``'s docstring) is necessary
-    for correct ordering whenever RTL text is present, but doing it to a
-    string with *no* RTL characters at all backfires: with nothing to anchor
-    the forced RTL paragraph level, python-bidi's mirroring pass swaps
-    parentheses it shouldn't (`"(SRS)"` -> `"(SRS ("`). Such strings need no
-    reordering anyway -- right-alignment at the page-layout level already
-    positions them correctly.
+    Forcing a ``base_dir`` (see ``shape_rtl``'s docstring) is necessary for
+    correct ordering whenever RTL text is present, but doing it to a string
+    with *no* RTL characters at all backfires: with nothing to anchor the
+    forced paragraph level, python-bidi's mirroring pass swaps parentheses
+    it shouldn't (`"(SRS)"` -> `"(SRS ("`). Such strings need no reordering
+    anyway -- right-alignment at the page-layout level already positions
+    them correctly.
     """
-    return str(get_display(s, base_dir='R')) if HAS_SHAPER and is_rtl(s) else s
+    return str(get_display(s, base_dir=base_dir)) if HAS_SHAPER and is_rtl(s) else s
 
 
-def shape_rtl(text):
+def shape_rtl(text, base_dir='R'):
     """Reshape Arabic/Persian letters and apply the bidi algorithm.
 
-    ``base_dir='R'`` is required: without it, ``get_display`` auto-detects
-    paragraph direction from the first strong-direction character it finds
-    (Unicode's P2/P3 rules), so a string that happens to *start* with a run
-    of Latin text (e.g. a heading or bold term before any Persian) would get
-    treated as an LTR paragraph and come out reordered backwards, even
-    though we already know -- the caller checked -- that this text belongs
-    in an RTL context. See ``_bidi_display`` for why that's still gated on
-    the text actually containing RTL characters.
+    ``base_dir='R'`` (the default) is for text that is itself an RTL
+    paragraph -- a heading, a title, a right-aligned code block -- and is
+    required there: without it, ``get_display`` auto-detects paragraph
+    direction from the first strong-direction character it finds (Unicode's
+    P2/P3 rules), so a string that happens to *start* with a run of Latin
+    text (e.g. a heading or bold term before any Persian) would get treated
+    as an LTR paragraph and come out reordered backwards, even though we
+    already know -- the caller checked -- that this text belongs in an RTL
+    context.
+
+    ``base_dir='L'`` is for the opposite case: a Persian run embedded in an
+    otherwise left-to-right line (e.g. a string literal inside a left-aligned,
+    language-tagged code fence) that must not drag its ASCII surroundings out
+    of place -- only the RTL run itself is reordered, in position.
+
+    See ``_bidi_display`` for why either is still gated on the text actually
+    containing RTL characters.
     """
     if not HAS_SHAPER or not text:
         return text
-    return _bidi_display(_reshaper.reshape(text))
+    return _bidi_display(_reshaper.reshape(text), base_dir=base_dir)
 
 
 def shape_rtl_lines(pdf, text, max_width, marker=""):

@@ -32,6 +32,9 @@ CLR_QUOTE_FG      = (90, 90, 90)
 # ── Layout constants ────────────────────────────────────────────────
 CODE_SIZE   = 5.5
 CODE_LH     = 3.2
+CODE_PAD_X  = 2.5     # horizontal inset between a code block's border and its text
+CODE_PAD_Y  = 2        # vertical inset between a code block's border and its text
+CODE_RADIUS = 1.5     # corner radius of a code block's border
 TABLE_SIZE  = 7
 TABLE_ROW_H = 6
 LINE_H_MULT = 1.8     # line-height multiplier for body text
