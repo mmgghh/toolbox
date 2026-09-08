@@ -10,7 +10,7 @@ import click
 from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
@@ -50,6 +50,12 @@ HELP_TEXT = """\
   ↑ / ↓          move through the list
   enter          pick the highlighted entry
   escape         close the list
+
+[bold]Copying text[/bold]
+  click + drag   select text
+  ctrl+c         copy the selection ([dim]not ctrl+shift+c or right-click -- the
+                 terminal's own clipboard shortcuts don't see selections the
+                 app draws itself[/dim])
 
 [bold]F1[/bold]  toggles this help"""
 
@@ -243,7 +249,13 @@ class FormScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Header()
-        with Vertical(id="fields"):
+        # can_focus=False: ScrollableContainer is focusable by default, which
+        # would make it (not the first field inside it) the screen's initial
+        # auto-focus target and swallow key bindings meant for descendants
+        # like PathInput's Ctrl+Space. Scrolling itself doesn't need focus --
+        # mouse wheel always works, and Page Up/Down/Home/End bubble up from
+        # whatever field is actually focused.
+        with VerticalScroll(id="fields", can_focus=False):
             for param in self.command.params:
                 if not getattr(param, "expose_value", True):
                     continue

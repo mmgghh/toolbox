@@ -22,6 +22,15 @@ Screen {
 
 MultiInput {
     height: auto;
+    margin-bottom: 1;
+}
+
+MultiInput > #values {
+    height: auto;
+}
+
+MultiInput > #values > Horizontal {
+    height: auto;
 }
 
 PathInput {

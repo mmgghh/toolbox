@@ -254,6 +254,25 @@ def test_form_preview_updates_as_fields_change():
     run(scenario())
 
 
+def test_fields_container_scrolls_when_the_form_overflows_the_screen():
+    # Regression test: a form with more fields than fit on screen must be
+    # scrollable -- a plain Vertical container clips overflow silently with
+    # no scrollbar and no way to reach the hidden fields.
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test(size=(80, 10)) as pilot:
+            await _mount_root_browse(pilot)
+            await _open_greet_form(pilot, app)
+            await pilot.pause()
+
+            screen = app.screen
+            fields = screen.query_one("#fields")
+            assert fields.max_scroll_y > 0
+            assert fields.allow_vertical_scroll
+
+    run(scenario())
+
+
 def test_run_action_invokes_app_run_leaf_with_the_built_argv(monkeypatch):
     async def scenario():
         app = ToolboxApp(fake_root)
@@ -352,6 +371,66 @@ def test_multi_field_add_and_remove():
             assert items_widget.values == ["b"]
             argv = screen._current_argv()
             assert argv == ["tools", "collect", "b"]
+
+    run(scenario())
+
+
+def test_multi_input_does_not_leave_a_large_gap_when_empty():
+    # Regression test: MultiInput's "#values" child is a plain Vertical,
+    # which defaults to height:1fr -- inside MultiInput's own height:auto,
+    # that resolves to a large chunk of free space even with zero rows,
+    # leaving a big blank gap before the next field.
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_collect_form(pilot, app)
+
+            from pytoolbox.tui.screens import MultiInput
+
+            screen = app.screen
+            items_widget = screen.entries[0][1]
+            assert isinstance(items_widget, MultiInput)
+            assert not items_widget.values
+
+            values_container = items_widget.query_one("#values")
+            assert values_container.size.height == 0
+
+    run(scenario())
+
+
+def test_multi_input_does_not_leave_a_large_gap_after_adding_a_value():
+    # Regression test: each added row is a plain Horizontal, which also
+    # defaults to height:1fr -- inside #values' own height:auto, a single
+    # row stretched to fill most of the screen instead of hugging its own
+    # (bordered-button) content height.
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_collect_form(pilot, app)
+
+            from pytoolbox.tui.screens import MultiInput
+
+            screen = app.screen
+            items_widget = screen.entries[0][1]
+            assert isinstance(items_widget, MultiInput)
+
+            entry = items_widget.query_one("#entry")
+            for value in ["a", "b"]:
+                entry.value = value
+                await pilot.pause()
+                await entry.action_submit()
+                await pilot.pause()
+
+            values_container = items_widget.query_one("#values")
+            rows = list(values_container.children)
+            assert len(rows) == 2
+            # Each row's height should come from its own content (the
+            # bordered "x" button is 3 rows tall), not stretch to fill
+            # whatever free space is left in the screen.
+            assert all(row.size.height == 3 for row in rows)
+            assert values_container.size.height == 6
 
     run(scenario())
 
