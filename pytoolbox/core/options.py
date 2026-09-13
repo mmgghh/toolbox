@@ -61,6 +61,21 @@ class AliasedGroup(click.Group):
         return command.name, command, rest
 
 
+class RsyncTargetType(click.ParamType):
+    """A local path, or an rsync-style remote target.
+
+    A no-op at the Click layer (values pass through unchanged) -- it exists
+    so ``pytoolbox.tui.fields`` can tell this apart from a plain string and
+    offer local *and* remote autocomplete, which a bare ``click.Path`` can't
+    describe since the value may point at either.
+    """
+
+    name = "target"
+
+    def convert(self, value: Any, param: Optional[click.Parameter], ctx: Optional[click.Context]) -> Any:
+        return value
+
+
 def version_option(func: F) -> F:
     """Add ``-V/--version`` printing the pytoolbox version."""
     return click.version_option(

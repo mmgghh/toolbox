@@ -10,6 +10,7 @@ from __future__ import annotations
 import click
 
 from pytoolbox.cli import toolbox
+from pytoolbox.core.options import RsyncTargetType
 from pytoolbox.tui.fields import (
     ChoiceField,
     CountField,
@@ -133,6 +134,28 @@ def test_plain_text_field_is_not_flagged_as_a_path():
     spec = build_field(param)
     assert isinstance(spec, TextField)
     assert spec.is_path is False
+
+
+def test_rsync_target_option_is_flagged_for_remote_autocomplete():
+    param = _option(["-d", "--destination"], type=RsyncTargetType())
+    spec = build_field(param)
+    assert isinstance(spec, TextField)
+    assert spec.is_remote_target is True
+    assert spec.is_path is False
+
+
+def test_rsync_target_multi_option_is_flagged_for_remote_autocomplete():
+    param = _option(["-s", "--source"], multiple=True, type=RsyncTargetType())
+    spec = build_field(param)
+    assert isinstance(spec, MultiField)
+    assert spec.is_remote_target is True
+
+
+def test_plain_multi_field_is_not_flagged_for_remote_autocomplete():
+    param = _option(["--tag"], multiple=True)
+    spec = build_field(param)
+    assert isinstance(spec, MultiField)
+    assert spec.is_remote_target is False
 
 
 def test_variadic_path_argument_is_a_path_flagged_multi_field():

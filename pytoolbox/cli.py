@@ -192,7 +192,7 @@ def doctor() -> None:
     for tool, purpose in (
         ("ssh", "pyssh tunnel / double-tunnel"),
         ("sshpass", "pyssh password authentication"),
-        ("rsync", "pyssh rsync-dir"),
+        ("rsync", "pyssh sync"),
         ("ping", "pynet ping (falls back to TCP probes)"),
         ("soffice", "pydocx2pdf (falls back to the Markdown pipeline)"),
         ("mmdc", "offline Mermaid rendering in pymd2pdf"),

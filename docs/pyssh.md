@@ -10,7 +10,7 @@ tunnel          SOCKS5 proxy through one remote server
 double-tunnel   SOCKS5 proxy to server 2, reached through server 1
 exec            Run a command on one host, or on every host with a tag
 clipboard       Relay clipboard text through a remote host
-rsync-dir       Copy a directory over SSH with rsync
+sync            Copy files or directories over SSH with rsync
 hosts           List the hosts pyssh can reach, and manage their tags
 secret          Passwords for hosts in your ~/.ssh/config
 keygen          Generate an SSH key
@@ -38,7 +38,7 @@ Or use the name of a host in your `~/.ssh/config`:
 
 ```shell
 pyssh tunnel -s mpars-bi -p 9998
-pyssh rsync-dir -s ./site -d mpars-bi:/srv/site
+pyssh sync -s ./site -d mpars-bi:/srv/site
 ```
 
 A value containing `@` is parsed as a spec; anything else is handed to ssh as a
@@ -296,26 +296,36 @@ name         | kind   | socks                    | server              | pids  |
 tunnel-9998  | tunnel | socks5://127.0.0.1:9998  | me@vps.example.com  | 40312 | 12m 3s
 ```
 
-## `rsync-dir`
+## `sync`
 
 Wraps `rsync -azP -e "ssh -p <port>"`.
 
 ```shell
-pyssh rsync-dir -s ./site -d me@vps:/srv/site -p 22
-pyssh rsync-dir -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
-pyssh rsync-dir -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
-pyssh rsync-dir -s ./site -d me@vps:/srv/site --mirror --dry-run
-pyssh rsync-dir -s me@vps:/srv/site -d ./backup --bwlimit 500k --no-compress
+pyssh sync -s ./site -d me@vps:/srv/site -p 22
+pyssh sync -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
+pyssh sync -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
+pyssh sync -s ./site -d me@vps:/srv/site --mirror --dry-run
+pyssh sync -s me@vps:/srv/site -d ./backup --bwlimit 500k --no-compress
+pyssh sync -s a.txt -s b.txt -s './photos/*.jpg' -d me@vps:/srv/
 ```
+
+`-s/--source` is repeatable and accepts files or directories, so several can
+be transferred to one destination in a single rsync invocation. A local
+source containing `*`, `?` or `[` is expanded with Python's own glob before
+rsync runs (quote it, so your shell doesn't expand it first) — a glob source
+matching nothing is an error rather than a silent no-op. A remote source's
+glob (`me@vps:/srv/*.jpg`) is left untouched; rsync and the remote shell
+resolve that themselves.
 
 Either side may be `user@host:/path`, and — unlike plain rsync — also
 `user:password@host:/path`, which routes through `sshpass` exactly as the
-tunnel commands do. Only one side may carry a password; rsync opens a single
-SSH connection.
+tunnel commands do. Only one of the sources or the destination may carry a
+password, and all sources plus the destination must point at the same host;
+rsync opens a single SSH connection.
 
-**Host keys.** When a password is used — inline or stored — `rsync-dir`
-refuses to connect to a host that is not already in `~/.ssh/known_hosts`, and
-prints the command that fixes it. Key authentication is unaffected.
+**Host keys.** When a password is used — inline or stored — `sync` refuses
+to connect to a host that is not already in `~/.ssh/known_hosts`, and prints
+the command that fixes it. Key authentication is unaffected.
 
 ### Patterns
 
@@ -344,7 +354,7 @@ reason, a regex-shaped pattern is rejected with a suggestion rather than
 transferring zero files:
 
 ```console
-$ pyssh rsync-dir -s ./site -d ./backup -e '.*\.log$'
+$ pyssh sync -s ./site -d ./backup -e '.*\.log$'
 Error: '.*\.log$' looks like a regex. rsync matches shell globs, so this would
 silently match nothing -- did you mean '*.log'? Pass --raw-patterns to send it
 through unchanged.

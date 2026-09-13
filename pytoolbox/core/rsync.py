@@ -32,7 +32,7 @@ class RsyncOptions:
     ``match``, so this stays free of I/O.
     """
 
-    source: str
+    sources: tuple[str, ...]
     destination: str
     ssh_command: str
 
@@ -272,5 +272,5 @@ def build_rsync_command(options: RsyncOptions) -> list[str]:
     if options.files_from:
         cmd.append(f"--files-from={options.files_from}")
     cmd += _filter_rules(options)
-    cmd += [options.source, options.destination]
+    cmd += [*options.sources, options.destination]
     return cmd

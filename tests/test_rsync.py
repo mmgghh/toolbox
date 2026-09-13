@@ -16,7 +16,7 @@ from pytoolbox.core import rsync
 
 def options(**kwargs) -> rsync.RsyncOptions:
     """An options object with the two required fields filled in."""
-    kwargs.setdefault("source", "./site")
+    kwargs.setdefault("sources", ("./site",))
     kwargs.setdefault("destination", "me@host:/srv/site")
     kwargs.setdefault("ssh_command", "ssh -p 22")
     return rsync.RsyncOptions(**kwargs)
@@ -186,6 +186,11 @@ def test_transport_and_size_flags_pass_through():
 def test_ssh_command_is_a_single_argument():
     cmd = rsync.build_rsync_command(options(ssh_command="ssh -p 2222 -i '/my key'"))
     assert cmd[index(cmd, "-e") + 1] == "ssh -p 2222 -i '/my key'"
+
+
+def test_multiple_sources_all_precede_the_destination():
+    cmd = rsync.build_rsync_command(options(sources=("a.txt", "b.txt", "./site")))
+    assert cmd[-4:] == ["a.txt", "b.txt", "./site", "me@host:/srv/site"]
 
 
 def test_files_from_is_passed_through():

@@ -8,6 +8,7 @@ and removed when the command exits.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -28,6 +29,7 @@ from pytoolbox.core import clipboard, console, paths, rsync
 from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
+    RsyncTargetType,
     dry_run_option,
     json_option,
     verbose_option,
@@ -505,7 +507,7 @@ def ssh_management() -> None:
       pyssh tunnel -s user@vps.example.com -p 9998
       pyssh tunnel --server-conf ~/.config/pytoolbox/vps.conf --reconnect
       pyssh double-tunnel --server1 me@bridge:22 --server2 me@target:22
-      pyssh rsync-dir -s ./site -d me@vps:/srv/site -p 22 --dry-run
+      pyssh sync -s ./site -d me@vps:/srv/site -p 22 --dry-run
       pyssh status
       pyssh stop --all
     """
@@ -868,6 +870,26 @@ def split_rsync_target(spec: str) -> tuple[str, Optional[str]]:
 RSYNC_HOST_RE = re.compile(r"^(?:(?P<user>[^@:/]+)(?::[^@]*)?@)?(?P<host>[^@:/]+):(?!/{2})")
 
 
+#: Characters that make a source a glob rather than a literal path.
+_GLOB_CHARS_RE = re.compile(r"[*?[]")
+
+
+def _expand_local_glob(spec: str) -> list[str]:
+    """Expand a local glob source to the paths it matches.
+
+    A remote spec is left untouched -- rsync (or the remote shell) resolves
+    those, not a local `glob.glob`. A literal path with no glob metacharacters
+    is also left untouched, even if it doesn't exist: rsync gives a clearer
+    error about that than pyssh would.
+    """
+    if rsync_host_of(spec) is not None or not _GLOB_CHARS_RE.search(spec):
+        return [spec]
+    matches = sorted(glob.glob(os.path.expanduser(spec)))
+    if not matches:
+        raise click.ClickException(f"{spec!r} matched no files.")
+    return matches
+
+
 def rsync_host_of(spec: str) -> Optional[str]:
     """The host an rsync target refers to, or ``None`` for a local path.
 
@@ -888,7 +910,7 @@ def _rsync_ssh_command(
     for option in ssh_options:
         parts += ["-o", option]
     if password:
-        # The caller has already checked known_hosts (see rsync_dir), so a
+        # The caller has already checked known_hosts (see sync), so a
         # mismatch here is refused rather than silently trusted on first contact.
         parts += ["-o", "StrictHostKeyChecking=yes"]
     return shlex.join(parts)
@@ -911,20 +933,23 @@ def _run_rsync(cmd: list[str], password: Optional[str], verbose: int) -> None:
         raise click.ClickException(f"rsync exited with code {result.returncode}.")
 
 
-@ssh_management.command("rsync-dir", epilog=RSYNC_EPILOG)
+@ssh_management.command("sync", epilog=RSYNC_EPILOG)
 @click.option(
     "-s",
     "--source",
     required=True,
-    prompt=True,
-    help="Local path, or 'user[:password]@host:/remote/path', or a bare "
-    "'~/.ssh/config' host name as 'host:/remote/path'.",
+    multiple=True,
+    type=RsyncTargetType(),
+    help="Local path or glob, or 'user[:password]@host:/remote/path', or a bare "
+    "'~/.ssh/config' host name as 'host:/remote/path'. Repeatable, to transfer "
+    "several files or directories to one destination.",
 )
 @click.option(
     "-d",
     "--destination",
     required=True,
     prompt=True,
+    type=RsyncTargetType(),
     help="Local path, or 'user[:password]@host:/remote/path', or a bare "
     "'~/.ssh/config' host name as 'host:/remote/path'.",
 )
@@ -1056,8 +1081,8 @@ def _run_rsync(cmd: list[str], password: Optional[str], verbose: int) -> None:
 @dry_run_option
 @yes_option
 @verbose_option
-def rsync_dir(
-    source: str,
+def sync(
+    source: tuple[str, ...],
     destination: str,
     match: tuple[str, ...],
     exclude: tuple[str, ...],
@@ -1086,7 +1111,7 @@ def rsync_dir(
     assume_yes: bool,
     verbose: int,
 ) -> None:
-    """Copy a directory over SSH with rsync.
+    """Copy files or directories over SSH with rsync.
 
     \b
     Wraps `rsync -azP -e "ssh -p <port>"`. Arguments are passed to rsync
@@ -1095,24 +1120,48 @@ def rsync_dir(
 
     \b
     Examples:
-      pyssh rsync-dir -s ./site -d me@vps:/srv/site -p 22
-      pyssh rsync-dir -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
-      pyssh rsync-dir -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
-      pyssh rsync-dir -s ./site -d me@vps:/srv/site --mirror --dry-run
-      pyssh rsync-dir -s me@vps:/srv/site -d ./backup --bwlimit 500k
+      pyssh sync -s ./site -d me@vps:/srv/site -p 22
+      pyssh sync -s ./photos -d me@vps:/srv/pics --match '*.{jpg,png}'
+      pyssh sync -s ./repo -d me@vps:/srv/repo --gitignore -e '.git'
+      pyssh sync -s ./site -d me@vps:/srv/site --mirror --dry-run
+      pyssh sync -s me@vps:/srv/site -d ./backup --bwlimit 500k
+      pyssh sync -s a.txt -s b.txt -s './photos/*.jpg' -d me@vps:/srv/
     """
     _require("rsync", "Install rsync (Termux: `pkg install rsync`).")
 
-    source, source_password = split_rsync_target(source)
+    resolved_sources: list[str] = []
+    password: Optional[str] = None
+    password_target: Optional[str] = None
+    for spec in source:
+        target, spec_password = split_rsync_target(spec)
+        if spec_password:
+            if password:
+                raise click.ClickException(
+                    "Only one side can carry a password; rsync opens a single SSH connection."
+                )
+            password = spec_password
+            password_target = target
+        resolved_sources.extend(_expand_local_glob(target))
+
     destination, destination_password = split_rsync_target(destination)
-    if source_password and destination_password:
+    if destination_password:
+        if password:
+            raise click.ClickException(
+                "Only one side can carry a password; rsync opens a single SSH connection."
+            )
+        password = destination_password
+        password_target = destination
+
+    hosts_seen = {host for host in (rsync_host_of(s) for s in (*resolved_sources, destination)) if host}
+    if len(hosts_seen) > 1:
         raise click.ClickException(
-            "Only one side can carry a password; rsync opens a single SSH connection."
+            f"Sources and destination point at different hosts ({', '.join(sorted(hosts_seen))}); "
+            "rsync opens a single SSH connection."
         )
-    password = source_password or destination_password
-    password_host = rsync_host_of(source if source_password else destination) if password else None
+
+    password_host = rsync_host_of(password_target) if password_target else None
     if password is None:
-        for spec in (source, destination):
+        for spec in (*resolved_sources, destination):
             host = rsync_host_of(spec)
             if host and "@" not in spec.split(":", 1)[0]:
                 password = store.get_secret(host)
@@ -1129,7 +1178,7 @@ def rsync_dir(
         match = (*match, *rsync.read_pattern_file(Path(match_from)))
 
     plan = rsync.RsyncOptions(
-        source=source,
+        sources=tuple(resolved_sources),
         destination=destination,
         ssh_command=_rsync_ssh_command(ssh_port, identity, ssh_options, password),
         ignore_existing=ignore_existing,

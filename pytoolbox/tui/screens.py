@@ -27,6 +27,7 @@ from pytoolbox.tui.fields import (
     render_tokens,
 )
 from pytoolbox.tui.paths import PathInput
+from pytoolbox.tui.rsync_paths import RsyncTargetInput
 
 # How long a typed digit sequence waits for another digit before it fires,
 # so "1" then "2" resolves to item 12 instead of jumping to item 1 first.
@@ -197,7 +198,9 @@ class MultiInput(Widget):
 
     def compose(self) -> ComposeResult:
         yield Label(self.spec.label)
-        if self.spec.is_path:
+        if self.spec.is_remote_target:
+            yield RsyncTargetInput(placeholder="value, Enter to add", id="entry")
+        elif self.spec.is_path:
             yield PathInput(dirs_only=self.spec.dirs_only, placeholder="value, Enter to add", id="entry")
         else:
             yield Input(placeholder="value, Enter to add", id="entry")
@@ -309,6 +312,8 @@ class FormScreen(Screen):
 
 def _widget_for(spec):
     if isinstance(spec, TextField):
+        if spec.is_remote_target:
+            return RsyncTargetInput(value=spec.default, placeholder=spec.label, password=spec.password)
         if spec.is_path:
             return PathInput(dirs_only=spec.dirs_only, value=spec.default, placeholder=spec.label, password=spec.password)
         return Input(value=spec.default, placeholder=spec.label, password=spec.password)

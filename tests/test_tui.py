@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("textual", reason="TUI is an optional extra")
 
+from pytoolbox.core.options import RsyncTargetType  # noqa: E402
 from pytoolbox.tui.app import ToolboxApp, _invoke  # noqa: E402
 from pytoolbox.tui.screens import NUMBER_ENTRY_DELAY, BrowseScreen, FormScreen  # noqa: E402
 
@@ -55,6 +56,12 @@ def files() -> None:
 @click.option("--dir", "directory", type=click.Path(), help="Where to look.")
 def locate(directory) -> None:
     click.echo(f"dir={directory}")
+
+
+@files.command()
+@click.option("-s", "--source", multiple=True, type=RsyncTargetType(), help="Where to copy from.")
+def transfer(source) -> None:
+    click.echo(f"source={list(source)}")
 
 
 @fake_root.group()
@@ -450,6 +457,41 @@ async def _open_locate_form(pilot, app):
     option_list.focus()
     await pilot.press("enter")
     await pilot.pause()
+
+
+async def _open_transfer_form(pilot, app):
+    from textual.widgets import OptionList
+
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("files")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+    option_list = app.screen.query_one("#commands", OptionList)
+    index = app.screen._names.index("transfer")
+    option_list.highlighted = index
+    option_list.focus()
+    await pilot.press("enter")
+    await pilot.pause()
+
+
+def test_rsync_target_multi_field_uses_rsync_target_input():
+    async def scenario():
+        app = ToolboxApp(fake_root)
+        async with app.run_test() as pilot:
+            await _mount_root_browse(pilot)
+            await _open_transfer_form(pilot, app)
+
+            from pytoolbox.tui.rsync_paths import RsyncTargetInput
+            from pytoolbox.tui.screens import MultiInput
+
+            screen = app.screen
+            source_widget = screen.entries[0][1]
+            assert isinstance(source_widget, MultiInput)
+            assert source_widget.query_one(RsyncTargetInput) is not None
+
+    run(scenario())
 
 
 def test_path_field_uses_path_input(tmp_path, monkeypatch):

@@ -15,6 +15,8 @@ from typing import Optional, Union
 
 import click
 
+from pytoolbox.core.options import RsyncTargetType
+
 try:
     from click.core import UNSET as _CLICK_UNSET
 except ImportError:  # Click <8.4 has no UNSET sentinel -- "no default" is None/().
@@ -41,6 +43,7 @@ class TextField:
     password: bool = False
     is_path: bool = False  # Click type is click.Path/click.File -- offer path autocomplete
     dirs_only: bool = False  # click.Path(file_okay=False) -- only suggest directories
+    is_remote_target: bool = False  # Click type is RsyncTargetType -- offer local+remote autocomplete
 
 
 @dataclass
@@ -72,6 +75,7 @@ class MultiField:
     opt: Optional[str]  # None for a variadic (nargs=-1) argument
     is_path: bool = False
     dirs_only: bool = False
+    is_remote_target: bool = False
 
 
 FieldSpec = Union[TextField, ChoiceField, FlagField, CountField, MultiField]
@@ -88,7 +92,13 @@ def _build_argument_field(param: click.Argument) -> FieldSpec:
     label = param.human_readable_name
     if param.nargs == -1:
         is_path, dirs_only = _path_hint(param.type)
-        return MultiField(label=label, opt=None, is_path=is_path, dirs_only=dirs_only)
+        return MultiField(
+            label=label,
+            opt=None,
+            is_path=is_path,
+            dirs_only=dirs_only,
+            is_remote_target=_is_remote_target(param.type),
+        )
 
     choices = getattr(param.type, "choices", None)
     default = _default_str(param.default)
@@ -96,7 +106,13 @@ def _build_argument_field(param: click.Argument) -> FieldSpec:
         return ChoiceField(label=label, opt=None, choices=list(choices), default=default)
     is_path, dirs_only = _path_hint(param.type)
     return TextField(
-        label=label, opt=None, default=default or "", required=param.required, is_path=is_path, dirs_only=dirs_only
+        label=label,
+        opt=None,
+        default=default or "",
+        required=param.required,
+        is_path=is_path,
+        dirs_only=dirs_only,
+        is_remote_target=_is_remote_target(param.type),
     )
 
 
@@ -118,7 +134,13 @@ def _build_option_field(param: click.Option) -> Optional[FieldSpec]:
 
     if param.multiple:
         is_path, dirs_only = _path_hint(param.type)
-        return MultiField(label=label, opt=opt, is_path=is_path, dirs_only=dirs_only)
+        return MultiField(
+            label=label,
+            opt=opt,
+            is_path=is_path,
+            dirs_only=dirs_only,
+            is_remote_target=_is_remote_target(param.type),
+        )
 
     choices = getattr(param.type, "choices", None)
     default = _default_str(param.default)
@@ -134,6 +156,7 @@ def _build_option_field(param: click.Option) -> Optional[FieldSpec]:
         password=bool(getattr(param, "hide_input", False)),
         is_path=is_path,
         dirs_only=dirs_only,
+        is_remote_target=_is_remote_target(param.type),
     )
 
 
@@ -144,6 +167,11 @@ def _path_hint(param_type) -> tuple:
     if isinstance(param_type, click.File):
         return True, False
     return False, False
+
+
+def _is_remote_target(param_type) -> bool:
+    """Whether a Click parameter's type is `RsyncTargetType`."""
+    return isinstance(param_type, RsyncTargetType)
 
 
 def _preferred_opt(opts: Sequence[str]) -> str:
