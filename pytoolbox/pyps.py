@@ -12,6 +12,7 @@ import os
 import pwd
 import shutil
 import signal as signal_module
+import socket
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
+from pytoolbox.pynet import parse_ports
 
 PROC = Path("/proc")
 
@@ -292,6 +294,145 @@ def parse_signal(value: str) -> int:
         raise click.ClickException(f"Unknown signal: {value!r}") from exc
 
 
+def _decode_hex_address(hex_addr: str) -> str:
+    """Decode a ``/proc/net/{tcp,udp}[6]`` local-address field into a normal IP string.
+
+    The kernel prints the address as a hex integer in host byte order, so on
+    the little-endian machines pytoolbox actually runs on, each 4-byte word
+    comes out byte-reversed compared to network order.
+    """
+    raw = bytes.fromhex(hex_addr)
+    if len(raw) == 4:
+        return socket.inet_ntop(socket.AF_INET, raw[::-1])
+    words = [raw[i : i + 4][::-1] for i in range(0, len(raw), 4)]
+    return socket.inet_ntop(socket.AF_INET6, b"".join(words))
+
+
+#: TCP connection states, from ``include/net/tcp_states.h``. UDP sockets
+#: carry no equivalent -- ``0x07`` just means "bound" -- so callers only
+#: consult this for ``protocol == "tcp"``.
+TCP_STATES = {
+    "01": "ESTABLISHED", "02": "SYN_SENT", "03": "SYN_RECV", "04": "FIN_WAIT1",
+    "05": "FIN_WAIT2", "06": "TIME_WAIT", "07": "CLOSE", "08": "CLOSE_WAIT",
+    "09": "LAST_ACK", "0A": "LISTEN", "0B": "CLOSING",
+}
+
+
+def _parse_net_line(line: str, protocol: str) -> Optional[tuple[str, int, str, str]]:
+    """Parse one data row of ``/proc/net/{tcp,udp}[6]`` into ``(address, port, state, inode)``.
+
+    Returns ``None`` for the header row or anything else that fails to parse.
+    """
+    fields = line.split()
+    if len(fields) < 10:
+        return None
+    addr_hex, _, port_hex = fields[1].partition(":")
+    try:
+        address = _decode_hex_address(addr_hex)
+        port = int(port_hex, 16)
+    except ValueError:
+        return None
+    state = TCP_STATES.get(fields[3], fields[3]) if protocol == "tcp" else ""
+    inode = fields[9]
+    return address, port, state, inode
+
+
+def _build_inode_pid_map() -> dict[str, list[int]]:
+    """Map socket inode -> PIDs of processes holding an open fd on it.
+
+    Walks ``/proc/<pid>/fd``; a PID we cannot read (another user's, or one
+    that exited mid-scan) is silently skipped, the same way ``lsof``/``ss``
+    degrade without root instead of erroring out.
+    """
+    mapping: dict[str, list[int]] = {}
+    for entry in PROC.iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        try:
+            fds = list((entry / "fd").iterdir())
+        except (FileNotFoundError, PermissionError):
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                mapping.setdefault(target[8:-1], []).append(pid)
+    return mapping
+
+
+@dataclass
+class PortInfo:
+    """One local TCP/UDP socket, with the PID(s) bound to it."""
+
+    protocol: str
+    address: str
+    port: int
+    state: str
+    pids: list[int]
+
+    def process_name(self) -> str:
+        """Comma-joined distinct process names for :attr:`pids`, ``""`` if none resolved."""
+        names: list[str] = []
+        for pid in self.pids:
+            try:
+                name = read_status(pid).get("Name", "")
+            except (FileNotFoundError, PermissionError):
+                continue
+            if name and name not in names:
+                names.append(name)
+        return ", ".join(names)
+
+    def as_row(self) -> dict:
+        """Row form used by table/JSON output."""
+        return {
+            "proto": self.protocol,
+            "address": self.address,
+            "port": self.port,
+            "state": self.state or "-",
+            "pid": ", ".join(str(p) for p in self.pids) if self.pids else "-",
+            "process": self.process_name() or "-",
+        }
+
+
+#: ``/proc/net`` files scanned for local sockets, paired with their protocol label.
+NET_FILES = (
+    ("tcp", "net/tcp"),
+    ("tcp", "net/tcp6"),
+    ("udp", "net/udp"),
+    ("udp", "net/udp6"),
+)
+
+PORT_HEADERS = ["proto", "address", "port", "state", "pid", "process"]
+
+
+def list_ports(listen_only: bool = True) -> list[PortInfo]:
+    """Every local TCP/UDP socket, with the PID(s) bound to it.
+
+    TCP sockets are limited to ``LISTEN`` state by default -- UDP has no such
+    state, so its entries (all effectively "bound") are always included.
+    Pass ``listen_only=False`` to also see established/other-state TCP.
+    """
+    inode_pids = _build_inode_pid_map()
+    entries = []
+    for protocol, relative_path in NET_FILES:
+        try:
+            lines = (PROC / relative_path).read_text().splitlines()[1:]
+        except FileNotFoundError:
+            continue
+        for line in lines:
+            parsed = _parse_net_line(line, protocol)
+            if parsed is None:
+                continue
+            address, port, state, inode = parsed
+            if protocol == "tcp" and listen_only and state != "LISTEN":
+                continue
+            entries.append(PortInfo(protocol, address, port, state, inode_pids.get(inode, [])))
+    return sorted(entries, key=lambda e: (e.port, e.protocol, e.address))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # CLI
 # ═══════════════════════════════════════════════════════════════════
@@ -300,7 +441,7 @@ def parse_signal(value: str) -> int:
 @click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
 @version_option
 def ps_cli() -> None:
-    """Process and memory management: top, search, kill, mem/swap usage.
+    """Process and memory management: top, search, kill, ports, mem/swap usage.
 
     \b
     Examples:
@@ -308,7 +449,10 @@ def ps_cli() -> None:
       pyps top --sort swap
       pyps find chrome
       pyps kill firefox
+      pyps kill --port 3000
       pyps info chrome
+      pyps ports
+      pyps ports 8080
       pyps free
       pyps swap
       pyps swapoff /swapfile
@@ -387,7 +531,8 @@ def find(pattern: str, exact: bool, match_cmdline: bool, sort_by: str, as_json: 
 
 
 @ps_cli.command()
-@click.argument("target")
+@click.argument("target", required=False)
+@click.option("--port", "port", type=int, default=None, help="Kill whatever is listening on this port instead of TARGET.")
 @click.option("--exact", is_flag=True, help="Match the process name exactly instead of a substring.")
 @click.option(
     "--cmdline", "match_cmdline", is_flag=True,
@@ -401,7 +546,8 @@ def find(pattern: str, exact: bool, match_cmdline: bool, sort_by: str, as_json: 
 @yes_option
 @dry_run_option
 def kill(
-    target: str,
+    target: Optional[str],
+    port: Optional[int],
     exact: bool,
     match_cmdline: bool,
     signal_name: str,
@@ -409,13 +555,14 @@ def kill(
     assume_yes: bool,
     dry_run: bool,
 ) -> None:
-    """Kill processes by PID or by name/part of a name (TARGET).
+    """Kill processes by PID, by name/part of a name (TARGET), or by --port.
 
     \b
     A purely numeric TARGET is treated as a PID; anything else is matched
     case-insensitively against the process name (and, with --cmdline, the
-    full command line too). Every match is listed and confirmed before
-    anything is signalled, unless -y is given.
+    full command line too). --port kills whatever is bound to that port
+    instead of TARGET. Every match is listed and confirmed before anything
+    is signalled, unless -y is given.
 
     \b
     Examples:
@@ -423,15 +570,25 @@ def kill(
       pyps kill firefox
       pyps kill -f chrome --cmdline
       pyps kill node --exact -y
+      pyps kill --port 3000
     """
     require_proc()
+    if (target is None) == (port is None):
+        raise click.ClickException("Give a PID/name or --port, not both or neither.")
+    if port is not None and (exact or match_cmdline):
+        raise click.ClickException("--exact and --cmdline apply to TARGET, not --port.")
     signal_number = parse_signal("KILL" if force else signal_name)
     processes = list_processes()
 
+    if port is not None:
+        pids = {pid for entry in list_ports() if entry.port == port for pid in entry.pids}
+        matches = [p for p in processes if p.pid in pids]
+        if not matches:
+            raise click.ClickException(f"No process is using port {port}.")
     # isascii() too: a PID is always plain ASCII, and a digit-like character
     # isdigit() accepts but int() can't parse (e.g. a superscript) would
     # otherwise crash here instead of falling through to the name match.
-    if target.isascii() and target.isdigit():
+    elif target.isascii() and target.isdigit():
         pid = int(target)
         matches = [p for p in processes if p.pid == pid]
         if not matches:
@@ -535,6 +692,79 @@ def info(target: str, exact: bool, match_cmdline: bool, as_json: bool) -> None:
         if key in ("cpu_percent", "mem_percent"):
             value = f"{value}%"
         console.result(f"{key:<12} {value}")
+
+
+@ps_cli.command()
+@click.argument("target_ports", metavar="PORTS", nargs=-1)
+@click.option("--tcp", "tcp_only", is_flag=True, help="Only show TCP sockets.")
+@click.option("--udp", "udp_only", is_flag=True, help="Only show UDP sockets.")
+@click.option("-p", "--pid", "pid_filter", type=int, default=None, help="Only show sockets owned by this PID.")
+@click.option(
+    "--process", "process_filter", default=None,
+    help="Only show sockets whose owning process name contains this text.",
+)
+@click.option(
+    "--all", "show_all", is_flag=True,
+    help="Also show non-listening TCP sockets (established, time-wait, ...).",
+)
+@json_option
+def ports(
+    target_ports: tuple[str, ...],
+    tcp_only: bool,
+    udp_only: bool,
+    pid_filter: Optional[int],
+    process_filter: Optional[str],
+    show_all: bool,
+    as_json: bool,
+) -> None:
+    """List local ports and the process using each one.
+
+    \b
+    With PORTS given (same "80,443,8000-8010" syntax as `pynet port`), only
+    those ports are shown, each marked "not in use" if nothing is bound to
+    it -- this doubles as a check for whether a port is free. Sockets owned
+    by another user show `-` for pid/process unless you run as that user or
+    root.
+
+    \b
+    Examples:
+      pyps ports
+      pyps ports 8080
+      pyps ports 80 443 8000-8010
+      pyps ports --tcp -p 1234
+      pyps ports --process nginx
+    """
+    require_proc()
+    if tcp_only and udp_only:
+        raise click.ClickException("--tcp and --udp are mutually exclusive.")
+    wanted = set(parse_ports(",".join(target_ports))) if target_ports else None
+
+    entries = list_ports(listen_only=not show_all)
+    if tcp_only:
+        entries = [e for e in entries if e.protocol == "tcp"]
+    if udp_only:
+        entries = [e for e in entries if e.protocol == "udp"]
+    if pid_filter is not None:
+        entries = [e for e in entries if pid_filter in e.pids]
+    if process_filter:
+        needle = process_filter.lower()
+        entries = [e for e in entries if needle in e.process_name().lower()]
+    if wanted is not None:
+        entries = [e for e in entries if e.port in wanted]
+
+    rows = [e.as_row() for e in entries]
+    if wanted is not None:
+        found_ports = {e.port for e in entries}
+        for missing_port in sorted(wanted - found_ports):
+            rows.append(
+                {"proto": "-", "address": "-", "port": missing_port, "state": "not in use", "pid": "-", "process": "-"}
+            )
+        rows.sort(key=lambda row: row["port"])
+
+    console.print_rows(rows, PORT_HEADERS, as_json=as_json)
+
+    if wanted is not None and not as_json and not entries:
+        raise SystemExit(1)
 
 
 @ps_cli.command()

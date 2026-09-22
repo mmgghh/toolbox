@@ -5,18 +5,19 @@ Also available as `toolbox ps`.
 ```
 top      List processes, highest memory (or swap/cpu) first
 find     Search running processes by name (or full command line)
-kill     Kill processes by PID or by name/part of a name
+kill     Kill processes by PID, by name/part of a name, or by port
 info     Show full detail for one process, or a picker table if a name is ambiguous
+ports    List local ports and the process using each one
 free     Show system-wide memory and swap usage, like `free -h`
 swap     List active swap partitions/files, like `swapon --show`
 swapon   Enable swap
 swapoff  Disable swap
 ```
 
-Everything reads `/proc` directly instead of shelling out to `ps`, `free` or
-`pkill`, since Termux's busybox userland supports fewer flags than GNU
-coreutils. Needs Linux or Termux (anything with `/proc`); `top`, `find`,
-`kill`, `info` and `swap` all accept `--json`.
+Everything reads `/proc` directly instead of shelling out to `ps`, `free`,
+`pkill`, `lsof` or `netstat`, since Termux's busybox userland supports fewer
+flags than GNU coreutils. Needs Linux or Termux (anything with `/proc`);
+`top`, `find`, `kill`, `info`, `ports` and `swap` all accept `--json`.
 
 ---
 
@@ -89,15 +90,44 @@ pyps kill 12345
 pyps kill firefox
 pyps kill -f chrome --cmdline
 pyps kill node --exact -y
+pyps kill --port 3000
 ```
 
 `TARGET` is a PID when it's purely numeric, otherwise a name pattern with the
-same matching rules as `find` (`--exact`, `--cmdline`). Every match is listed
-and confirmed before anything is signalled — pass `-y/--yes` to skip the
-prompt, or `-n/--dry-run` to only see what would be hit. `-s/--signal` picks
-the signal by name or number (default `TERM`); `-f/--force` is shorthand for
-`--signal KILL`. `pyps` itself is never a match, so a broad pattern can't
-kill the command running it.
+same matching rules as `find` (`--exact`, `--cmdline`). `--port` kills
+whatever is bound to that port instead — give one or the other, not both.
+Every match is listed and confirmed before anything is signalled — pass
+`-y/--yes` to skip the prompt, or `-n/--dry-run` to only see what would be
+hit. `-s/--signal` picks the signal by name or number (default `TERM`);
+`-f/--force` is shorthand for `--signal KILL`. `pyps` itself is never a
+match, so a broad pattern can't kill the command running it.
+
+## `ports`
+
+```shell
+pyps ports
+pyps ports 8080
+pyps ports 80 443 8000-8010
+pyps ports --tcp -p 1234
+pyps ports --process nginx
+```
+
+Lists local TCP/UDP sockets — by default, TCP sockets in `LISTEN` state plus
+every UDP socket (UDP has no listen state; a bound one is already "in use").
+Pass `--all` to also see established/other-state TCP connections. `--tcp`/
+`--udp` narrow by protocol, `-p/--pid` by owning PID, `--process TEXT` by a
+substring of the owning process's name.
+
+Give one or more `PORTS` (same `80,443,8000-8010` syntax as `pynet port`) to
+check whether specific ports are in use: each shows either its real entry or
+a `not in use` row, and the exit status is nonzero if none of the given ports
+are in use — so `pyps ports 8080 >/dev/null || echo free` works in scripts.
+
+A socket owned by another user shows `-` for pid/process instead of erroring,
+the same way `lsof`/`ss` degrade without root. A single socket can be bound
+by more than one process (e.g. a preforked server's master and workers), so
+unlike `top`/`find`/`info`, `--json`'s `pid` field here is a string — `-`,
+one PID, or a comma-joined list.
 
 ## `info`
 
