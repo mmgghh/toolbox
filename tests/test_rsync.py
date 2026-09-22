@@ -193,6 +193,14 @@ def test_multiple_sources_all_precede_the_destination():
     assert cmd[-4:] == ["a.txt", "b.txt", "./site", "me@host:/srv/site"]
 
 
+def test_dash_prefixed_source_cannot_smuggle_an_rsync_flag():
+    # A glob match (or a raw --source value) that starts with "-" must stay
+    # a literal path, not get parsed as an rsync option.
+    cmd = rsync.build_rsync_command(options(sources=("--rsync-path=sh -c evil",)))
+    assert cmd[cmd.index("--") + 1] == "--rsync-path=sh -c evil"
+    assert cmd.count("--rsync-path=sh -c evil") == 1
+
+
 def test_files_from_is_passed_through():
     cmd = rsync.build_rsync_command(options(files_from="/tmp/list.txt"))
     assert "--files-from=/tmp/list.txt" in cmd

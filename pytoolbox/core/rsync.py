@@ -272,5 +272,8 @@ def build_rsync_command(options: RsyncOptions) -> list[str]:
     if options.files_from:
         cmd.append(f"--files-from={options.files_from}")
     cmd += _filter_rules(options)
-    cmd += [*options.sources, options.destination]
+    # "--" stops option parsing, so a source/destination that starts with
+    # "-" (a glob match on an attacker-planted filename, say) is taken as a
+    # literal path instead of smuggled in as an rsync flag.
+    cmd += ["--", *options.sources, options.destination]
     return cmd
