@@ -403,3 +403,162 @@ def test_import_rejects_symlink_members(tmp_path, runner):
 
     assert result.exit_code != 0
     assert "symlink" in result.output.lower()
+
+
+# ── sync ─────────────────────────────────────────────────────────────
+
+
+def _make_sync_store(tmp_path):
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "alice@example.com.gpg").write_bytes(b"fake-gpg-bytes")
+    return store
+
+
+@pytest.fixture
+def fake_rsync(monkeypatch):
+    """Capture every rsync argument list `pypass sync` would run."""
+    calls = []
+
+    class FakeResult:
+        returncode = 0
+
+    def fake_run(cmd, check=False):
+        calls.append(cmd)
+        return FakeResult()
+
+    monkeypatch.setattr("pytoolbox.pypass.shutil.which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr("pytoolbox.pyssh.subprocess.run", fake_run)
+    return calls
+
+
+def test_sync_two_way_runs_pull_then_push(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host"])
+
+    assert result.exit_code == 0, result.output
+    assert len(fake_rsync) == 2
+    pull_cmd, push_cmd = fake_rsync
+    assert pull_cmd[-2:] == ["me@host:~/.password-store/", str(store)]
+    assert push_cmd[-2:] == [f"{store}/", "me@host:~/.password-store"]
+
+
+def test_sync_push_only(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push"])
+
+    assert result.exit_code == 0, result.output
+    assert len(fake_rsync) == 1
+    assert fake_rsync[0][-2:] == [f"{store}/", "me@host:~/.password-store"]
+
+
+def test_sync_pull_only(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--pull"])
+
+    assert result.exit_code == 0, result.output
+    assert len(fake_rsync) == 1
+    assert fake_rsync[0][-2:] == ["me@host:~/.password-store/", str(store)]
+
+
+def test_sync_rejects_push_and_pull_together(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push", "--pull"])
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert fake_rsync == []
+
+
+def test_sync_delete_requires_a_direction(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--delete"])
+
+    assert result.exit_code != 0
+    assert "--push or --pull" in result.output
+    assert fake_rsync == []
+
+
+def test_sync_push_requires_a_local_store(tmp_path, monkeypatch, runner, fake_rsync):
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(tmp_path / "nope"))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push"])
+
+    assert result.exit_code != 0
+    assert "No password store" in result.output
+    assert fake_rsync == []
+
+
+def test_sync_excludes_git(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push"])
+
+    assert result.exit_code == 0, result.output
+    assert "--exclude" in fake_rsync[0]
+    assert ".git" in fake_rsync[0]
+
+
+def test_sync_uses_checksum_comparison(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push"])
+
+    assert result.exit_code == 0, result.output
+    assert "--checksum" in fake_rsync[0]
+
+
+def test_sync_custom_remote_store(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(
+        pass_cli, ["sync", "me@host", "--push", "--remote-store", "/data/pass"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fake_rsync[0][-1] == "me@host:/data/pass"
+
+
+def test_sync_will_not_delete_without_confirmation(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push", "--delete"])
+
+    assert result.exit_code != 0
+    assert fake_rsync == []
+
+
+def test_sync_deletes_when_confirmed(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(pass_cli, ["sync", "me@host", "--push", "--delete", "-y"])
+
+    assert result.exit_code == 0, result.output
+    assert "--delete" in fake_rsync[0]
+
+
+def test_sync_dry_run_does_not_prompt(tmp_path, monkeypatch, runner, fake_rsync):
+    store = _make_sync_store(tmp_path)
+    monkeypatch.setenv("PASSWORD_STORE_DIR", str(store))
+
+    result = runner.invoke(
+        pass_cli, ["sync", "me@host", "--push", "--delete", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--dry-run" in fake_rsync[0]

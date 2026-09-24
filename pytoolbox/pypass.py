@@ -22,7 +22,9 @@ from typing import Optional
 
 import click
 
+from pytoolbox import pyssh
 from pytoolbox.core import console
+from pytoolbox.core import rsync as rsync_core
 from pytoolbox.core.options import (
     CONTEXT_SETTINGS,
     AliasedGroup,
@@ -31,6 +33,7 @@ from pytoolbox.core.options import (
     version_option,
     yes_option,
 )
+from pytoolbox.ssh import hosts
 
 #: Ports that don't need to be spelled out in an entry name because the
 #: scheme already implies them.
@@ -339,3 +342,139 @@ def import_store(archive, store_path, force, verbose) -> None:
         tar.extractall(dest, members=members)
 
     console.success(f"Restored {archive} to {dest}.")
+
+
+def _sync_pass(
+    direction: str,
+    local: Path,
+    remote_spec: str,
+    ssh_command: str,
+    password: Optional[str],
+    delete: bool,
+    dry_run: bool,
+    assume_yes: bool,
+    verbose: int,
+) -> None:
+    """Run one rsync pass, in ``direction`` ("push" or "pull")."""
+    if direction == "push":
+        if not local.is_dir():
+            raise click.ClickException(f"No password store at {local}.")
+        sources, destination = (f"{local}/",), remote_spec
+        what = "server entries missing locally"
+    else:
+        sources, destination = (f"{remote_spec}/",), str(local)
+        what = "local entries missing from the server"
+
+    plan = rsync_core.RsyncOptions(
+        sources=sources,
+        destination=destination,
+        ssh_command=ssh_command,
+        checksum=True,
+        delete=delete,
+        exclude=(".git",),
+        dry_run=dry_run,
+        verbose=verbose,
+    )
+    cmd = rsync_core.build_rsync_command(plan)
+
+    if plan.deletes and not dry_run:
+        if not console.confirm(f"Delete {what}?", assume_yes, default=False):
+            raise click.Abort()
+
+    pyssh._run_rsync(cmd, password, verbose)
+
+
+@pass_cli.command("sync")
+@click.argument("server")
+@click.option(
+    "--store",
+    "store_path",
+    type=click.Path(path_type=Path),
+    help="Local password store directory (default: $PASSWORD_STORE_DIR or ~/.password-store).",
+)
+@click.option(
+    "--remote-store",
+    default="~/.password-store",
+    show_default=True,
+    help="Password store directory on the server.",
+)
+@click.option("--push", "push_only", is_flag=True, help="Copy local entries to the server only.")
+@click.option("--pull", "pull_only", is_flag=True, help="Copy the server's entries here only.")
+@click.option(
+    "--delete",
+    is_flag=True,
+    help="Delete entries on the destination that are missing on the source. Only valid "
+    "with --push or --pull -- in two-way mode this could erase an entry the other "
+    "direction hasn't synced yet. Never touches .git. Asks first.",
+)
+@click.option(
+    "-p", "--ssh-port", default=22, show_default=True, type=click.IntRange(1, 65535),
+    help="Remote SSH port.",
+)
+@click.option("--identity", type=click.Path(dir_okay=False), help="Private key file.")
+@click.option(
+    "-o", "--ssh-option", "ssh_options", multiple=True, metavar="OPT",
+    help="Extra 'ssh -o' option, repeatable.",
+)
+@dry_run_option
+@yes_option
+@verbose_option
+def sync_store(
+    server: str,
+    store_path: Optional[Path],
+    remote_store: str,
+    push_only: bool,
+    pull_only: bool,
+    delete: bool,
+    ssh_port: int,
+    identity: Optional[str],
+    ssh_options: tuple[str, ...],
+    dry_run: bool,
+    assume_yes: bool,
+    verbose: int,
+) -> None:
+    """Sync the password store with SERVER over SSH.
+
+    \b
+    SERVER is a host in your ~/.ssh/config, or a 'user[:password]@host[:port]'
+    spec, resolved the same way as pyssh's own commands. Without --push or
+    --pull, this is two-way: entries missing on either side are copied to the
+    other, and nothing is ever deleted. .git is never synced -- use `pypass
+    export`/`import` for a one-time move that includes history.
+
+    \b
+    Examples:
+      pypass sync prod
+      pypass sync prod --push
+      pypass sync me@host:2222 --pull --delete
+    """
+    if push_only and pull_only:
+        raise click.ClickException("--push and --pull are mutually exclusive.")
+    if delete and not (push_only or pull_only):
+        raise click.ClickException(
+            "--delete needs a direction: pass --push or --pull. In two-way mode, "
+            "deleting based on one direction's view could erase an entry the other "
+            "direction hasn't synced yet."
+        )
+    _require("rsync", "Install rsync (Termux: `pkg install rsync`).")
+
+    local = store_dir(str(store_path) if store_path else None)
+    target = pyssh.apply_stored_secret(hosts.resolve_target(server))
+    pyssh._guard_host_key(target)
+    remote_spec = f"{target.spec}:{remote_store}"
+    ssh_command = pyssh._rsync_ssh_command(ssh_port, identity, ssh_options, target.password)
+
+    if push_only:
+        directions = ["push"]
+    elif pull_only:
+        directions = ["pull"]
+    else:
+        directions = ["pull", "push"]
+
+    for direction in directions:
+        _sync_pass(
+            direction, local, remote_spec, ssh_command, target.password,
+            delete, dry_run, assume_yes, verbose,
+        )
+
+    console.success(f"Synced {local} with {remote_spec}.")

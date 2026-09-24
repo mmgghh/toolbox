@@ -6,6 +6,7 @@ Also available as `toolbox pass`.
 import-chrome   Import a Chrome/Edge password CSV export into `pass`
 export          Tar the whole password store, for moving it to another computer
 import          Restore a password store from a `pypass export` archive
+sync            Sync the password store with a server over SSH
 ```
 
 `pypass` is not a `pass` wrapper. It doesn't add, edit, generate or look up
@@ -88,3 +89,52 @@ a destination that already exists and is not empty unless `--force` is
 given, in which case the existing directory is removed first. Extraction
 validates every archive member stays inside the destination before writing
 anything, so a crafted or corrupted archive can't write outside the store.
+
+---
+
+## `sync`
+
+```shell
+pypass sync prod                                    # two-way, never deletes
+pypass sync prod --push                              # local -> server only
+pypass sync prod --pull                              # server -> local only
+pypass sync prod --push --delete                     # mirror local onto the server
+pypass sync me@host:2222 --remote-store ~/other-store
+```
+
+Syncs the password store with a server over SSH, using `rsync` under the
+hood -- the same wrapper `pyssh sync` uses, so `SERVER` is resolved exactly
+the same way: a host in `~/.ssh/config`, or an inline
+`user[:password]@host[:port]` spec, with the same stored-secret lookup and
+known-hosts guard as `pyssh`'s own commands. Requires `rsync` on `PATH`
+(Termux: `pkg install rsync`).
+
+Without `--push` or `--pull`, sync is two-way: entries missing on either
+side are copied to the other (server first, then local), and nothing is
+ever deleted, no matter what ran before. `--push` sends local entries to
+the server only; `--pull` brings the server's entries here only. Files are
+compared by content (`--checksum`), not size and mtime, since clocks
+across machines (especially Termux) can't be relied on to agree.
+
+`.git` is never synced -- a file-level two-way sync can't safely merge
+git's internal state. For history, use `export`/`import` for a one-time
+move, or a real git remote.
+
+**`--delete`** removes destination entries missing from the source --
+requires `--push` or `--pull`, and is refused in two-way mode: deleting
+based on one direction's view could erase an entry the other direction
+hasn't synced yet. It never touches `.git`, and asks for confirmation
+first unless `-y/--yes` is given; `--dry-run` never prompts.
+
+| Option | Meaning |
+| --- | --- |
+| `--store PATH` | Local password store directory (default: `$PASSWORD_STORE_DIR` or `~/.password-store`) |
+| `--remote-store PATH` | Password store directory on the server (default: `~/.password-store`) |
+| `--push` | Copy local entries to the server only |
+| `--pull` | Copy the server's entries here only |
+| `--delete` | Delete destination entries missing from the source. Needs `--push`/`--pull`. Asks first |
+| `-p, --ssh-port` | Remote SSH port (default 22) |
+| `--identity` | Private key file |
+| `-o, --ssh-option` | Extra `ssh -o` option, repeatable |
+| `-n, --dry-run` | Report what would transfer, change nothing |
+| `-y, --yes` | Skip the confirmation prompt |
