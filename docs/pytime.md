@@ -13,6 +13,7 @@ delete     Remove entries matching filters
 report     Report on tracked time, grouped and exported
 projects   List projects with entry counts and total hours
 tasks      List tasks with entry counts and total hours
+auto       Automatically record time from the active window (best-effort)
 ```
 
 Entries live in one SQLite file, so the data stays readable with any SQLite
@@ -124,6 +125,61 @@ toolbox | 12      | 18.25 | 2026-08-09
 notes   | 3       | 2.5   | 2026-08-02
 ```
 
+## Automatic tracking (`pytime auto`)
+
+`start`/`end` require you to remember to run them. `pytime auto watch` instead
+polls the currently focused window every few seconds and records time on its
+own, based on what the window title/class say -- no browser extension or
+editor plugin required, and nothing you have to remember to type.
+
+```shell
+pytime auto watch                          # foreground; Ctrl+C to stop
+pytime auto watch --interval 10 --idle-timeout 10
+nohup pytime auto watch >/tmp/pytime-auto.log 2>&1 &   # or a systemd user service
+
+pytime auto status                         # what's being tracked right now
+pytime auto report -g project -g ext       # e.g. hours per project, per file type
+pytime auto report --category editor -g ext
+pytime auto rules                          # active backend + how to extend classification
+```
+
+**What it actually knows, and what it doesn't.** There is no install-free way
+for a CLI to read a browser tab's real URL or an editor's real open file path
+-- tools that do that (WakaTime, ActivityWatch's browser integration) rely on
+an editor plugin or a browser extension. `pytime auto` works only from the
+window title and window class every desktop already exposes, parsed with
+heuristics for common apps:
+
+- **Editors** (VS Code, PyCharm/JetBrains family, Sublime, vim/nvim): the
+  title's `file — project` convention gives a filename (and its extension)
+  and a project name.
+- **Terminals** (gnome-terminal, konsole, alacritty, kitty, ...): a
+  `~/path`-looking fragment in the title becomes the project; a title
+  mentioning "claude" is labeled `(Claude Code)`.
+- **Browsers** (Chrome, Chromium, Firefox, Brave, Edge, Opera, Vivaldi): the
+  tab title is matched against a small table of known sites (ChatGPT, Claude,
+  GitHub, GitLab, Notion, Figma, Jira, Slack, YouTube, Gmail, Google
+  Docs/Sheets/Calendar, Linear, Trello, ...) to fill in a project name.
+- Anything else is recorded under category `other` with the raw title as
+  `detail`, rather than a guessed project.
+
+Titles vary across app versions, themes and locales, so treat this as
+best-effort, not ground truth -- spot-check `pytime auto report` against
+what you actually did. Extend the built-in rules (without replacing them) by
+creating `~/.pytime/rules.json`; run `pytime auto rules` to see the file
+location and its expected shape.
+
+**Platform support.** X11 desktops work via `xdotool` (or `xprop` as a
+fallback); Wayland only works under Sway (`swaymsg`) or Hyprland
+(`hyprctl`) -- GNOME/KDE on Wayland don't expose the focused window to
+arbitrary clients at all, by design, so `pytime auto watch` will refuse to
+start there. Idle/AFK pausing (`--idle-timeout`) additionally needs
+`xprintidle` and only works on X11; elsewhere the watcher never pauses on
+its own. Run `toolbox doctor` to see what this machine actually supports.
+
+Auto-tracked entries live in their own `activity_entries` table -- they never
+appear in, or interfere with, `pytime report`/`status`/`edit` and friends.
+
 ## Schema
 
 ```sql
@@ -132,6 +188,17 @@ CREATE TABLE time_entries (
     project  TEXT,
     task     TEXT NOT NULL,
     start_ts REAL NOT NULL,   -- Unix timestamp
+    end_ts   REAL             -- NULL while running
+);
+
+CREATE TABLE activity_entries (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,   -- "editor" | "terminal" | "browser" | "other"
+    app      TEXT NOT NULL,
+    project  TEXT,
+    detail   TEXT,            -- filename (editor) or page/window title
+    ext      TEXT,            -- file extension, editor entries only
+    start_ts REAL NOT NULL,
     end_ts   REAL             -- NULL while running
 );
 ```

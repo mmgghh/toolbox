@@ -7,6 +7,18 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pytime auto`.** Records time automatically from the focused window --
+  `watch` polls it every few seconds and starts/stops entries on its own,
+  `status`/`report` mirror the manual commands (with `-g app`/`-g ext`/`-g
+  category` grouping), and `rules` shows the active backend plus where to add
+  custom classification rules. Built from window titles alone (X11 via
+  `xdotool`/`xprop`, Wayland via Sway/Hyprland only -- see `toolbox doctor`),
+  since real file paths and browser URLs need an editor plugin or browser
+  extension respectively, which this is not; titles are parsed with
+  heuristics for common editors/terminals/browsers instead, extensible via
+  `~/.pytime/rules.json`. Auto-tracked entries live in their own table and
+  never mix with manual `pytime` entries.
+
 - **`pydata convert`.** Converts JSON, CSV or Excel into another of the
   three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output
   format comes from the destination's suffix, or `--to` when it doesn't say.

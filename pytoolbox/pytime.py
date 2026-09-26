@@ -7,9 +7,12 @@ output; internally everything is a UTC-based epoch timestamp.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import signal
 import sqlite3
+import time as time_module
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -19,6 +22,8 @@ from typing import Optional
 import click
 
 from pytoolbox.core import console
+from pytoolbox.core.activewindow import detect_backend, get_active_window, get_idle_seconds
+from pytoolbox.core.activity_rules import Classified, classify_window, default_rules_path, load_rules
 from pytoolbox.core.intervals import (
     apply_interval,
     format_duration,
@@ -72,6 +77,21 @@ class TimeRecord:
     duration_hours: float
 
 
+@dataclass(frozen=True)
+class ActivityRecord:
+    """Normalized auto-tracked activity entry data (see ``pytime auto``)."""
+
+    entry_id: int
+    category: str
+    app: str
+    project: Optional[str]
+    detail: Optional[str]
+    ext: Optional[str]
+    start_dt: datetime
+    end_dt: Optional[datetime]
+    duration_hours: float
+
+
 def resolve_db_path(db_path: Optional[Path]) -> Path:
     """Return the database path, creating its parent directory when needed.
 
@@ -112,6 +132,25 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_end ON time_entries(end_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_project ON time_entries(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_task ON time_entries(task)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            app TEXT NOT NULL,
+            project TEXT,
+            detail TEXT,
+            ext TEXT,
+            start_ts REAL NOT NULL,
+            end_ts REAL
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_start ON activity_entries(start_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_end ON activity_entries(end_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_project ON activity_entries(project)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_ext ON activity_entries(ext)")
     conn.commit()
 
 
@@ -217,6 +256,41 @@ def fetch_records(
     return records
 
 
+def fetch_activity_records(
+    conn: sqlite3.Connection,
+    clauses: Iterable[str],
+    params: list[object],
+) -> list[ActivityRecord]:
+    """Fetch auto-tracked activity entries from the database and normalize them."""
+    query = "SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
+    clause_list = list(clauses)
+    if clause_list:
+        query += " WHERE " + " AND ".join(clause_list)
+    query += " ORDER BY start_ts ASC, id ASC"
+
+    now = datetime.now().astimezone().replace(microsecond=0)
+    records = []
+    for row in conn.execute(query, params).fetchall():
+        start_dt = datetime.fromtimestamp(row["start_ts"], tz=local_timezone())
+        end_dt = datetime.fromtimestamp(row["end_ts"], tz=local_timezone()) if row["end_ts"] is not None else None
+        duration_end = end_dt or now
+        duration_hours = (duration_end - start_dt).total_seconds() / 3600
+        records.append(
+            ActivityRecord(
+                entry_id=row["id"],
+                category=row["category"],
+                app=row["app"],
+                project=row["project"],
+                detail=row["detail"],
+                ext=row["ext"],
+                start_dt=start_dt,
+                end_dt=end_dt,
+                duration_hours=duration_hours,
+            )
+        )
+    return records
+
+
 def record_to_row(record: TimeRecord, include_end: bool = True) -> dict[str, object]:
     """Convert a record to a printable/exportable row."""
     start_triplet = format_dt_triplet(record.start_dt)
@@ -244,25 +318,58 @@ def record_to_row(record: TimeRecord, include_end: bool = True) -> dict[str, obj
     return row
 
 
-def group_records(
-    records: list[TimeRecord],
-    group_by: list[str],
+def activity_record_to_row(record: ActivityRecord, include_end: bool = True) -> dict[str, object]:
+    """Convert an activity record to a printable/exportable row."""
+    start_triplet = format_dt_triplet(record.start_dt)
+    row: dict[str, object] = {
+        "id": record.entry_id,
+        "category": record.category,
+        "app": record.app,
+        "project": record.project or "",
+        "detail": record.detail or "",
+        "ext": record.ext or "",
+        "start_gregorian": start_triplet["gregorian"],
+        "start_jalali": start_triplet["jalali"],
+        "start_epoch": start_triplet["epoch"],
+        "duration_hours": format_total_value(record.duration_hours),
+    }
+    if include_end:
+        if record.end_dt is not None:
+            end_triplet = format_dt_triplet(record.end_dt)
+            row.update(
+                {
+                    "end_gregorian": end_triplet["gregorian"],
+                    "end_jalali": end_triplet["jalali"],
+                    "end_epoch": end_triplet["epoch"],
+                }
+            )
+        else:
+            row.update({"end_gregorian": "", "end_jalali": "", "end_epoch": ""})
+    return row
+
+
+def _group_records_generic(
+    records: Sequence,
+    group_by_set: set[str],
+    dimension_fields: Sequence[str],
     calendar: str,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    """Group records and return aggregated rows with headers."""
-    group_by_set = set(group_by)
+    """Group records by any mix of ``dimension_fields`` plus year/month/day.
+
+    Shared by ``group_records`` (project/task) and ``group_activity_records``
+    (category/app/project/ext), which only differ in which attributes on the
+    record identify a group.
+    """
     grouped: dict[tuple[object, ...], dict[str, object]] = {}
 
     for record in records:
         parts: list[object] = []
         values: dict[str, object] = {}
 
-        if "project" in group_by_set:
-            values["project"] = record.project or ""
-            parts.append(values["project"])
-        if "task" in group_by_set:
-            values["task"] = record.task
-            parts.append(values["task"])
+        for field_name in dimension_fields:
+            if field_name in group_by_set:
+                values[field_name] = getattr(record, field_name) or ""
+                parts.append(values[field_name])
 
         y = m = d = None
         if group_by_set & {"year", "month", "day"}:
@@ -302,10 +409,7 @@ def group_records(
 
         grouped[key]["duration_hours"] += record.duration_hours
 
-    headers: list[str] = []
-    for field in ("project", "task", "year", "month", "day"):
-        if field in group_by_set:
-            headers.append(field)
+    headers: list[str] = [field for field in dimension_fields if field in group_by_set]
 
     if group_by_set & {"year", "month", "day"}:
         headers.extend(["date_gregorian", "date_jalali", "date_epoch"])
@@ -324,6 +428,24 @@ def group_records(
         rows.append(row)
 
     return rows, headers
+
+
+def group_records(
+    records: list[TimeRecord],
+    group_by: list[str],
+    calendar: str,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Group time entries and return aggregated rows with headers."""
+    return _group_records_generic(records, set(group_by), ("project", "task"), calendar)
+
+
+def group_activity_records(
+    records: list[ActivityRecord],
+    group_by: list[str],
+    calendar: str,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Group auto-tracked activity entries and return aggregated rows with headers."""
+    return _group_records_generic(records, set(group_by), ("category", "app", "project", "ext"), calendar)
 
 
 @click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
@@ -548,6 +670,23 @@ _RECORD_HEADERS = [
     "id",
     "project",
     "task",
+    "start_gregorian",
+    "start_jalali",
+    "start_epoch",
+    "end_gregorian",
+    "end_jalali",
+    "end_epoch",
+    "duration_hours",
+]
+
+#: Columns of an ungrouped ``pytime auto report``, one row per activity entry.
+_ACTIVITY_HEADERS = [
+    "id",
+    "category",
+    "app",
+    "project",
+    "detail",
+    "ext",
     "start_gregorian",
     "start_jalali",
     "start_epoch",
@@ -1022,18 +1161,26 @@ def delete(
     click.echo("Delete completed.")
 
 
-def _normalize_group_by(group_by: tuple[str, ...]) -> list[str]:
+def _normalize_group_by_fields(group_by: tuple[str, ...], allowed: set[str]) -> list[str]:
     items: list[str] = []
     for value in group_by:
         for part in value.split(","):
             part = part.strip().lower()
             if not part:
                 continue
-            if part not in {"project", "task", "year", "month", "day"}:
+            if part not in allowed:
                 raise click.ClickException(f"Unknown group-by field: {part}")
             if part not in items:
                 items.append(part)
     return items
+
+
+def _normalize_group_by(group_by: tuple[str, ...]) -> list[str]:
+    return _normalize_group_by_fields(group_by, {"project", "task", "year", "month", "day"})
+
+
+def _normalize_activity_group_by(group_by: tuple[str, ...]) -> list[str]:
+    return _normalize_group_by_fields(group_by, {"category", "app", "project", "ext", "year", "month", "day"})
 
 
 def _validate_regex(pattern: str, enabled: bool) -> None:
@@ -1172,6 +1319,350 @@ def _end_entries(
         if duration_hours > LONG_ENTRY_HOURS:
             console.warn(f"duration exceeds {LONG_ENTRY_HOURS} hours -- did a timer stay running? Use `pytime edit` to fix it.")
         click.echo("")
+
+
+# --------------------------------------------------------------------------
+# pytime auto -- best-effort automatic tracking from the active window.
+# --------------------------------------------------------------------------
+
+
+def _activity_bucket_key(classified: Classified) -> tuple[str, str, str, str, str]:
+    return (classified.category, classified.app, classified.project, classified.detail, classified.ext)
+
+
+def _close_activity_entry(conn: sqlite3.Connection, entry_id: int, end_ts: float) -> None:
+    conn.execute("UPDATE activity_entries SET end_ts = ? WHERE id = ?", (end_ts, entry_id))
+    conn.commit()
+
+
+def _open_activity_entry(conn: sqlite3.Connection, classified: Classified, start_ts: float) -> int:
+    cursor = conn.execute(
+        "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts) VALUES (?, ?, ?, ?, ?, ?)",
+        (classified.category, classified.app, classified.project, classified.detail, classified.ext, start_ts),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+#: Current auto-tracking state: (open entry id, its bucket key), or None.
+ActivityState = Optional[tuple[int, tuple[str, str, str, str, str]]]
+
+
+def advance_activity(
+    conn: sqlite3.Connection,
+    current: ActivityState,
+    classified: Optional[Classified],
+    now_ts: float,
+) -> ActivityState:
+    """Apply one polling tick, opening/closing activity entries as needed.
+
+    ``classified`` is ``None`` when there is no active window to report, or
+    the user is judged AFK. Kept dependency-free of the polling loop itself
+    so it can be unit-tested with a scripted sequence of ticks.
+    """
+    if classified is None:
+        if current is not None:
+            _close_activity_entry(conn, current[0], now_ts)
+        return None
+
+    key = _activity_bucket_key(classified)
+    if current is not None and current[1] == key:
+        return current
+
+    if current is not None:
+        _close_activity_entry(conn, current[0], now_ts)
+
+    entry_id = _open_activity_entry(conn, classified, now_ts)
+    return (entry_id, key)
+
+
+@time_cli.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
+def auto() -> None:
+    """Automatically record time from the active window (best-effort).
+
+    \b
+    Built from window titles, not a browser extension or editor plugin --
+    it cannot see real file paths or URLs, only what the window title shows.
+    See docs/pytime.md for exactly what it can and cannot know. Entries live
+    in their own table, entirely separate from manual pytime entries.
+
+    \b
+    Examples:
+      pytime auto watch
+      pytime auto status
+      pytime auto report -g project -g ext
+    """
+
+
+@auto.command()
+@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between window checks.")
+@click.option(
+    "--idle-timeout",
+    type=float,
+    default=5.0,
+    show_default=True,
+    help="Minutes without keyboard/mouse input before pausing (X11 with xprintidle only).",
+)
+@click.option("--quiet", is_flag=True, help="Only print a line when the tracked activity changes.")
+def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
+    """Poll the active window and record time automatically until interrupted.
+
+    \b
+    Runs in the foreground; background it yourself (nohup, a systemd user
+    service, tmux, ...). Ctrl+C or SIGTERM closes the open entry cleanly.
+
+    \b
+    Examples:
+      pytime auto watch
+      pytime auto watch --interval 10 --idle-timeout 10
+      nohup pytime auto watch >/tmp/pytime-auto.log 2>&1 &
+    """
+    backend = detect_backend()
+    if backend is None:
+        raise click.ClickException(
+            "No supported window backend found on this system (needs xdotool or xprop "
+            "on X11, or sway/hyprland on Wayland). Run `toolbox doctor` for details."
+        )
+    rules = load_rules()
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+
+    click.echo(f"pytime auto: watching via {backend}, every {interval:g}s. Press Ctrl+C to stop.", err=True)
+
+    stop = {"flag": False}
+
+    def _handle_signal(signum: int, frame: object) -> None:
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    current: ActivityState = None
+    idle_seconds_threshold = idle_timeout * 60
+    with connect(db_path) as conn:
+        try:
+            while not stop["flag"]:
+                now_ts = datetime.now().timestamp()
+                idle = get_idle_seconds()
+                if idle is not None and idle >= idle_seconds_threshold:
+                    classified = None
+                    now_ts -= idle
+                else:
+                    window = get_active_window(backend)
+                    classified = classify_window(window, rules) if window is not None else None
+
+                previous_key = current[1] if current else None
+                current = advance_activity(conn, current, classified, now_ts)
+                new_key = current[1] if current else None
+
+                if new_key != previous_key:
+                    if new_key is None:
+                        click.echo("(idle)", err=True)
+                    elif not quiet:
+                        category, app, project, detail, _ext = new_key
+                        label = app
+                        if project:
+                            label += f" / {project}"
+                        if detail and category == "editor":
+                            label += f" / {detail}"
+                        click.echo(label, err=True)
+
+                for _ in range(int(interval * 10)):
+                    if stop["flag"]:
+                        break
+                    time_module.sleep(0.1)
+        finally:
+            if current is not None:
+                _close_activity_entry(conn, current[0], datetime.now().timestamp())
+
+
+@auto.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Print status as JSON.")
+def auto_status(as_json: bool) -> None:
+    """Show what pytime auto is currently tracking, if a watcher is running.
+
+    \b
+    Examples:
+      pytime auto status
+      pytime auto status --json
+    """
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, ["end_ts IS NULL"], [])
+
+    if not records:
+        if as_json:
+            console.emit_json({"running": False})
+            return
+        console.result("Nothing is being auto-tracked. Start with: pytime auto watch")
+        return
+
+    record = records[-1]
+    elapsed = record.duration_hours * 3600
+    payload = {
+        "category": record.category,
+        "app": record.app,
+        "project": record.project or "",
+        "detail": record.detail or "",
+        "ext": record.ext or "",
+        "started": record.start_dt.isoformat(),
+        "elapsed": format_duration(elapsed),
+        "elapsed_hours": round(record.duration_hours, 4),
+    }
+    if as_json:
+        console.emit_json({"running": True, **payload})
+        return
+    console.result(f"App: {payload['app']}")
+    console.result(f"Project: {payload['project']}")
+    if payload["detail"]:
+        console.result(f"Detail: {payload['detail']}")
+    emit_datetime_block("Start:", record.start_dt)
+    console.result(f"Elapsed: {payload['elapsed']} ({format_hours_minutes(record.duration_hours)})")
+
+
+@auto.command("report")
+@click.option("-p", "--project", type=str, help="Project filter (optional).")
+@click.option("--app", type=str, help="App filter (optional).")
+@click.option(
+    "--category",
+    type=click.Choice(["editor", "terminal", "browser", "other"], case_sensitive=False),
+    help="Category filter (optional).",
+)
+@click.option("--ext", type=str, help="File extension filter (optional).")
+@click.option(
+    "--interval",
+    "interval_value",
+    type=str,
+    help="Relative interval (PostgreSQL style). When set, start/end are ignored.",
+)
+@click.option("-s", "--start", "start_value", type=str, help="Report start time (optional).")
+@click.option("-e", "--end", "end_value", type=str, help="Report end time (optional).")
+@click.option(
+    "-g",
+    "--group-by",
+    "group_by",
+    multiple=True,
+    help="Group by fields (category, app, project, ext, year, month, day).",
+)
+@click.option(
+    "-c",
+    "--calendar",
+    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+    help="Calendar for date inputs/grouping (jalali/gregorian).",
+)
+@format_option()
+@click.option("-o", "--output", type=str, help="Write the report to this file instead of stdout.")
+@click.option("--no-total", is_flag=True, help="Omit the totals line under table output.")
+def auto_report(
+    project: Optional[str],
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    group_by: tuple[str, ...],
+    calendar: Optional[str],
+    output_format: str,
+    output: Optional[str],
+    no_total: bool,
+) -> None:
+    """Report on auto-tracked time, optionally grouped and exported.
+
+    \b
+    Examples:
+      pytime auto report --interval "7 days"
+      pytime auto report --category editor -g ext
+      pytime auto report -g project -g app
+      pytime auto report --format json
+    """
+    group_items = _normalize_activity_group_by(group_by)
+    if interval_value and (start_value or end_value):
+        raise click.ClickException("Interval is incompatible with start/end filters.")
+
+    if {"month", "day"} & set(group_items) and "year" not in group_items:
+        raise click.ClickException("Grouping by month/day requires year.")
+    if "day" in group_items and "month" not in group_items:
+        raise click.ClickException("Grouping by day requires month.")
+
+    calendar_value, allow_fallback = parse_calendar(calendar)
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if project:
+        clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
+        params.append(f"%{escape_like(project)}%")
+    if app:
+        clauses.append("app LIKE ? ESCAPE '\\' COLLATE NOCASE")
+        params.append(f"%{escape_like(app)}%")
+    if category:
+        clauses.append("category = ?")
+        params.append(category.lower())
+    if ext:
+        clauses.append("ext = ?")
+        params.append(ext.lower().lstrip("."))
+
+    if interval_value:
+        delta = parse_pg_interval(interval_value)
+        end_dt = datetime.now().astimezone()
+        start_dt = apply_interval(end_dt, delta, direction=-1)
+        clauses.append("start_ts >= ?")
+        params.append(start_dt.timestamp())
+        clauses.append("start_ts <= ?")
+        params.append(end_dt.timestamp())
+    else:
+        if start_value:
+            start_dt = parse_datetime_value(calendar_value, start_value, allow_fallback)
+            clauses.append("start_ts >= ?")
+            params.append(start_dt.timestamp())
+        if end_value:
+            end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
+            clauses.append("start_ts <= ?")
+            params.append(end_dt.timestamp())
+
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, clauses, params)
+
+    if not records:
+        click.echo("No records found.")
+        return
+
+    if group_items:
+        rows, headers = group_activity_records(records, group_items, calendar_value)
+    else:
+        rows = [activity_record_to_row(record) for record in records]
+        headers = _ACTIVITY_HEADERS
+
+    _emit_report(rows, headers, records, output_format, output, no_total)
+
+
+@auto.command("rules")
+def auto_rules() -> None:
+    """Show the active window backend and where to add custom classification rules.
+
+    \b
+    Examples:
+      pytime auto rules
+    """
+    path = default_rules_path()
+    backend = detect_backend()
+    console.result(f"Window backend: {backend or 'none detected -- see `toolbox doctor`'}")
+    console.result(f"Idle detection: {'available' if get_idle_seconds() is not None else 'unavailable'}")
+    console.result(f"Rules override file: {path} ({'exists' if path.is_file() else 'not created yet'})")
+    console.result("")
+    console.result("Add JSON like this to extend the defaults (every key optional, values merge in):")
+    console.result(
+        json.dumps(
+            {
+                "editor_classes": ["my-editor-wm-class"],
+                "terminal_classes": [],
+                "browser_classes": [],
+                "app_labels": {"my-editor-wm-class": "My Editor"},
+                "sites": {"my-site.com": "My Site"},
+            },
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

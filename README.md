@@ -33,7 +33,7 @@ toolbox pdf2md paper.pdf       # PDF to Markdown, structure inferred
 | `pyfm`     | `toolbox fm`     | Split, merge, rename, deduplicate, organize and open files      | [docs/pyfm.md](docs/pyfm.md) |
 | `pystr`    | `toolbox str`    | Search, replace, clipboard, case conversion, encoding, Persian normalization | [docs/pystr.md](docs/pystr.md) |
 | `pyjdate`  | `toolbox jdate`  | Jalali ↔ Gregorian conversion, intervals, distances              | [docs/pyjdate.md](docs/pyjdate.md) |
-| `pytime`   | `toolbox time`   | Time tracking in a single SQLite file, with reports              | [docs/pytime.md](docs/pytime.md) |
+| `pytime`   | `toolbox time`   | Time tracking in a single SQLite file, with reports, plus best-effort automatic tracking from the active window (`pytime auto`) | [docs/pytime.md](docs/pytime.md) |
 | `pyssh`    | `toolbox ssh`    | SSH connections, tunnels, remote exec across hosts, rsync, and host/secret management | [docs/pyssh.md](docs/pyssh.md) |
 | `pynet`    | `toolbox net`    | IP and its location, DNS, ports, ping, HTTP, WHOIS, quick file server | [docs/pynet.md](docs/pynet.md) |
 | `pypass`   | `toolbox pass`   | Import a Chrome/Edge password CSV into `pass`, export/import the whole store for migration | [docs/pypass.md](docs/pypass.md) |
@@ -154,6 +154,7 @@ Notes specific to Termux:
 | Purpose               | Location                                                  |
 | --------------------- | --------------------------------------------------------- |
 | Time-tracking database | `~/.pytime/pytime.db`, or `$PYTIME_DB`                    |
+| `pytime auto` custom rules | `~/.pytime/rules.json` (optional)                     |
 | Config                | `$XDG_CONFIG_HOME/pytoolbox` (`~/.config/pytoolbox`)      |
 | Cache                 | `$XDG_CACHE_HOME/pytoolbox` (`~/.cache/pytoolbox`)        |
 | Tunnel state/secrets  | `$XDG_RUNTIME_DIR/pytoolbox`, owner-only                  |
