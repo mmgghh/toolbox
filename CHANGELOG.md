@@ -45,6 +45,10 @@ This project follows [Semantic Versioning](https://semver.org/).
     project key; JetBrains IDEs (project-first titles), Wayland terminal app
     ids and desktop apps like Claude are classified.
   - Tracking pauses while the screen is locked, and on GNOME when idle.
+  - Suspend is not counted: after a jump in the clock the open entry ends
+    at the last check before it. An entry left open by a watcher that was
+    killed or lost power ends at its last heartbeat instead of running
+    forever. `--interval` is limited to 120 seconds.
 
 - **`pydata convert`.** Converts JSON, CSV or Excel into another of the
   three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output

@@ -186,6 +186,17 @@ D-Bus interface); you've been idle longer than `--idle-timeout` minutes (GNOME,
 or X11 with `xprintidle`); no window is focused; or the focused window matches
 an `ignore` rule.
 
+Suspend is not counted either. If a check comes much later than the previous
+one (3× `--interval`, at least 30 seconds), the watcher assumes the machine was
+asleep and ends the open entry at the last check before the jump.
+
+If the watcher dies without cleaning up (`kill -9`, power loss, an OOM kill),
+its entry doesn't keep running forever. The watcher stamps its open entry about
+once a minute (`last_seen_ts`), and any entry without a stamp for 10 minutes is
+ended at its last one: by `status`, `report` and the other readers, or right
+away by the next `watch` that starts. `--interval` is capped at 120 seconds so a
+live watcher is never mistaken for a dead one.
+
 ### Terminals and Claude Code
 
 For a focused terminal, `pytime auto` doesn't trust the title: it follows the
@@ -353,7 +364,8 @@ CREATE TABLE activity_entries (
     detail   TEXT,            -- filename (editor) or page/window title
     ext      TEXT,            -- file extension, editor entries only
     start_ts REAL NOT NULL,
-    end_ts   REAL             -- NULL while running
+    end_ts   REAL,            -- NULL while running
+    last_seen_ts REAL         -- the watcher's last "still here" stamp
 );
 ```
 

@@ -158,10 +158,14 @@ def _init_schema(conn: sqlite3.Connection) -> None:
             detail TEXT,
             ext TEXT,
             start_ts REAL NOT NULL,
-            end_ts REAL
+            end_ts REAL,
+            last_seen_ts REAL
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(activity_entries)")}
+    if "last_seen_ts" not in columns:
+        conn.execute("ALTER TABLE activity_entries ADD COLUMN last_seen_ts REAL")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_start ON activity_entries(start_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_end ON activity_entries(end_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_project ON activity_entries(project)")
@@ -277,7 +281,8 @@ def fetch_activity_records(
     params: list[object],
 ) -> list[ActivityRecord]:
     """Fetch auto-tracked activity entries from the database and normalize them."""
-    query = "SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
+    close_stale_activity_entries(conn, time_module.time())
+    query ="SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
     clause_list = list(clauses)
     if clause_list:
         query += " WHERE " + " AND ".join(clause_list)
@@ -1341,6 +1346,10 @@ def _end_entries(
 # --------------------------------------------------------------------------
 
 
+#: Current auto-tracking state: (open entry id, its bucket key), or None.
+ActivityState = Optional[tuple[int, tuple[str, str, str, str, str]]]
+
+
 def _activity_bucket_key(classified: Classified) -> tuple[str, str, str, str, str]:
     return (classified.category, classified.app, classified.project, classified.detail, classified.ext)
 
@@ -1353,15 +1362,63 @@ def _close_activity_entry(conn: sqlite3.Connection, entry_id: int, end_ts: float
 
 def _open_activity_entry(conn: sqlite3.Connection, classified: Classified, start_ts: float) -> int:
     cursor = conn.execute(
-        "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts) VALUES (?, ?, ?, ?, ?, ?)",
-        (classified.category, classified.app, classified.project, classified.detail, classified.ext, start_ts),
+        "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts, last_seen_ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (classified.category, classified.app, classified.project, classified.detail, classified.ext, start_ts, start_ts),
     )
     conn.commit()
     return cursor.lastrowid
 
 
-#: Current auto-tracking state: (open entry id, its bucket key), or None.
-ActivityState = Optional[tuple[int, tuple[str, str, str, str, str]]]
+#: How often the watcher records that its open entry is still live.
+HEARTBEAT_SECONDS = 60.0
+#: An open entry without a heartbeat for this long was left by a watcher that
+#: died (kill -9, power loss, OOM). Must stay well above the largest --interval.
+STALE_AFTER_SECONDS = 600.0
+#: Largest --interval accepted, so heartbeats always beat STALE_AFTER_SECONDS.
+MAX_INTERVAL_SECONDS = 120.0
+
+
+def _heartbeat_activity_entry(conn: sqlite3.Connection, entry_id: int, now_ts: float) -> None:
+    conn.execute("UPDATE activity_entries SET last_seen_ts = ? WHERE id = ?", (now_ts, entry_id))
+    conn.commit()
+
+
+def close_stale_activity_entries(
+    conn: sqlite3.Connection, now_ts: float, stale_after: float = STALE_AFTER_SECONDS
+) -> int:
+    """Close open entries whose watcher stopped sending heartbeats, at their last heartbeat.
+
+    Without this, an entry left open by a crashed watcher would count as
+    running forever. Rows from before heartbeats existed close at their start.
+    Returns how many rows were closed.
+    """
+    cursor = conn.execute(
+        "UPDATE activity_entries SET end_ts = MAX(COALESCE(last_seen_ts, start_ts), start_ts) "
+        "WHERE end_ts IS NULL AND COALESCE(last_seen_ts, start_ts) <= ?",
+        (now_ts - stale_after,),
+    )
+    if cursor.rowcount:
+        conn.commit()
+    return cursor.rowcount
+
+
+def close_after_gap(
+    conn: sqlite3.Connection,
+    current: ActivityState,
+    last_tick_ts: Optional[float],
+    now_ts: float,
+    max_gap: float,
+) -> ActivityState:
+    """Close the open entry at the previous tick when the clock jumped past ``max_gap``.
+
+    A jump means the machine was suspended (or the watcher hung), and that
+    time must not land on whatever window was focused before it.
+    """
+    if current is None or last_tick_ts is None or now_ts - last_tick_ts <= max_gap:
+        return current
+    _close_activity_entry(conn, current[0], last_tick_ts)
+    return None
 
 
 def advance_activity(
@@ -1419,8 +1476,11 @@ def _load_rules_or_fail() -> Rules:
         raise click.ClickException(str(exc)) from exc
 
 
+_INTERVAL_TYPE = click.FloatRange(min=0.1, max=MAX_INTERVAL_SECONDS)
+
+
 @auto.command()
-@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between window checks.")
+@click.option("--interval", type=_INTERVAL_TYPE, default=5.0, show_default=True, help="Seconds between window checks.")
 @click.option(
     "--idle-timeout",
     type=float,
@@ -1461,10 +1521,22 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
 
     current: ActivityState = None
     idle_seconds_threshold = idle_timeout * 60
+    # A tick this much later than the previous one means suspend or a hang.
+    max_gap = max(3 * interval, 30.0)
+    last_tick_ts: Optional[float] = None
+    last_heartbeat_ts = 0.0
     with connect(db_path) as conn:
+        # Any entry still open belongs to a watcher that didn't exit cleanly.
+        leftovers = close_stale_activity_entries(conn, time_module.time(), stale_after=0.0)
+        if leftovers:
+            click.echo(f"(closed {leftovers} entry(ies) left open by an earlier watcher)", err=True)
         try:
             while not stop["flag"]:
-                now_ts = datetime.now().timestamp()
+                now_ts = time_module.time()
+                if current is not None and close_after_gap(conn, current, last_tick_ts, now_ts, max_gap) is None:
+                    current = None
+                    gap = format_duration(now_ts - last_tick_ts)
+                    click.echo(f"(paused: clock jumped {gap}, suspended?)", err=True)
                 idle = get_idle_seconds()
                 classified: Optional[Classified] = None
                 if is_screen_locked():
@@ -1485,6 +1557,11 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
                 current = advance_activity(conn, current, classified, now_ts)
                 new_key = current[1] if current else None
 
+                last_tick_ts = time_module.time()
+                if current is not None and last_tick_ts - last_heartbeat_ts >= HEARTBEAT_SECONDS:
+                    _heartbeat_activity_entry(conn, current[0], last_tick_ts)
+                    last_heartbeat_ts = last_tick_ts
+
                 if new_key != previous_key:
                     if new_key is None:
                         click.echo(f"(paused: {pause_reason})", err=True)
@@ -1501,7 +1578,7 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
                     time_module.sleep(0.1)
         finally:
             if current is not None:
-                _close_activity_entry(conn, current[0], datetime.now().timestamp())
+                _close_activity_entry(conn, current[0], time_module.time())
 
 
 @auto.command("status")
@@ -1941,7 +2018,7 @@ def _print_service_state() -> None:
 
 
 @auto_service.command("install")
-@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between window checks.")
+@click.option("--interval", type=_INTERVAL_TYPE, default=5.0, show_default=True, help="Seconds between window checks.")
 @click.option("--idle-timeout", type=float, default=5.0, show_default=True, help="Minutes idle before pausing.")
 @click.option(
     "--target",

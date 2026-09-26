@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
 from pytoolbox.core.activity_rules import Classified
-from pytoolbox.pytime import advance_activity, connect, resolve_db_path, time_cli
+from pytoolbox.pytime import (
+    advance_activity,
+    close_after_gap,
+    close_stale_activity_entries,
+    connect,
+    resolve_db_path,
+    time_cli,
+)
 
 
 @pytest.fixture
@@ -59,7 +67,7 @@ def test_advance_activity_closes_on_idle():
     conn.row_factory = sqlite3.Row
     conn.execute(
         "CREATE TABLE activity_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT, app TEXT, "
-        "project TEXT, detail TEXT, ext TEXT, start_ts REAL, end_ts REAL)"
+        "project TEXT, detail TEXT, ext TEXT, start_ts REAL, end_ts REAL, last_seen_ts REAL)"
     )
     state = advance_activity(conn, None, _classified(), 1000.0)
     state = advance_activity(conn, state, None, 1050.0)
@@ -89,7 +97,7 @@ def test_auto_status_reports_nothing_when_idle(runner, db):
 
 def test_auto_status_reports_running_entry(db, runner):
     conn = connect(resolve_db_path(None))
-    advance_activity(conn, None, _classified(), 1_700_000_000.0)
+    advance_activity(conn, None, _classified(), time.time() - 30)
     conn.close()
     result = runner.invoke(time_cli, ["auto", "status", "--json"])
     assert result.exit_code == 0, result.output
@@ -296,7 +304,7 @@ def test_watch_rejects_broken_rules_file(runner, db, monkeypatch, tmp_path):
 def test_manual_and_auto_entries_do_not_interfere(runner, db):
     runner.invoke(time_cli, ["start", "-p", "demo", "write docs"])
     conn = connect(resolve_db_path(None))
-    advance_activity(conn, None, _classified(), 1_700_000_000.0)
+    advance_activity(conn, None, _classified(), time.time() - 30)
     conn.close()
 
     manual_status = runner.invoke(time_cli, ["status", "--json"])
@@ -306,3 +314,171 @@ def test_manual_and_auto_entries_do_not_interfere(runner, db):
     auto_status = runner.invoke(time_cli, ["auto", "status", "--json"])
     auto_payload = json.loads(auto_status.stdout)
     assert auto_payload["project"] == "toolbox"
+
+
+# --- suspend gaps and entries left open by a dead watcher ------------------
+
+
+def test_close_after_gap_closes_at_previous_tick(db):
+    conn = connect(resolve_db_path(None))
+    state = advance_activity(conn, None, _classified(), 1000.0)
+    assert close_after_gap(conn, state, 1010.0, 1020.0, max_gap=30.0) == state
+    assert close_after_gap(conn, state, 1010.0, 4610.0, max_gap=30.0) is None
+    row = conn.execute("SELECT end_ts FROM activity_entries").fetchone()
+    assert row["end_ts"] == 1010.0
+    conn.close()
+
+
+def test_close_stale_activity_entries_uses_last_heartbeat(db):
+    conn = connect(resolve_db_path(None))
+    now = 100_000.0
+    stale = advance_activity(conn, None, _classified(detail="stale.py"), now - 5000)
+    conn.execute("UPDATE activity_entries SET last_seen_ts = ? WHERE id = ?", (now - 4000, stale[0]))
+    fresh = advance_activity(conn, None, _classified(detail="fresh.py"), now - 5000)
+    conn.execute("UPDATE activity_entries SET last_seen_ts = ? WHERE id = ?", (now - 60, fresh[0]))
+    legacy = advance_activity(conn, None, _classified(detail="legacy.py"), now - 5000)
+    conn.execute("UPDATE activity_entries SET last_seen_ts = NULL WHERE id = ?", (legacy[0],))
+    conn.commit()
+
+    assert close_stale_activity_entries(conn, now) == 2
+    ends = {r["detail"]: r["end_ts"] for r in conn.execute("SELECT detail, end_ts FROM activity_entries")}
+    assert ends == {"stale.py": now - 4000, "fresh.py": None, "legacy.py": now - 5000}
+    conn.close()
+
+
+def test_schema_migration_adds_last_seen_column(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(str(path))
+    old.execute(
+        "CREATE TABLE activity_entries (id INTEGER PRIMARY KEY AUTOINCREMENT, category TEXT NOT NULL, "
+        "app TEXT NOT NULL, project TEXT, detail TEXT, ext TEXT, start_ts REAL NOT NULL, end_ts REAL)"
+    )
+    old.execute("INSERT INTO activity_entries (category, app, start_ts) VALUES ('editor', 'VS Code', 1.0)")
+    old.commit()
+    old.close()
+
+    conn = connect(path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(activity_entries)")}
+    assert "last_seen_ts" in columns
+    assert conn.execute("SELECT COUNT(*) FROM activity_entries").fetchone()[0] == 1
+    conn.close()
+
+
+def test_auto_status_ignores_entry_from_dead_watcher(runner, db):
+    conn = connect(resolve_db_path(None))
+    advance_activity(conn, None, _classified(), time.time() - 7200)  # no heartbeat for 2h
+    conn.close()
+    result = runner.invoke(time_cli, ["auto", "status", "--json"])
+    assert json.loads(result.stdout) == {"running": False}
+    rows = json.loads(runner.invoke(time_cli, ["auto", "report", "--format", "json", "--min-seconds", "0"]).stdout)
+    assert len(rows) == 1
+    assert rows[0]["end_epoch"] == rows[0]["start_epoch"]  # closed at its only heartbeat
+
+
+class _FakeClock:
+    """Stands in for the ``time`` module inside ``watch``: each sleep advances 1s."""
+
+    def __init__(self, start: float) -> None:
+        self.now = start
+        self.suspend_for = 0.0  # added once, at the next sleep
+
+    def time(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds + self.suspend_for
+        self.suspend_for = 0.0
+
+
+def _run_watch(runner, monkeypatch, clock, on_tick, args=("--interval", "5")):
+    import pytoolbox.pytime as pt
+    from pytoolbox.core.activewindow import WindowInfo
+
+    ticks = {"n": 0}
+
+    def locked():
+        ticks["n"] += 1
+        on_tick(ticks["n"])
+        return False
+
+    monkeypatch.setattr(pt, "time_module", clock)
+    monkeypatch.setattr(pt, "detect_backend", lambda: "gnome")
+    monkeypatch.setattr(pt, "get_idle_seconds", lambda: None)
+    monkeypatch.setattr(pt, "is_screen_locked", locked)
+    monkeypatch.setattr(pt, "get_active_window", lambda backend=None: WindowInfo("a.py — toolbox", "code"))
+    return runner.invoke(time_cli, ["auto", "watch", *args])
+
+
+def _stop():
+    import os
+    import signal
+
+    os.kill(os.getpid(), signal.SIGINT)
+
+
+def _entries(db):
+    conn = connect(resolve_db_path(None))
+    rows = [dict(r) for r in conn.execute("SELECT * FROM activity_entries ORDER BY id")]
+    conn.close()
+    return rows
+
+
+def test_watch_does_not_count_suspend(runner, db, monkeypatch):
+    start = 1_800_000_000.0
+    clock = _FakeClock(start)
+
+    def on_tick(n):
+        if n == 2:
+            clock.suspend_for = 3600  # suspended for an hour after tick 2
+        if n == 5:
+            _stop()
+
+    result = _run_watch(runner, monkeypatch, clock, on_tick)
+    assert result.exit_code == 0, result.output
+    assert "clock jumped" in result.stderr
+    first, second = _entries(db)
+    # Closed at the last tick before the suspend, not after it.
+    assert first["end_ts"] - first["start_ts"] == pytest.approx(5.0)
+    assert second["start_ts"] >= start + 3600
+    assert second["end_ts"] - second["start_ts"] < 60
+
+
+def test_watch_heartbeats_open_entry(runner, db, monkeypatch):
+    clock = _FakeClock(1_800_000_000.0)
+    seen = []
+
+    def on_tick(n):
+        if n > 1:
+            seen.append(_entries(db)[0]["last_seen_ts"])
+        if n == 30:
+            _stop()
+
+    result = _run_watch(runner, monkeypatch, clock, on_tick)
+    assert result.exit_code == 0, result.output
+    # A heartbeat roughly every minute (rounded up to the next 5s tick).
+    beats = sorted(set(seen))
+    assert len(beats) == 3
+    assert all(60.0 <= b - a <= 66.0 for a, b in zip(beats, beats[1:]))
+
+
+def test_watch_closes_entries_left_open_by_earlier_watcher(runner, db, monkeypatch):
+    conn = connect(resolve_db_path(None))
+    advance_activity(conn, None, _classified(detail="old.py"), 1_799_999_000.0)
+    conn.close()
+    clock = _FakeClock(1_800_000_000.0)
+    result = _run_watch(runner, monkeypatch, clock, lambda n: n == 2 and _stop())
+    assert result.exit_code == 0, result.output
+    assert "left open by an earlier watcher" in result.stderr
+    old = _entries(db)[0]
+    assert old["end_ts"] == old["start_ts"]
+
+
+def test_watch_rejects_interval_beyond_heartbeat_window(runner, db, monkeypatch):
+    import pytoolbox.pytime as pt
+
+    monkeypatch.setattr(pt, "detect_backend", lambda: "gnome")
+    result = runner.invoke(time_cli, ["auto", "watch", "--interval", "600"])
+    assert result.exit_code != 0
+    assert "--interval" in result.output
