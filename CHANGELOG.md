@@ -48,7 +48,9 @@ This project follows [Semantic Versioning](https://semver.org/).
   - Suspend is not counted: after a jump in the clock the open entry ends
     at the last check before it. An entry left open by a watcher that was
     killed or lost power ends at its last heartbeat instead of running
-    forever. `--interval` is limited to 120 seconds.
+    forever. `--interval` is limited to 120 seconds. Only one watcher can
+    record into a database at a time, so running `watch` by hand next to
+    the service no longer counts time twice.
 
 - **`pydata convert`.** Converts JSON, CSV or Excel into another of the
   three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output

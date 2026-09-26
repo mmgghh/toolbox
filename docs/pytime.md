@@ -197,6 +197,11 @@ ended at its last one: by `status`, `report` and the other readers, or right
 away by the next `watch` that starts. `--interval` is capped at 120 seconds so a
 live watcher is never mistaken for a dead one.
 
+Only one watcher records into a database at a time: a second `pytime auto
+watch` (say, run by hand while the service is running) refuses to start and
+names the pid holding `<database>.watch.lock`, instead of counting every
+minute twice.
+
 ### Terminals and Claude Code
 
 For a focused terminal, `pytime auto` doesn't trust the title: it follows the

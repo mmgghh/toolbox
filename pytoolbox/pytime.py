@@ -282,7 +282,7 @@ def fetch_activity_records(
 ) -> list[ActivityRecord]:
     """Fetch auto-tracked activity entries from the database and normalize them."""
     close_stale_activity_entries(conn, time_module.time())
-    query ="SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
+    query = "SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
     clause_list = list(clauses)
     if clause_list:
         query += " WHERE " + " AND ".join(clause_list)
@@ -1356,7 +1356,11 @@ def _activity_bucket_key(classified: Classified) -> tuple[str, str, str, str, st
 
 def _close_activity_entry(conn: sqlite3.Connection, entry_id: int, end_ts: float) -> None:
     # MAX: an idle pause backdates the end, which must not precede the start.
-    conn.execute("UPDATE activity_entries SET end_ts = MAX(?, start_ts) WHERE id = ?", (end_ts, entry_id))
+    # end_ts IS NULL: never move the end of a row already closed as stale.
+    conn.execute(
+        "UPDATE activity_entries SET end_ts = MAX(?, start_ts) WHERE id = ? AND end_ts IS NULL",
+        (end_ts, entry_id),
+    )
     conn.commit()
 
 
@@ -1379,9 +1383,46 @@ STALE_AFTER_SECONDS = 600.0
 MAX_INTERVAL_SECONDS = 120.0
 
 
-def _heartbeat_activity_entry(conn: sqlite3.Connection, entry_id: int, now_ts: float) -> None:
-    conn.execute("UPDATE activity_entries SET last_seen_ts = ? WHERE id = ?", (now_ts, entry_id))
+def _heartbeat_activity_entry(conn: sqlite3.Connection, entry_id: int, now_ts: float) -> bool:
+    """Mark the open entry live; ``False`` if it was closed meanwhile (e.g. as stale after a hang)."""
+    cursor = conn.execute(
+        "UPDATE activity_entries SET last_seen_ts = ? WHERE id = ? AND end_ts IS NULL", (now_ts, entry_id)
+    )
     conn.commit()
+    return cursor.rowcount > 0
+
+
+class WatcherAlreadyRunning(RuntimeError):
+    """Another watcher holds the lock for this database."""
+
+
+def acquire_watch_lock(db_path: Path):
+    """Hold an exclusive lock so only one watcher records into ``db_path``.
+
+    Two watchers would each record the same time (counting it twice), and a
+    starting watcher closes every open entry -- including a live one's. The
+    lock is released by the OS when the process exits, however it exits.
+    Returns the open lock file, which must stay referenced; ``None`` where
+    ``fcntl`` doesn't exist (Windows).
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    path = db_path.with_name(db_path.name + ".watch.lock")
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.seek(0)
+        owner = handle.read().strip()
+        handle.close()
+        raise WatcherAlreadyRunning(owner) from None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
 
 
 def close_stale_activity_entries(
@@ -1507,6 +1548,14 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
         raise click.ClickException(f"No supported window backend found. {backend_hint()}")
     rules = _load_rules_or_fail()
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    try:
+        lock = acquire_watch_lock(db_path)  # noqa: F841 - held until the process exits
+    except WatcherAlreadyRunning as exc:
+        owner = f" (pid {exc})" if str(exc) else ""
+        raise click.ClickException(
+            f"Another `pytime auto watch` is already recording to {db_path}{owner}. "
+            "If it's the service, see `pytime auto service status`."
+        ) from exc
 
     click.echo(f"pytime auto: watching via {backend}, every {interval:g}s. Press Ctrl+C to stop.", err=True)
     pause_reason = ""
@@ -1559,7 +1608,8 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
 
                 last_tick_ts = time_module.time()
                 if current is not None and last_tick_ts - last_heartbeat_ts >= HEARTBEAT_SECONDS:
-                    _heartbeat_activity_entry(conn, current[0], last_tick_ts)
+                    if not _heartbeat_activity_entry(conn, current[0], last_tick_ts):
+                        current = None  # closed under us: the next tick opens a fresh entry
                     last_heartbeat_ts = last_tick_ts
 
                 if new_key != previous_key:

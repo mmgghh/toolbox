@@ -512,3 +512,62 @@ def test_watch_rejects_interval_beyond_heartbeat_window(runner, db, monkeypatch)
     result = runner.invoke(time_cli, ["auto", "watch", "--interval", "600"])
     assert result.exit_code != 0
     assert "--interval" in result.output
+
+
+def test_second_watcher_refuses_to_start(runner, db, monkeypatch):
+    import os
+
+    from pytoolbox.pytime import acquire_watch_lock
+
+    held = acquire_watch_lock(db)  # stands in for a watcher already running
+    try:
+        clock = _FakeClock(1_800_000_000.0)
+        result = _run_watch(runner, monkeypatch, clock, lambda n: _stop())
+        assert result.exit_code != 0
+        assert "already recording" in result.stderr
+        assert f"pid {os.getpid()}" in result.stderr
+        assert _entries(db) == []  # and it didn't touch the running watcher's data
+    finally:
+        held.close()
+
+
+def test_watch_lock_is_released_on_exit(runner, db, monkeypatch):
+    from pytoolbox.pytime import acquire_watch_lock
+
+    clock = _FakeClock(1_800_000_000.0)
+    assert _run_watch(runner, monkeypatch, clock, lambda n: n == 2 and _stop()).exit_code == 0
+    acquire_watch_lock(db).close()  # would raise if the watcher still held it
+
+
+def test_closing_never_moves_an_already_closed_entry(db):
+    from pytoolbox.pytime import _close_activity_entry
+
+    conn = connect(resolve_db_path(None))
+    state = advance_activity(conn, None, _classified(), 1000.0)
+    _close_activity_entry(conn, state[0], 1010.0)
+    _close_activity_entry(conn, state[0], 5000.0)
+    assert conn.execute("SELECT end_ts FROM activity_entries").fetchone()["end_ts"] == 1010.0
+    conn.close()
+
+
+def test_watch_reopens_when_its_entry_was_closed_under_it(runner, db, monkeypatch):
+    from pytoolbox.pytime import HEARTBEAT_SECONDS
+
+    clock = _FakeClock(1_800_000_000.0)
+
+    def on_tick(n):
+        if n == 3:  # e.g. a report closed it as stale after the watcher hung
+            conn = connect(resolve_db_path(None))
+            conn.execute("UPDATE activity_entries SET end_ts = start_ts + 1 WHERE end_ts IS NULL")
+            conn.commit()
+            conn.close()
+            clock.now += HEARTBEAT_SECONDS  # so this tick sends a heartbeat
+        if n == 6:
+            _stop()
+
+    result = _run_watch(runner, monkeypatch, clock, on_tick)
+    assert result.exit_code == 0, result.output
+    rows = _entries(db)
+    assert len(rows) == 2
+    assert rows[0]["end_ts"] == rows[0]["start_ts"] + 1  # left as the other process closed it
+    assert rows[1]["end_ts"] is not None
