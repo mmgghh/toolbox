@@ -22,7 +22,7 @@ from typing import Optional
 import click
 
 from pytoolbox.core import console
-from pytoolbox.core.activewindow import detect_backend, get_active_window, get_idle_seconds
+from pytoolbox.core.activewindow import backend_hint, detect_backend, get_active_window, get_idle_seconds
 from pytoolbox.core.activity_rules import Classified, classify_window, default_rules_path, load_rules
 from pytoolbox.core.intervals import (
     apply_interval,
@@ -1419,10 +1419,7 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
     """
     backend = detect_backend()
     if backend is None:
-        raise click.ClickException(
-            "No supported window backend found on this system (needs xdotool or xprop "
-            "on X11, or sway/hyprland on Wayland). Run `toolbox doctor` for details."
-        )
+        raise click.ClickException(f"No supported window backend found. {backend_hint()}")
     rules = load_rules()
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
 
@@ -1646,7 +1643,7 @@ def auto_rules() -> None:
     """
     path = default_rules_path()
     backend = detect_backend()
-    console.result(f"Window backend: {backend or 'none detected -- see `toolbox doctor`'}")
+    console.result(f"Window backend: {backend or 'none detected -- ' + backend_hint()}")
     console.result(f"Idle detection: {'available' if get_idle_seconds() is not None else 'unavailable'}")
     console.result(f"Rules override file: {path} ({'exists' if path.is_file() else 'not created yet'})")
     console.result("")

@@ -12,7 +12,8 @@ This project follows [Semantic Versioning](https://semver.org/).
   `status`/`report` mirror the manual commands (with `-g app`/`-g ext`/`-g
   category` grouping), and `rules` shows the active backend plus where to add
   custom classification rules. Built from window titles alone (X11 via
-  `xdotool`/`xprop`, Wayland via Sway/Hyprland only -- see `toolbox doctor`),
+  `xdotool`/`xprop`; Wayland via the GNOME "Focused Window D-Bus" extension,
+  `kdotool` on KDE, or Sway/Hyprland -- see `toolbox doctor`),
   since real file paths and browser URLs need an editor plugin or browser
   extension respectively, which this is not; titles are parsed with
   heuristics for common editors/terminals/browsers instead, extensible via

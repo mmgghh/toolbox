@@ -131,7 +131,61 @@ def test_hyprland_window_parses_json(monkeypatch):
 
 def test_get_idle_seconds_none_on_wayland(monkeypatch):
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "sway")
     assert aw.get_idle_seconds() is None
+
+
+def test_get_idle_seconds_from_gnome_mutter(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
+    monkeypatch.setattr(aw.shutil, "which", lambda name: "/usr/bin/gdbus" if name == "gdbus" else None)
+    monkeypatch.setattr(aw, "_run", lambda args: "(uint64 4500,)\n")
+    assert aw.get_idle_seconds() == 4.5
+
+
+def test_gnome_window_parses_extension_reply(monkeypatch):
+    payload = '{"title": "pytime.py — toolbox", "wm_class": "Code", "focus": true}'
+    monkeypatch.setattr(aw, "_run", lambda args: repr((payload,)) + "\n")
+    info = aw._gnome_window()
+    assert info.wm_class == "Code"
+    assert info.title == "pytime.py — toolbox"
+
+
+def test_gnome_window_handles_quotes_in_title(monkeypatch):
+    payload = '{"title": "it\'s a \\"test\\"", "wm_class": "firefox"}'
+    monkeypatch.setattr(aw, "_run", lambda args: repr((payload,)))
+    info = aw._gnome_window()
+    assert info.title == 'it\'s a "test"'
+
+
+def test_detect_backend_gnome_wayland(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("SWAYSOCK", raising=False)
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.setattr(aw.shutil, "which", lambda name: "/usr/bin/gdbus" if name == "gdbus" else None)
+    monkeypatch.setattr(aw, "_run", lambda args: "('{}',)")
+    assert aw.detect_backend() == "gnome"
+
+
+def test_detect_backend_kdotool_wayland(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.delenv("SWAYSOCK", raising=False)
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.setattr(aw.shutil, "which", lambda name: "/usr/bin/kdotool" if name == "kdotool" else None)
+    monkeypatch.setattr(aw, "_run", lambda args: "{abc}\n")
+    assert aw.detect_backend() == "kdotool"
+
+
+def test_backend_hint_names_the_gnome_extension(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
+    assert "Focused Window D-Bus" in aw.backend_hint()
+
+
+def test_backend_hint_names_kdotool_on_kde(monkeypatch):
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "KDE")
+    assert "kdotool" in aw.backend_hint()
 
 
 def test_get_idle_seconds_parses_xprintidle_ms(monkeypatch):

@@ -169,13 +169,22 @@ what you actually did. Extend the built-in rules (without replacing them) by
 creating `~/.pytime/rules.json`; run `pytime auto rules` to see the file
 location and its expected shape.
 
-**Platform support.** X11 desktops work via `xdotool` (or `xprop` as a
-fallback); Wayland only works under Sway (`swaymsg`) or Hyprland
-(`hyprctl`) -- GNOME/KDE on Wayland don't expose the focused window to
-arbitrary clients at all, by design, so `pytime auto watch` will refuse to
-start there. Idle/AFK pausing (`--idle-timeout`) additionally needs
-`xprintidle` and only works on X11; elsewhere the watcher never pauses on
-its own. Run `toolbox doctor` to see what this machine actually supports.
+**Platform support.** Wayland deliberately hides the focused window from
+ordinary programs, so each desktop needs its own helper:
+
+| Session | Needs |
+| --- | --- |
+| X11 | `xdotool` (or `xprop` as a fallback) |
+| GNOME on Wayland | the [Focused Window D-Bus](https://extensions.gnome.org/extension/5592/focused-window-d-bus/) Shell extension, enabled, then log out/in |
+| KDE Plasma on Wayland | [`kdotool`](https://github.com/jinliu/kdotool) |
+| Sway / Hyprland | `swaymsg` / `hyprctl` (ship with the compositor) |
+
+`xprop` is not used on Wayland even when installed: it only sees XWayland
+windows and would misattribute everything else. Idle/AFK pausing
+(`--idle-timeout`) works on GNOME (via Mutter's idle monitor, no extension
+needed) and on X11 with `xprintidle`; elsewhere the watcher never pauses on
+its own. `toolbox doctor` and `pytime auto rules` say which backend this
+machine uses, or exactly what to install if none.
 
 Auto-tracked entries live in their own `activity_entries` table -- they never
 appear in, or interfere with, `pytime report`/`status`/`edit` and friends.

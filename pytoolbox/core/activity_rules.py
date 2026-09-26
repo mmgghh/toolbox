@@ -71,6 +71,16 @@ DEFAULT_TERMINAL_CLASSES = {
     "st",
     "urxvt",
     "urxvt256c",
+    # Wayland app ids (GNOME/KDE report these instead of X11 classes).
+    "org.gnome.terminal",
+    "org.gnome.console",
+    "kgx",
+    "org.gnome.ptyxis",
+    "ptyxis",
+    "org.kde.konsole",
+    "org.wezfurlong.wezterm",
+    "com.mitchellh.ghostty",
+    "ghostty",
 }
 
 #: wm_class values (lowercased) treated as web browsers.
@@ -128,6 +138,15 @@ DEFAULT_APP_LABELS = {
     "st": "st",
     "urxvt": "urxvt",
     "urxvt256c": "urxvt",
+    "org.gnome.terminal": "Terminal",
+    "org.gnome.console": "Console",
+    "kgx": "Console",
+    "org.gnome.ptyxis": "Ptyxis",
+    "ptyxis": "Ptyxis",
+    "org.kde.konsole": "Konsole",
+    "org.wezfurlong.wezterm": "WezTerm",
+    "com.mitchellh.ghostty": "Ghostty",
+    "ghostty": "Ghostty",
     "google-chrome": "Chrome",
     "chromium": "Chromium",
     "chromium-browser": "Chromium",

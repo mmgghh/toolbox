@@ -46,12 +46,34 @@ def _is_wayland() -> bool:
     return os.environ.get("XDG_SESSION_TYPE", "").lower() == "wayland"
 
 
+def _desktop() -> str:
+    return os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+
+
+#: Needs the "Focused Window D-Bus" GNOME Shell extension
+#: (https://extensions.gnome.org/extension/5592/focused-window-d-bus/):
+#: GNOME deliberately gives no other way to read the focused window on Wayland.
+_GNOME_FOCUSED_WINDOW = [
+    "gdbus", "call", "--session",
+    "--dest", "org.gnome.Shell",
+    "--object-path", "/org/gnome/shell/extensions/FocusedWindow",
+    "--method", "org.gnome.shell.extensions.FocusedWindow.Get",
+]
+
+_GNOME_IDLE = [
+    "gdbus", "call", "--session",
+    "--dest", "org.gnome.Mutter.IdleMonitor",
+    "--object-path", "/org/gnome/Mutter/IdleMonitor/Core",
+    "--method", "org.gnome.Mutter.IdleMonitor.GetIdletime",
+]
+
+
 def detect_backend() -> Optional[str]:
     """Return the name of the backend this system can use, or ``None``.
 
-    Checked once per process (cheap enough that callers don't need to cache
-    it themselves); returns the same string ``pytime auto rules``/``toolbox
-    doctor`` show, so users can tell what will actually run.
+    Returns the same string ``pytime auto rules``/``toolbox doctor`` show, so
+    users can tell what will actually run. See :func:`backend_hint` for why
+    ``None`` came back.
     """
     if _is_wayland():
         if os.environ.get("SWAYSOCK") or shutil.which("swaymsg"):
@@ -60,6 +82,12 @@ def detect_backend() -> Optional[str]:
         if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or shutil.which("hyprctl"):
             if _run(["hyprctl", "activewindow", "-j"]) is not None:
                 return "hyprland"
+        if shutil.which("kdotool") and _run(["kdotool", "getactivewindow"]) is not None:
+            return "kdotool"
+        if shutil.which("gdbus") and _run(_GNOME_FOCUSED_WINDOW) is not None:
+            return "gnome"
+        # xprop still runs under XWayland but only sees X11 windows, so it
+        # would silently misattribute every native Wayland window.
         return None
     if shutil.which("xdotool"):
         return "xdotool"
@@ -68,13 +96,71 @@ def detect_backend() -> Optional[str]:
     return None
 
 
-def _xdotool_window() -> Optional[WindowInfo]:
-    win_id = _run(["xdotool", "getactivewindow"])
+def backend_hint() -> str:
+    """Explain what to install when :func:`detect_backend` finds nothing."""
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "") or "unknown"
+    if not _is_wayland():
+        return "Install xdotool (or xprop), e.g. `sudo apt install xdotool`."
+    lowered = _desktop()
+    if "gnome" in lowered or "ubuntu" in lowered or "unity" in lowered:
+        return (
+            f"Wayland on {desktop}: install and enable the GNOME Shell extension "
+            "\"Focused Window D-Bus\" (https://extensions.gnome.org/extension/5592/focused-window-d-bus/), "
+            "then log out and back in."
+        )
+    if "kde" in lowered or "plasma" in lowered:
+        return (
+            f"Wayland on {desktop}: install kdotool (https://github.com/jinliu/kdotool), "
+            "e.g. `cargo install kdotool` or your distro's package."
+        )
+    return (
+        f"Wayland on {desktop}: supported are GNOME (Focused Window D-Bus extension), "
+        "KDE (kdotool), Sway and Hyprland."
+    )
+
+
+def _xdotool_window(binary: str = "xdotool") -> Optional[WindowInfo]:
+    win_id = _run([binary, "getactivewindow"])
     if win_id is None or not win_id.strip():
         return None
     win_id = win_id.strip()
-    title = (_run(["xdotool", "getwindowname", win_id]) or "").strip()
-    wm_class = (_run(["xdotool", "getwindowclassname", win_id]) or "").strip()
+    title = (_run([binary, "getwindowname", win_id]) or "").strip()
+    wm_class = (_run([binary, "getwindowclassname", win_id]) or "").strip()
+    if not title and not wm_class:
+        return None
+    return WindowInfo(title=title, wm_class=wm_class)
+
+
+def _parse_gvariant_string(raw: str) -> Optional[str]:
+    """Pull the string out of gdbus's ``('...',)`` reply."""
+    import ast
+
+    try:
+        value = ast.literal_eval(raw.strip())
+    except (ValueError, SyntaxError):
+        return None
+    if isinstance(value, tuple) and value and isinstance(value[0], str):
+        return value[0]
+    return None
+
+
+def _gnome_window() -> Optional[WindowInfo]:
+    import json
+
+    raw = _run(_GNOME_FOCUSED_WINDOW)
+    if raw is None:
+        return None
+    payload = _parse_gvariant_string(raw)
+    if not payload:
+        return None
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    title = data.get("title") or ""
+    wm_class = data.get("wm_class") or data.get("wm_class_instance") or ""
     if not title and not wm_class:
         return None
     return WindowInfo(title=title, wm_class=wm_class)
@@ -165,6 +251,8 @@ _BACKENDS = {
     "xprop": _xprop_window,
     "sway": _sway_window,
     "hyprland": _hyprland_window,
+    "kdotool": lambda: _xdotool_window("kdotool"),
+    "gnome": _gnome_window,
 }
 
 
@@ -179,10 +267,17 @@ def get_active_window(backend: Optional[str] = None) -> Optional[WindowInfo]:
 def get_idle_seconds() -> Optional[float]:
     """Seconds since the last keyboard/mouse input, or ``None`` if unknown.
 
-    Only implemented for X11 via ``xprintidle`` -- Wayland compositors don't
-    expose idle time to arbitrary clients, so AFK detection is simply
-    unavailable there (``pytime auto watch`` keeps tracking regardless).
+    X11 uses ``xprintidle``; GNOME (X11 or Wayland) answers over D-Bus via
+    Mutter's IdleMonitor. Other Wayland compositors don't expose idle time to
+    arbitrary clients, so AFK detection is unavailable there and
+    ``pytime auto watch`` keeps tracking regardless.
     """
+    if shutil.which("gdbus") and "gnome" in _desktop():
+        raw = _run(_GNOME_IDLE)
+        if raw is not None:
+            match = re.search(r"(\d+)\s*,?\s*\)\s*$", raw)
+            if match:
+                return int(match.group(1)) / 1000
     if _is_wayland() or not shutil.which("xprintidle"):
         return None
     raw = _run(["xprintidle"])
