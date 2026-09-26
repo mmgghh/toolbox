@@ -94,6 +94,21 @@ def test_classify_browser_unknown_site_leaves_project_blank():
     assert result.detail == "Some Random Page"
 
 
+def test_classify_claude_desktop_app_uses_app_as_project():
+    win = WindowInfo(title="Claude", wm_class="com.anthropic.Claude")
+    result = classify_window(win)
+    assert result.category == "other"
+    assert result.app == "Claude"
+    assert result.project == "Claude"
+
+
+def test_app_projects_override(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps({"app_projects": {"com.example.Notes": "Notes"}}), encoding="utf-8")
+    result = classify_window(WindowInfo(title="x", wm_class="com.example.Notes"), load_rules(path))
+    assert result.project == "Notes"
+
+
 def test_classify_unknown_app_falls_back_to_other():
     win = WindowInfo(title="whatever", wm_class="some-random-app")
     result = classify_window(win)

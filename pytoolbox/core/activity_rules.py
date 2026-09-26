@@ -183,6 +183,33 @@ DEFAULT_SITES = {
     "trello": "Trello",
 }
 
+#: wm_class (lowercased) of standalone desktop apps -> project label. Their
+#: titles rarely say more than the app's name, so the app itself is the
+#: most specific honest answer (the same way a ChatGPT browser tab is
+#: attributed to "ChatGPT").
+DEFAULT_APP_PROJECTS = {
+    "com.anthropic.claude": "Claude",
+    "claude": "Claude",
+    "chatgpt": "ChatGPT",
+    "com.openai.chatgpt": "ChatGPT",
+    "slack": "Slack",
+    "com.slack.slack": "Slack",
+    "discord": "Discord",
+    "com.discordapp.discord": "Discord",
+    "telegramdesktop": "Telegram",
+    "org.telegram.desktop": "Telegram",
+    "obsidian": "Obsidian",
+    "md.obsidian.obsidian": "Obsidian",
+    "notion": "Notion",
+    "spotify": "Spotify",
+    "com.spotify.client": "Spotify",
+    "zoom": "Zoom",
+    "us.zoom.zoom": "Zoom",
+    "thunderbird": "Thunderbird",
+    "org.mozilla.thunderbird": "Thunderbird",
+    "org.gnome.nautilus": "Files",
+}
+
 #: Suffixes editors/browsers append to their window title, stripped before
 #: the remainder is treated as a project/page name.
 _APP_SUFFIXES = (
@@ -253,6 +280,7 @@ class Rules:
     browser_classes: set = field(default_factory=lambda: set(DEFAULT_BROWSER_CLASSES))
     app_labels: dict = field(default_factory=lambda: dict(DEFAULT_APP_LABELS))
     sites: dict = field(default_factory=lambda: dict(DEFAULT_SITES))
+    app_projects: dict = field(default_factory=lambda: dict(DEFAULT_APP_PROJECTS))
 
 
 def default_rules_path() -> Path:
@@ -265,7 +293,8 @@ def load_rules(path: Optional[Path] = None) -> Rules:
 
     The override file adds to the defaults rather than replacing them:
     ``{"editor_classes": [...], "terminal_classes": [...],
-    "browser_classes": [...], "app_labels": {...}, "sites": {...}}`` --
+    "browser_classes": [...], "app_labels": {...}, "sites": {...},
+    "app_projects": {...}}`` --
     every key is optional, and lists/dicts are merged in, not swapped out.
     """
     rules = Rules()
@@ -281,6 +310,7 @@ def load_rules(path: Optional[Path] = None) -> Rules:
     rules.browser_classes.update(c.lower() for c in overrides.get("browser_classes", []))
     rules.app_labels.update({k.lower(): v for k, v in overrides.get("app_labels", {}).items()})
     rules.sites.update({k.lower(): v for k, v in overrides.get("sites", {}).items()})
+    rules.app_projects.update({k.lower(): v for k, v in overrides.get("app_projects", {}).items()})
     return rules
 
 
@@ -359,4 +389,7 @@ def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Classifie
         return _classify_terminal(win, app if app != "Unknown" else "Terminal")
     if wm_class in rules.browser_classes:
         return _classify_browser(win, rules, app if app != "Unknown" else "Browser")
-    return Classified(category="other", app=app, project="", detail=win.title.strip(), ext="")
+    project = rules.app_projects.get(wm_class, "")
+    if project and wm_class not in rules.app_labels:
+        app = project
+    return Classified(category="other", app=app, project=project, detail=win.title.strip(), ext="")

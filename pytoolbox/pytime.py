@@ -1699,6 +1699,7 @@ def auto_rules() -> None:
                 "browser_classes": [],
                 "app_labels": {"my-editor-wm-class": "My Editor"},
                 "sites": {"my-site.com": "My Site"},
+                "app_projects": {"com.example.app": "Example"},
             },
             indent=2,
         )

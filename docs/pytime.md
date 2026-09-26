@@ -156,9 +156,9 @@ an editor plugin or a browser extension. `pytime auto` works only from the
 window title and window class every desktop already exposes, parsed with
 heuristics for common apps:
 
-- **Editors** (VS Code, PyCharm/JetBrains family, Sublime, vim/nvim): the
-  title's `file — project` convention gives a filename (and its extension)
-  and a project name.
+- **Editors** (VS Code, any JetBrains IDE, Sublime, vim/nvim): the title's
+  `file — project` (VS Code) or `project – file` (JetBrains) convention gives
+  a filename (and its extension) and a project name.
 - **Terminals** (gnome-terminal, konsole, alacritty, kitty, ...): a
   `~/path`-looking fragment in the title becomes the project; a title
   mentioning "claude" is labeled `(Claude Code)`.
@@ -166,8 +166,12 @@ heuristics for common apps:
   tab title is matched against a small table of known sites (ChatGPT, Claude,
   GitHub, GitLab, Notion, Figma, Jira, Slack, YouTube, Gmail, Google
   Docs/Sheets/Calendar, Linear, Trello, ...) to fill in a project name.
+- **Desktop apps** whose titles say nothing useful (the Claude and ChatGPT
+  apps, Slack, Discord, Telegram, Obsidian, Zoom, ...) take the app itself as
+  the project, e.g. the Claude app is always project `Claude` -- it can't tell
+  which of your projects a conversation was about.
 - Anything else is recorded under category `other` with the raw title as
-  `detail`, rather than a guessed project.
+  `detail` and no project, rather than a guessed one.
 
 Titles vary across app versions, themes and locales, so treat this as
 best-effort, not ground truth -- spot-check `pytime auto report` against
