@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import time
 
 import pytest
@@ -260,6 +262,34 @@ def test_auto_shell_init_prints_hook(runner):
     assert "__pytime_preexec" in result.output
     assert "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1" in result.output
     assert "add-zsh-hook" in runner.invoke(time_cli, ["auto", "shell-init", "zsh"]).output
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+@pytest.mark.parametrize(
+    ("setup", "expected"),
+    [
+        ("", "__pytime_precmd"),
+        # pyenv-virtualenv leaves a trailing ";", which once produced ";;".
+        ("PROMPT_COMMAND='_other; '", "_other; __pytime_precmd"),
+        ("PROMPT_COMMAND=_other", "_other; __pytime_precmd"),
+        ("PROMPT_COMMAND=(_other)", "_other __pytime_precmd"),
+    ],
+)
+def test_bash_hook_joins_prompt_command_once(tmp_path, setup, expected):
+    from pytoolbox.core.activity_shell import snippet
+
+    hook = tmp_path / "hook.sh"
+    hook.write_text(snippet("bash"))
+    script = (
+        f"_other() {{ :; }}; {setup}\n"
+        f"source {hook}; source {hook}\n"  # loading it twice must not add it twice
+        'for c in "${PROMPT_COMMAND[@]}"; do eval "$c" || exit 1; done\n'
+        'echo "${PROMPT_COMMAND[*]}"\n'
+    )
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert result.stdout.rstrip("\n").endswith(expected)
 
 
 def test_watch_pauses_while_screen_locked(runner, db, monkeypatch):

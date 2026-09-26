@@ -71,7 +71,17 @@ else
     __pytime_preexec "$BASH_COMMAND"
   }
   trap '__pytime_debug' DEBUG
-  PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }__pytime_precmd"
+  if [[ $(declare -p PROMPT_COMMAND 2>/dev/null) == "declare -a"* ]]; then
+    # bash 5.1+ runs each element of an array PROMPT_COMMAND.
+    [[ " ${PROMPT_COMMAND[*]} " == *" __pytime_precmd "* ]] || PROMPT_COMMAND+=(__pytime_precmd)
+  elif [[ ${PROMPT_COMMAND-} != *__pytime_precmd* ]]; then
+    # Drop trailing ";" and whitespace first (pyenv-virtualenv leaves "hook;"),
+    # or the join below would produce ";;", a syntax error.
+    __pytime_pc=${PROMPT_COMMAND-}
+    while [[ $__pytime_pc == *[[:space:]\;] ]]; do __pytime_pc=${__pytime_pc%?}; done
+    PROMPT_COMMAND="${__pytime_pc:+$__pytime_pc; }__pytime_precmd"
+    unset __pytime_pc
+  fi
 fi
 """
 
