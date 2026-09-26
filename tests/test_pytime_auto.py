@@ -125,6 +125,40 @@ def test_auto_report_filters_by_category(runner, db):
     assert rows[0]["app"] == "Chrome"
 
 
+def test_auto_report_search_and_no_project(runner, db):
+    _seed(db)
+    found = json.loads(runner.invoke(time_cli, ["auto", "report", "-q", "b.m", "--format", "json"]).stdout)
+    assert [row["detail"] for row in found] == ["b.md"]
+    result = runner.invoke(time_cli, ["auto", "report", "--no-project"])
+    assert "No records found" in result.output
+
+
+def test_auto_delete_by_filter(runner, db):
+    _seed(db)
+    result = runner.invoke(time_cli, ["auto", "delete", "--app", "Chrome", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Deleted 1" in result.output
+    rows = json.loads(runner.invoke(time_cli, ["auto", "report", "--format", "json"]).stdout)
+    assert {row["app"] for row in rows} == {"VS Code"}
+
+
+def test_auto_delete_requires_filter_or_all(runner, db):
+    _seed(db)
+    refused = runner.invoke(time_cli, ["auto", "delete", "--yes"])
+    assert refused.exit_code != 0
+    assert "--all" in refused.stderr
+    done = runner.invoke(time_cli, ["auto", "delete", "--all", "--yes"])
+    assert "Deleted 3" in done.output
+
+
+def test_auto_delete_leaves_manual_entries(runner, db):
+    runner.invoke(time_cli, ["start", "keep me"])
+    _seed(db)
+    runner.invoke(time_cli, ["auto", "delete", "--all", "--yes"])
+    payload = json.loads(runner.invoke(time_cli, ["status", "--json"]).stdout)
+    assert payload["entries"][0]["task"] == "keep me"
+
+
 def test_auto_report_no_records(runner, db):
     result = runner.invoke(time_cli, ["auto", "report"])
     assert result.exit_code == 0

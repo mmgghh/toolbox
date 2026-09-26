@@ -86,6 +86,27 @@ def test_classify_browser_matches_known_site():
     assert result.detail == "ChatGPT"
 
 
+def test_classify_browser_matches_claude_code_page():
+    win = WindowInfo(title="Claude Code - Google Chrome", wm_class="google-chrome")
+    assert classify_window(win).project == "Claude"
+
+
+def test_classify_browser_site_needs_whole_word():
+    win = WindowInfo(title="Reading about claudetown - Google Chrome", wm_class="google-chrome")
+    assert classify_window(win).project == ""
+
+
+def test_classify_browser_strips_bidi_marks_around_rtl_title():
+    win = WindowInfo(title="‎‫خانه - Google Chrome‬‎", wm_class="google-chrome")
+    result = classify_window(win)
+    assert result.detail == "خانه"
+
+
+def test_classify_browser_new_tab_has_empty_detail():
+    win = WindowInfo(title="Google Chrome", wm_class="google-chrome")
+    assert classify_window(win).detail == ""
+
+
 def test_classify_browser_unknown_site_leaves_project_blank():
     win = WindowInfo(title="Some Random Page - Google Chrome", wm_class="google-chrome")
     result = classify_window(win)

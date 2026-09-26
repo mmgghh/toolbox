@@ -164,8 +164,7 @@ DEFAULT_APP_LABELS = {
 #: if you add your own.
 DEFAULT_SITES = {
     "chatgpt": "ChatGPT",
-    "claude.ai": "Claude",
-    " claude": "Claude",
+    "claude": "Claude",
     "github": "GitHub",
     "gitlab": "GitLab",
     "stack overflow": "Stack Overflow",
@@ -363,20 +362,35 @@ def _classify_terminal(win: WindowInfo, app: str) -> Classified:
     return Classified(category="terminal", app=label, project=project, detail=win.title.strip(), ext="")
 
 
+def _site_matches(needle: str, lowered: str) -> bool:
+    # Whole-word match, so "claude" hits "Claude Code" but a site name never
+    # matches inside an unrelated longer word.
+    return re.search(rf"(?<![\w]){re.escape(needle)}(?![\w])", lowered) is not None
+
+
 def _classify_browser(win: WindowInfo, rules: Rules, app: str) -> Classified:
     page_title = _strip_app_suffix(win.title)
+    if page_title.lower() in _APP_SUFFIXES:
+        page_title = ""  # a new/blank tab: the title is just the browser's name
     lowered = page_title.lower()
     project = ""
     for needle, label in rules.sites.items():
-        if needle in lowered:
+        if _site_matches(needle, lowered):
             project = label
             break
     return Classified(category="browser", app=app, project=project, detail=page_title, ext="")
 
 
+#: Invisible bidi controls (LRM/RLM, embeddings, isolates). Chrome wraps
+#: right-to-left titles in them, which would hide the " - Google Chrome"
+#: suffix from an ``endswith`` check.
+_BIDI_CONTROLS_RE = re.compile("[‎‏‪-‮⁦-⁩]")
+
+
 def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Classified:
     """Classify a raw window into a category, app, project, file/page, and extension."""
     rules = rules or Rules()
+    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class)
     wm_class = (win.wm_class or "").lower()
     app = rules.app_labels.get(wm_class, win.wm_class or "Unknown")
 

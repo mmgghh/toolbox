@@ -1514,81 +1514,74 @@ def auto_status(as_json: bool) -> None:
     console.result(f"Elapsed: {payload['elapsed']} ({format_hours_minutes(record.duration_hours)})")
 
 
-@auto.command("report")
-@click.option("-p", "--project", type=str, help="Project filter (optional).")
-@click.option("--app", type=str, help="App filter (optional).")
-@click.option(
-    "--category",
-    type=click.Choice(["editor", "terminal", "browser", "other"], case_sensitive=False),
-    help="Category filter (optional).",
+_ACTIVITY_FILTER_OPTIONS = (
+    click.option("-i", "--id", "entry_id", type=int, help="Entry id filter (optional)."),
+    click.option("-p", "--project", type=str, help="Project filter, substring (optional)."),
+    click.option("--no-project", is_flag=True, help="Only entries with no project."),
+    click.option("--app", type=str, help="App filter, substring (optional)."),
+    click.option(
+        "--category",
+        type=click.Choice(["editor", "terminal", "browser", "other"], case_sensitive=False),
+        help="Category filter (optional).",
+    ),
+    click.option("--ext", type=str, help="File extension filter (optional)."),
+    click.option(
+        "-q", "--search", type=str, help="Substring of the captured title/file/page (the detail column)."
+    ),
+    click.option(
+        "--interval",
+        "interval_value",
+        type=str,
+        help="Relative interval (PostgreSQL style). When set, start/end are ignored.",
+    ),
+    click.option("-s", "--start", "start_value", type=str, help="Start time (optional)."),
+    click.option("-e", "--end", "end_value", type=str, help="End time (optional)."),
+    click.option(
+        "-c",
+        "--calendar",
+        type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+        help="Calendar for date inputs/grouping (jalali/gregorian).",
+    ),
 )
-@click.option("--ext", type=str, help="File extension filter (optional).")
-@click.option(
-    "--interval",
-    "interval_value",
-    type=str,
-    help="Relative interval (PostgreSQL style). When set, start/end are ignored.",
-)
-@click.option("-s", "--start", "start_value", type=str, help="Report start time (optional).")
-@click.option("-e", "--end", "end_value", type=str, help="Report end time (optional).")
-@click.option(
-    "-g",
-    "--group-by",
-    "group_by",
-    multiple=True,
-    help="Group by fields (category, app, project, ext, year, month, day).",
-)
-@click.option(
-    "-c",
-    "--calendar",
-    type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
-    help="Calendar for date inputs/grouping (jalali/gregorian).",
-)
-@format_option()
-@click.option("-o", "--output", type=str, help="Write the report to this file instead of stdout.")
-@click.option("--no-total", is_flag=True, help="Omit the totals line under table output.")
-def auto_report(
+
+
+def _activity_filter_options(func):
+    for option in reversed(_ACTIVITY_FILTER_OPTIONS):
+        func = option(func)
+    return func
+
+
+def _activity_filters(
+    entry_id: Optional[int],
     project: Optional[str],
+    no_project: bool,
     app: Optional[str],
     category: Optional[str],
     ext: Optional[str],
+    search: Optional[str],
     interval_value: Optional[str],
     start_value: Optional[str],
     end_value: Optional[str],
-    group_by: tuple[str, ...],
-    calendar: Optional[str],
-    output_format: str,
-    output: Optional[str],
-    no_total: bool,
-) -> None:
-    """Report on auto-tracked time, optionally grouped and exported.
-
-    \b
-    Examples:
-      pytime auto report --interval "7 days"
-      pytime auto report --category editor -g ext
-      pytime auto report -g project -g app
-      pytime auto report --format json
-    """
-    group_items = _normalize_activity_group_by(group_by)
+    calendar_value: str,
+    allow_fallback: bool,
+) -> tuple[list[str], list[object]]:
+    """SQL clauses for the filters ``auto report`` and ``auto delete`` share."""
     if interval_value and (start_value or end_value):
         raise click.ClickException("Interval is incompatible with start/end filters.")
-
-    if {"month", "day"} & set(group_items) and "year" not in group_items:
-        raise click.ClickException("Grouping by month/day requires year.")
-    if "day" in group_items and "month" not in group_items:
-        raise click.ClickException("Grouping by day requires month.")
-
-    calendar_value, allow_fallback = parse_calendar(calendar)
+    if project and no_project:
+        raise click.ClickException("Use either --project or --no-project, not both.")
 
     clauses: list[str] = []
     params: list[object] = []
-    if project:
-        clauses.append("project LIKE ? ESCAPE '\\' COLLATE NOCASE")
-        params.append(f"%{escape_like(project)}%")
-    if app:
-        clauses.append("app LIKE ? ESCAPE '\\' COLLATE NOCASE")
-        params.append(f"%{escape_like(app)}%")
+    if entry_id is not None:
+        clauses.append("id = ?")
+        params.append(entry_id)
+    if no_project:
+        clauses.append("(project IS NULL OR project = '')")
+    for column, value in (("project", project), ("app", app), ("detail", search)):
+        if value:
+            clauses.append(f"{column} LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(f"%{escape_like(value)}%")
     if category:
         clauses.append("category = ?")
         params.append(category.lower())
@@ -1613,6 +1606,60 @@ def auto_report(
             end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
             clauses.append("start_ts <= ?")
             params.append(end_dt.timestamp())
+    return clauses, params
+
+
+@auto.command("report")
+@_activity_filter_options
+@click.option(
+    "-g",
+    "--group-by",
+    "group_by",
+    multiple=True,
+    help="Group by fields (category, app, project, ext, year, month, day).",
+)
+@format_option()
+@click.option("-o", "--output", type=str, help="Write the report to this file instead of stdout.")
+@click.option("--no-total", is_flag=True, help="Omit the totals line under table output.")
+def auto_report(
+    entry_id: Optional[int],
+    project: Optional[str],
+    no_project: bool,
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    search: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar: Optional[str],
+    group_by: tuple[str, ...],
+    output_format: str,
+    output: Optional[str],
+    no_total: bool,
+) -> None:
+    """Report on auto-tracked time, optionally filtered, grouped and exported.
+
+    \b
+    Examples:
+      pytime auto report --interval "7 days"
+      pytime auto report -g app -g project
+      pytime auto report --category editor -g ext
+      pytime auto report -q chatgpt                # search captured titles
+      pytime auto report --no-project -g app       # what's still unattributed
+      pytime auto report --format json
+    """
+    group_items = _normalize_activity_group_by(group_by)
+    if {"month", "day"} & set(group_items) and "year" not in group_items:
+        raise click.ClickException("Grouping by month/day requires year.")
+    if "day" in group_items and "month" not in group_items:
+        raise click.ClickException("Grouping by day requires month.")
+
+    calendar_value, allow_fallback = parse_calendar(calendar)
+    clauses, params = _activity_filters(
+        entry_id, project, no_project, app, category, ext, search,
+        interval_value, start_value, end_value, calendar_value, allow_fallback,
+    )
 
     db_path = resolve_db_path(click.get_current_context().obj["db_path"])
     with connect(db_path) as conn:
@@ -1629,6 +1676,66 @@ def auto_report(
         headers = _ACTIVITY_HEADERS
 
     _emit_report(rows, headers, records, output_format, output, no_total)
+
+
+@auto.command("delete")
+@_activity_filter_options
+@click.option("--all", "delete_all", is_flag=True, help="Allow deleting with no filters (every auto entry).")
+@click.option("-y", "--yes", "assume_yes", is_flag=True, help="Delete without confirmation.")
+def auto_delete(
+    entry_id: Optional[int],
+    project: Optional[str],
+    no_project: bool,
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    search: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar: Optional[str],
+    delete_all: bool,
+    assume_yes: bool,
+) -> None:
+    """Delete auto-tracked entries matching filters (manual entries are never touched).
+
+    \b
+    Takes the same filters as `pytime auto report`, so run the report first
+    to see exactly what will go.
+
+    \b
+    Examples:
+      pytime auto delete --id 12
+      pytime auto delete --app Chrome -q "YouTube" --yes
+      pytime auto delete --interval "1 hour"
+      pytime auto delete --all --yes
+    """
+    calendar_value, allow_fallback = parse_calendar(calendar)
+    clauses, params = _activity_filters(
+        entry_id, project, no_project, app, category, ext, search,
+        interval_value, start_value, end_value, calendar_value, allow_fallback,
+    )
+    if not clauses and not delete_all:
+        raise click.ClickException("No filters given; pass --all to delete every auto-tracked entry.")
+
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, clauses, params)
+        if not records:
+            click.echo("No records matched the delete filters.")
+            return
+
+        total_hours = sum(record.duration_hours for record in records)
+        if not assume_yes:
+            click.echo(f"Records to delete: {len(records)}")
+            click.echo(f"Total duration (hours): {format_total_value(round(total_hours, 3))}")
+            if not click.confirm("Proceed with deletion?"):
+                click.echo("Deletion canceled.")
+                return
+
+        conn.executemany("DELETE FROM activity_entries WHERE id = ?", [(r.entry_id,) for r in records])
+
+    click.echo(f"Deleted {len(records)} auto-tracked entr{'y' if len(records) == 1 else 'ies'}.")
 
 
 @auto.command("probe")

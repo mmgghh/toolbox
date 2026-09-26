@@ -144,6 +144,23 @@ pytime auto rules                          # active backend + how to extend clas
 pytime auto probe                          # raw title/class of the focused window, and how it was classified
 ```
 
+`report` and `delete` take the same filters: `--id`, `-p/--project`,
+`--no-project`, `--app`, `--category`, `--ext`, `-q/--search` (substring of
+the captured title/file/page), `--interval`, `-s/--start`, `-e/--end`.
+
+```shell
+pytime auto report -g app -g project       # an unknown site/terminal still shows under its app
+pytime auto report --no-project -g app     # what the rules didn't attribute
+pytime auto report -q youtube              # search captured titles
+pytime auto delete --app Chrome -q youtube # preview + confirm, then delete
+pytime auto delete --interval "1 hour" --yes
+pytime auto delete --all --yes             # every auto entry; manual entries are never touched
+```
+
+Grouping by `project` alone puts everything unattributed (unknown sites,
+terminals outside a project directory) in one blank row -- add `-g app` to
+split it.
+
 If a report shows a blank project or the wrong app, run `pytime auto probe`,
 switch to that window within the 3-second delay, and compare the raw
 `wm_class`/`title` with the classification. Unknown classes go in
