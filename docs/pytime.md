@@ -138,7 +138,8 @@ manual ones (until you choose to copy them over with `suggest --apply`).
 ```shell
 toolbox doctor                             # which window backend works here (see Platform support)
 pytime auto service install --now          # run the watcher now and at every login
-echo 'eval "$(pytime auto shell-init bash)"' >> ~/.bashrc   # or zsh / ~/.zshrc
+# only needed for tmux/ssh; see "Terminals and Claude Code" below
+echo 'eval "$(pytime auto shell-init bash)"' >> ~/.bashrc
 ```
 
 ### Day to day
@@ -185,29 +186,41 @@ D-Bus interface); you've been idle longer than `--idle-timeout` minutes (GNOME,
 or X11 with `xprintidle`); no window is focused; or the focused window matches
 an `ignore` rule.
 
-### Terminals and Claude Code: `shell-init`
+### Terminals and Claude Code
 
-A terminal's title is whatever the shell last set, which often isn't the
-project directory. `pytime auto shell-init bash|zsh` prints a hook that keeps
-it as `<command> @ <project dir>` while a command runs and `<project dir>` at
-the prompt, where the project dir is the git repository root:
+For a focused terminal, `pytime auto` doesn't trust the title: it follows the
+window's process in `/proc` to each tab's shell, takes the tab you typed into
+most recently, and reads what's running there and in which directory. That
+directory is resolved to its git repository root:
 
 ```
-claude @ ~/projects/toolbox        -> Terminal (Claude Code), project toolbox
-nvim pytime.py @ ~/projects/toolbox -> Terminal, project toolbox, file pytime.py (py)
-~/projects/toolbox                 -> Terminal, project toolbox
+claude running in ~/projects/samt/src   -> Terminal (Claude Code), project samt
+nvim pytime.py in ~/projects/toolbox    -> Terminal, project toolbox, file pytime.py (py)
+a prompt in ~/projects/toolbox          -> Terminal, project toolbox, detail "shell"
+a prompt in ~                           -> Terminal, no project
 ```
 
-Only the command's first word goes in the title (plus the file name for
-terminal editors), never its arguments, so nothing secret typed on a command
-line is stored. The hook also sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`,
-since Claude Code would otherwise replace the title with its conversation
-topic. In bash it uses bash-preexec if you have it, or a `DEBUG` trap
-otherwise (replacing any `DEBUG` trap you had).
+Only the program's name (and, for terminal editors, the file's name) is
+stored, never its arguments. This needs no setup, but it can't see inside
+`ssh`, `tmux`/`screen`/`zellij` or containers, and sandboxed (Flatpak)
+terminals hide their processes entirely. There the window title is used,
+and `pytime auto shell-init bash|zsh` makes the title useful -- it keeps it
+as `<command> @ <git root>`, and works across ssh if the remote shell runs
+it too:
 
-Even without the hook, a path in a terminal title is resolved to its git
-repository, so a terminal in `~/projects/toolbox/pytoolbox/core` counts as
-`toolbox`.
+```shell
+# pytime must be on PATH when the rc file runs; from a virtualenv, use its full path:
+echo 'eval "$(~/projects/toolbox/venv/bin/pytime auto shell-init bash)"' >> ~/.bashrc
+```
+
+Like the `/proc` reader, the hook only puts a command's first word in the
+title. It also sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, since Claude Code
+would otherwise replace the title with its conversation topic. In bash it
+uses bash-preexec if you have it, or a `DEBUG` trap otherwise (replacing any
+`DEBUG` trap you had).
+
+`pytime auto probe` on a terminal shows both what `/proc` found and the raw
+title, so you can see which one was used.
 
 ### Reports, search and cleanup
 
@@ -251,8 +264,8 @@ common apps:
 - **Editors** (VS Code, any JetBrains IDE, Sublime, vim/nvim): the title's
   `file — project` (VS Code) or `project – file` (JetBrains) convention gives
   a file (and its extension) and a project.
-- **Terminals**: see `shell-init` above; otherwise a `~/path` in the title,
-  resolved to its git root.
+- **Terminals**: the focused tab's program and directory from `/proc` (see
+  above); otherwise a `~/path` or `shell-init` title, resolved to its git root.
 - **Browsers** (Chrome, Chromium, Firefox, Brave, Edge, Opera, Vivaldi):
   GitHub tabs are attributed to their repository (`… · owner/repo` →
   `repo`), GitLab tabs to their project, Jira tabs (`[ABC-12] …`) to the

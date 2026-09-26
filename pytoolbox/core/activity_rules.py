@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from pytoolbox.core import procinfo
 from pytoolbox.core.activewindow import WindowInfo
 
 #: wm_class values (lowercased) treated as code editors.
@@ -418,8 +419,6 @@ def _classify_editor(win: WindowInfo, rules: Rules, app: str, project_first: boo
 #: Title written by ``pytime auto shell-init``: ``<command> @ <project dir>``.
 _COMMAND_TITLE_RE = re.compile(r"^(?P<cmd>.+?) @ (?P<path>[~/].*)$")
 
-#: Programs whose last argument is the file being edited in a terminal.
-_TERMINAL_EDITORS = {"vim", "nvim", "vi", "nano", "emacs", "hx", "helix", "micro", "kak"}
 
 
 def project_root_name(path_text: str) -> str:
@@ -437,6 +436,8 @@ def project_root_name(path_text: str) -> str:
     except OSError:
         current = None
     if current is not None:
+        if current == home:
+            return ""
         for directory in (current, *current.parents):
             if directory == home or directory == directory.parent:
                 break
@@ -447,6 +448,22 @@ def project_root_name(path_text: str) -> str:
 
 
 def _classify_terminal(win: WindowInfo, app: str) -> Classified:
+    """What the focused tab runs, and where; from /proc when possible, else its title."""
+    context = procinfo.terminal_context(win.pid)
+    if context is not None and context.program not in procinfo.PASSTHROUGH:
+        detail = f"{context.program} {context.file}".strip() if context.program else "shell"
+        label = f"{app} (Claude Code)" if context.program == "claude" else app
+        return Classified(
+            category="terminal",
+            app=label,
+            project=project_root_name(context.cwd),
+            detail=detail,
+            ext=_extension_of(context.file),
+        )
+    return _classify_terminal_title(win, app)
+
+
+def _classify_terminal_title(win: WindowInfo, app: str) -> Classified:
     title = win.title.strip()
     match = _COMMAND_TITLE_RE.match(title)
     if match:
@@ -463,7 +480,7 @@ def _classify_terminal(win: WindowInfo, app: str) -> Classified:
 
     project = project_root_name(path_text) if path_text else ""
     detail, ext = (command or title), ""
-    if program in _TERMINAL_EDITORS and len(command.split()) > 1:
+    if program in procinfo.TERMINAL_EDITORS and len(command.split()) > 1:
         detail = command.split()[-1].rsplit("/", 1)[-1]
         ext = _extension_of(detail)
     label = f"{app} (Claude Code)" if is_claude else app
@@ -549,7 +566,7 @@ def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Optional[
     everything derived from its title.
     """
     rules = rules or Rules()
-    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class)
+    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class, pid=win.pid)
     action = privacy_action(win, rules)
     if action == "ignore":
         return None

@@ -28,6 +28,17 @@ class WindowInfo:
 
     title: str
     wm_class: str
+    #: Process owning the window, when the backend reports it; lets a terminal
+    #: window be traced to what is running in it (see ``procinfo``).
+    pid: Optional[int] = None
+
+
+def _as_pid(value: object) -> Optional[int]:
+    try:
+        pid = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
 
 
 def _run(args: list[str]) -> Optional[str]:
@@ -128,7 +139,7 @@ def _xdotool_window(binary: str = "xdotool") -> Optional[WindowInfo]:
     wm_class = (_run([binary, "getwindowclassname", win_id]) or "").strip()
     if not title and not wm_class:
         return None
-    return WindowInfo(title=title, wm_class=wm_class)
+    return WindowInfo(title=title, wm_class=wm_class, pid=_as_pid(_run([binary, "getwindowpid", win_id])))
 
 
 def _parse_gvariant_string(raw: str) -> Optional[str]:
@@ -163,12 +174,13 @@ def _gnome_window() -> Optional[WindowInfo]:
     wm_class = data.get("wm_class") or data.get("wm_class_instance") or ""
     if not title and not wm_class:
         return None
-    return WindowInfo(title=title, wm_class=wm_class)
+    return WindowInfo(title=title, wm_class=wm_class, pid=_as_pid(data.get("pid")))
 
 
 _XPROP_ACTIVE_RE = re.compile(r"window id # (0x[0-9a-fA-F]+)")
 _XPROP_STRING_RE = re.compile(r'=\s*"(.*)"\s*$')
 _XPROP_CLASS_RE = re.compile(r'=\s*"[^"]*",\s*"([^"]*)"\s*$')
+_XPROP_PID_RE = re.compile(r"=\s*(\d+)\s*$")
 
 
 def _xprop_window() -> Optional[WindowInfo]:
@@ -179,11 +191,12 @@ def _xprop_window() -> Optional[WindowInfo]:
     if not match:
         return None
     win_id = match.group(1)
-    info = _run(["xprop", "-id", win_id, "WM_CLASS", "_NET_WM_NAME", "WM_NAME"])
+    info = _run(["xprop", "-id", win_id, "WM_CLASS", "_NET_WM_NAME", "WM_NAME", "_NET_WM_PID"])
     if info is None:
         return None
     title = ""
     wm_class = ""
+    pid = None
     for line in info.splitlines():
         if line.startswith("_NET_WM_NAME") or (not title and line.startswith("WM_NAME")):
             string_match = _XPROP_STRING_RE.search(line)
@@ -193,9 +206,13 @@ def _xprop_window() -> Optional[WindowInfo]:
             class_match = _XPROP_CLASS_RE.search(line)
             if class_match:
                 wm_class = class_match.group(1)
+        elif line.startswith("_NET_WM_PID"):
+            pid_match = _XPROP_PID_RE.search(line)
+            if pid_match:
+                pid = _as_pid(pid_match.group(1))
     if not title and not wm_class:
         return None
-    return WindowInfo(title=title, wm_class=wm_class)
+    return WindowInfo(title=title, wm_class=wm_class, pid=pid)
 
 
 def _sway_focused(node: dict) -> Optional[dict]:
@@ -226,7 +243,7 @@ def _sway_window() -> Optional[WindowInfo]:
     wm_class = node.get("app_id") or (node.get("window_properties") or {}).get("class") or ""
     if not title and not wm_class:
         return None
-    return WindowInfo(title=title, wm_class=wm_class)
+    return WindowInfo(title=title, wm_class=wm_class, pid=_as_pid(node.get("pid")))
 
 
 def _hyprland_window() -> Optional[WindowInfo]:
@@ -243,7 +260,7 @@ def _hyprland_window() -> Optional[WindowInfo]:
     wm_class = data.get("class") or ""
     if not title and not wm_class:
         return None
-    return WindowInfo(title=title, wm_class=wm_class)
+    return WindowInfo(title=title, wm_class=wm_class, pid=_as_pid(data.get("pid")))
 
 
 _BACKENDS = {

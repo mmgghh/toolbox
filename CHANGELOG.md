@@ -24,11 +24,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   - `service install|uninstall|enable|disable|start|stop|restart|status|logs`
     runs the watcher as a systemd user service from login, restarting it if
     it exits. The unit pins the installing Python and the database.
-  - `shell-init bash|zsh` prints a hook keeping terminal titles as
-    `<command> @ <git root>`, so terminal time -- Claude Code sessions
-    included -- lands on the right project. Only a command's first word
-    reaches the title. Paths in any terminal title now resolve to their git
-    repository root.
+  - Terminal windows are traced through `/proc` to the tab typed into most
+    recently: its foreground program (so `claude` is recognised as Claude
+    Code) and its working directory, resolved to the git repository root.
+    Only program names are stored, never arguments. Where `/proc` can't see
+    (ssh, tmux, Flatpak terminals) the title is used, and `shell-init
+    bash|zsh` prints a hook keeping it as `<command> @ <git root>`.
   - `today` summarizes hours per project and app; `suggest [--apply]` turns
     auto entries into timesheet-style manual entries, absorbing short
     detours and never double-counting an existing manual entry.

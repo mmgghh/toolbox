@@ -21,7 +21,7 @@ from typing import Optional
 
 import click
 
-from pytoolbox.core import activity_service, console
+from pytoolbox.core import activity_service, console, procinfo
 from pytoolbox.core.activewindow import (
     backend_hint,
     detect_backend,
@@ -1893,17 +1893,18 @@ def auto_shell_init(shell: str) -> None:
     """Print a shell hook that makes terminal titles say which project you're in.
 
     \b
-    Sets the title to "<command> @ <project dir>" (the git root, or the
-    current directory outside a repository), so `pytime auto` attributes
-    terminal time -- including Claude Code sessions -- to the right
-    project. Only a command's first word goes in the title, never its
-    arguments. Also sets CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 so Claude Code
-    doesn't overwrite it.
+    Only needed where /proc can't see what a terminal runs -- inside ssh,
+    tmux/screen, or a Flatpak terminal; elsewhere pytime reads the focused
+    tab's program and directory directly. Sets the title to
+    "<command> @ <project dir>" (the git root, or the current directory),
+    never a command's arguments, and sets CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+    so Claude Code doesn't overwrite it. pytime must be on PATH when your rc
+    file runs; from a virtualenv, use its full path.
 
     \b
     Examples:
       echo 'eval "$(pytime auto shell-init bash)"' >> ~/.bashrc
-      echo 'eval "$(pytime auto shell-init zsh)"' >> ~/.zshrc
+      echo 'eval "$(~/venv/bin/pytime auto shell-init zsh)"' >> ~/.zshrc
     """
     click.echo(snippet(shell), nl=False)
 
@@ -2132,10 +2133,14 @@ def auto_probe(delay: float) -> None:
     if window is None:
         raise click.ClickException(f"The {backend} backend reported no focused window.")
     classified = classify_window(window, _load_rules_or_fail())
+    context = procinfo.terminal_context(window.pid) if classified and classified.category == "terminal" else None
     console.emit_json(
         {
             "backend": backend,
-            "raw": {"wm_class": window.wm_class, "title": window.title},
+            "raw": {"wm_class": window.wm_class, "title": window.title, "pid": window.pid},
+            "terminal": None
+            if context is None
+            else {"cwd": context.cwd, "program": context.program, "file": context.file},
             "ignored": classified is None,
             "classified": None
             if classified is None
