@@ -138,6 +138,22 @@ def test_auto_rules_shows_backend_and_override_path(runner, db):
     assert "Rules override file:" in result.output
 
 
+def test_auto_probe_prints_raw_and_classified(runner, db, monkeypatch):
+    import pytoolbox.pytime as pt
+    from pytoolbox.core.activewindow import WindowInfo
+
+    monkeypatch.setattr(pt, "detect_backend", lambda: "gnome")
+    monkeypatch.setattr(
+        pt, "get_active_window", lambda backend=None: WindowInfo("toolbox – pytime.py", "jetbrains-pycharm-ce")
+    )
+    result = runner.invoke(time_cli, ["auto", "probe", "--delay", "0"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["raw"]["wm_class"] == "jetbrains-pycharm-ce"
+    assert payload["classified"]["project"] == "toolbox"
+    assert payload["classified"]["ext"] == "py"
+
+
 def test_manual_and_auto_entries_do_not_interfere(runner, db):
     runner.invoke(time_cli, ["start", "-p", "demo", "write docs"])
     conn = connect(resolve_db_path(None))

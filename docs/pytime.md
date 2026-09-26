@@ -141,7 +141,13 @@ pytime auto status                         # what's being tracked right now
 pytime auto report -g project -g ext       # e.g. hours per project, per file type
 pytime auto report --category editor -g ext
 pytime auto rules                          # active backend + how to extend classification
+pytime auto probe                          # raw title/class of the focused window, and how it was classified
 ```
+
+If a report shows a blank project or the wrong app, run `pytime auto probe`,
+switch to that window within the 3-second delay, and compare the raw
+`wm_class`/`title` with the classification. Unknown classes go in
+`~/.pytime/rules.json`.
 
 **What it actually knows, and what it doesn't.** There is no install-free way
 for a CLI to read a browser tab's real URL or an editor's real open file path

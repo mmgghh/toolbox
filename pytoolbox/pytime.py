@@ -1456,11 +1456,9 @@ def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
                         click.echo("(idle)", err=True)
                     elif not quiet:
                         category, app, project, detail, _ext = new_key
-                        label = app
-                        if project:
-                            label += f" / {project}"
-                        if detail and category == "editor":
-                            label += f" / {detail}"
+                        label = f"{app} [{category}] project={project or '-'}"
+                        if detail:
+                            label += f" | {detail[:80]}"
                         click.echo(label, err=True)
 
                 for _ in range(int(interval * 10)):
@@ -1631,6 +1629,51 @@ def auto_report(
         headers = _ACTIVITY_HEADERS
 
     _emit_report(rows, headers, records, output_format, output, no_total)
+
+
+@auto.command("probe")
+@click.option(
+    "--delay",
+    type=float,
+    default=3.0,
+    show_default=True,
+    help="Seconds to wait first, so you can focus the window you want to inspect.",
+)
+def auto_probe(delay: float) -> None:
+    """Show what the watcher sees for the focused window, raw and classified.
+
+    \b
+    Use it when a report shows a blank project or the wrong app: the raw
+    title and class it prints are what to put in ~/.pytime/rules.json.
+
+    \b
+    Examples:
+      pytime auto probe
+      pytime auto probe --delay 0
+    """
+    backend = detect_backend()
+    if backend is None:
+        raise click.ClickException(f"No supported window backend found. {backend_hint()}")
+    if delay > 0:
+        click.echo(f"Focus the window to inspect; reading it in {delay:g}s...", err=True)
+        time_module.sleep(delay)
+    window = get_active_window(backend)
+    if window is None:
+        raise click.ClickException(f"The {backend} backend reported no focused window.")
+    classified = classify_window(window, load_rules())
+    console.emit_json(
+        {
+            "backend": backend,
+            "raw": {"wm_class": window.wm_class, "title": window.title},
+            "classified": {
+                "category": classified.category,
+                "app": classified.app,
+                "project": classified.project,
+                "detail": classified.detail,
+                "ext": classified.ext,
+            },
+        }
+    )
 
 
 @auto.command("rules")

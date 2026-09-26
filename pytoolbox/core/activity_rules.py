@@ -106,7 +106,9 @@ DEFAULT_APP_LABELS = {
     "sublime_text": "Sublime Text",
     "atom": "Atom",
     "jetbrains-pycharm": "PyCharm",
+    "jetbrains-pycharm-ce": "PyCharm CE",
     "jetbrains-idea": "IntelliJ IDEA",
+    "jetbrains-idea-ce": "IntelliJ IDEA CE",
     "jetbrains-webstorm": "WebStorm",
     "jetbrains-clion": "CLion",
     "jetbrains-goland": "GoLand",
@@ -188,7 +190,9 @@ _APP_SUFFIXES = (
     "code - oss",
     "vscodium",
     "cursor",
+    "pycharm community edition",
     "pycharm",
+    "intellij idea community edition",
     "intellij idea",
     "webstorm",
     "clion",
@@ -208,7 +212,8 @@ _APP_SUFFIXES = (
     "vivaldi",
 )
 
-_TITLE_SPLIT_RE = re.compile(r"^\s*[●*]?\s*(?P<file>.+?)\s*[—–-]\s*(?P<rest>.+?)\s*$")
+_SEPARATOR_RE = re.compile(r"\s+[—–-]\s+")
+_BRACKET_RE = re.compile(r"\s*\[([^\]]*)\]\s*$")
 _EXT_RE = re.compile(r"\.([A-Za-z0-9_+-]{1,10})$")
 _PATH_RE = re.compile(r"([~/][^\s:;]+)")
 
@@ -216,12 +221,10 @@ _PATH_RE = re.compile(r"([~/][^\s:;]+)")
 def _strip_app_suffix(text: str) -> str:
     lowered = text.lower()
     for suffix in _APP_SUFFIXES:
-        marker = f" - {suffix}"
-        if lowered.endswith(marker):
-            return text[: -len(marker)].strip()
-        marker = f" — {suffix}"
-        if lowered.endswith(marker):
-            return text[: -len(marker)].strip()
+        for dash in ("-", "—", "–"):
+            marker = f" {dash} {suffix}"
+            if lowered.endswith(marker):
+                return text[: -len(marker)].strip()
     return text.strip()
 
 
@@ -281,14 +284,43 @@ def load_rules(path: Optional[Path] = None) -> Rules:
     return rules
 
 
-def _classify_editor(win: WindowInfo, rules: Rules, app: str) -> Classified:
-    match = _TITLE_SPLIT_RE.match(win.title)
-    if match:
-        file_part = match.group("file").strip()
-        project = _strip_app_suffix(match.group("rest"))
-    else:
-        file_part = win.title.strip()
-        project = ""
+def _without_bracket(part: str) -> str:
+    return _BRACKET_RE.sub("", part).strip()
+
+
+def _parse_editor_title(title: str, project_first: bool) -> tuple[str, str]:
+    """Return ``(project, file)`` from an editor title, in either order.
+
+    VS Code writes ``file — project``; JetBrains IDEs write ``project – file``
+    (optionally ``project [~/path]``). Whichever part carries a file
+    extension is taken as the file, so the order only matters as a fallback
+    when no part does (a welcome screen, a settings tab, ...).
+    """
+    text = _strip_app_suffix(title.strip().lstrip("●*").strip())
+    parts = [part.strip() for part in _SEPARATOR_RE.split(text) if part.strip()]
+    if not parts:
+        return "", ""
+
+    file_part = next((part for part in parts if _extension_of(_without_bracket(part))), None)
+    if file_part is not None:
+        rest = [part for part in parts if part is not file_part]
+        project = _without_bracket(rest[0]) if rest else ""
+        if not project:
+            for part in parts:
+                bracket = _BRACKET_RE.search(part)
+                if bracket:
+                    project = Path(bracket.group(1).rstrip("/")).name
+                    break
+        return project, _without_bracket(file_part).rsplit("/", 1)[-1]
+
+    if len(parts) == 1:
+        return _without_bracket(parts[0]), ""
+    project, detail = (parts[0], parts[1]) if project_first else (parts[1], parts[0])
+    return _without_bracket(project), _without_bracket(detail)
+
+
+def _classify_editor(win: WindowInfo, rules: Rules, app: str, project_first: bool = False) -> Classified:
+    project, file_part = _parse_editor_title(win.title, project_first)
     return Classified(category="editor", app=app, project=project, detail=file_part, ext=_extension_of(file_part))
 
 
@@ -318,8 +350,11 @@ def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Classifie
     wm_class = (win.wm_class or "").lower()
     app = rules.app_labels.get(wm_class, win.wm_class or "Unknown")
 
-    if wm_class in rules.editor_classes:
-        return _classify_editor(win, rules, app)
+    is_jetbrains = wm_class.startswith("jetbrains-")
+    if is_jetbrains and wm_class not in rules.app_labels:
+        app = "JetBrains " + wm_class[len("jetbrains-"):].replace("-", " ").title()
+    if wm_class in rules.editor_classes or is_jetbrains:
+        return _classify_editor(win, rules, app, project_first=is_jetbrains)
     if wm_class in rules.terminal_classes:
         return _classify_terminal(win, app if app != "Unknown" else "Terminal")
     if wm_class in rules.browser_classes:

@@ -26,6 +26,41 @@ def test_classify_vscode_title_strips_dirty_marker_and_app_suffix():
     assert result.ext == "py"
 
 
+def test_classify_pycharm_ce_project_first_title():
+    win = WindowInfo(title="toolbox – pytime.py", wm_class="jetbrains-pycharm-ce")
+    result = classify_window(win)
+    assert result.category == "editor"
+    assert result.app == "PyCharm CE"
+    assert result.project == "toolbox"
+    assert result.detail == "pytime.py"
+    assert result.ext == "py"
+
+
+def test_classify_jetbrains_title_with_path_bracket():
+    win = WindowInfo(title="toolbox [~/projects/toolbox] – pytoolbox/pytime.py", wm_class="jetbrains-pycharm")
+    result = classify_window(win)
+    assert result.project == "toolbox"
+    assert result.detail == "pytime.py"
+    assert result.ext == "py"
+
+
+def test_classify_unknown_jetbrains_product_is_still_an_editor():
+    win = WindowInfo(title="shop – main.go", wm_class="jetbrains-fleet")
+    result = classify_window(win)
+    assert result.category == "editor"
+    assert result.app == "JetBrains Fleet"
+    assert result.project == "shop"
+    assert result.ext == "go"
+
+
+def test_classify_jetbrains_without_open_file_uses_project_first():
+    win = WindowInfo(title="toolbox – Settings", wm_class="jetbrains-pycharm-ce")
+    result = classify_window(win)
+    assert result.project == "toolbox"
+    assert result.detail == "Settings"
+    assert result.ext == ""
+
+
 def test_classify_terminal_extracts_project_from_path():
     win = WindowInfo(title="user@host: ~/toolbox", wm_class="gnome-terminal-server")
     result = classify_window(win)
