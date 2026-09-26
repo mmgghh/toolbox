@@ -143,6 +143,23 @@ def test_get_idle_seconds_from_gnome_mutter(monkeypatch):
     assert aw.get_idle_seconds() == 4.5
 
 
+def test_is_screen_locked_reads_gnome_screensaver(monkeypatch):
+    monkeypatch.setattr(aw.shutil, "which", lambda name: "/usr/bin/gdbus")
+    monkeypatch.setattr(aw, "_run", lambda args: "(true,)\n" if "org.gnome.ScreenSaver" in args else None)
+    assert aw.is_screen_locked() is True
+
+
+def test_is_screen_locked_falls_back_to_freedesktop(monkeypatch):
+    monkeypatch.setattr(aw.shutil, "which", lambda name: "/usr/bin/gdbus")
+    monkeypatch.setattr(aw, "_run", lambda args: "(false,)" if "org.freedesktop.ScreenSaver" in args else None)
+    assert aw.is_screen_locked() is False
+
+
+def test_is_screen_locked_unknown_without_gdbus(monkeypatch):
+    monkeypatch.setattr(aw.shutil, "which", lambda name: None)
+    assert aw.is_screen_locked() is None
+
+
 def test_gnome_window_parses_extension_reply(monkeypatch):
     payload = '{"title": "pytime.py — toolbox", "wm_class": "Code", "focus": true}'
     monkeypatch.setattr(aw, "_run", lambda args: repr((payload,)) + "\n")

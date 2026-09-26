@@ -20,6 +20,30 @@ This project follows [Semantic Versioning](https://semver.org/).
   `~/.pytime/rules.json`. Auto-tracked entries live in their own table and
   never mix with manual `pytime` entries.
 
+  Also in `pytime auto`:
+  - `service install|uninstall|enable|disable|start|stop|restart|status|logs`
+    runs the watcher as a systemd user service from login, restarting it if
+    it exits. The unit pins the installing Python and the database.
+  - `shell-init bash|zsh` prints a hook keeping terminal titles as
+    `<command> @ <git root>`, so terminal time -- Claude Code sessions
+    included -- lands on the right project. Only a command's first word
+    reaches the title. Paths in any terminal title now resolve to their git
+    repository root.
+  - `today` summarizes hours per project and app; `suggest [--apply]` turns
+    auto entries into timesheet-style manual entries, absorbing short
+    detours and never double-counting an existing manual entry.
+  - `report --min-seconds` (default 10) folds quick window switches into the
+    entry before them; `-q/--search`, `--no-project` and `delete` filter and
+    clean up entries.
+  - `rules.json` gains `projects` aliases (roll `samt`, `samt-backend`,
+    `org/samt` into one project), `ignore` and `redact` rules (private and
+    incognito windows are redacted by default), and is now validated rather
+    than silently ignored when malformed.
+  - GitHub, GitLab and Jira tabs are attributed to their repository or
+    project key; JetBrains IDEs (project-first titles), Wayland terminal app
+    ids and desktop apps like Claude are classified.
+  - Tracking pauses while the screen is locked, and on GNOME when idle.
+
 - **`pydata convert`.** Converts JSON, CSV or Excel into another of the
   three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output
   format comes from the destination's suffix, or `--to` when it doesn't say.

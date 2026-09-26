@@ -264,6 +264,35 @@ def get_active_window(backend: Optional[str] = None) -> Optional[WindowInfo]:
     return _BACKENDS[backend]()
 
 
+#: Screensaver D-Bus interfaces that report whether the screen is locked:
+#: GNOME's own, then the freedesktop one KDE and others implement.
+_SCREENSAVER_QUERIES = (
+    ("org.gnome.ScreenSaver", "/org/gnome/ScreenSaver", "org.gnome.ScreenSaver.GetActive"),
+    ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver.GetActive"),
+)
+
+
+def is_screen_locked() -> Optional[bool]:
+    """Whether the session's screen is locked, or ``None`` if it can't be told.
+
+    The focused-window backends keep reporting the last window while the
+    lock screen is up, so without this a locked screen would keep the timer
+    running until the idle timeout caught it.
+    """
+    if not shutil.which("gdbus"):
+        return None
+    for dest, path, method in _SCREENSAVER_QUERIES:
+        raw = _run(["gdbus", "call", "--session", "--dest", dest, "--object-path", path, "--method", method])
+        if raw is None:
+            continue
+        lowered = raw.strip().lower()
+        if "true" in lowered:
+            return True
+        if "false" in lowered:
+            return False
+    return None
+
+
 def get_idle_seconds() -> Optional[float]:
     """Seconds since the last keyboard/mouse input, or ``None`` if unknown.
 

@@ -270,6 +270,16 @@ class Classified:
     ext: str
 
 
+#: Title patterns (regex, case-insensitive) redacted by default: private and
+#: incognito browser windows still count toward time, but nothing about
+#: which page it was is stored.
+DEFAULT_REDACT_TITLES = [r"incognito", r"private browsing", r"inprivate"]
+
+
+class RulesError(ValueError):
+    """``~/.pytime/rules.json`` exists but can't be used as written."""
+
+
 @dataclass(frozen=True)
 class Rules:
     """Effective classification rules: defaults merged with user overrides."""
@@ -280,6 +290,12 @@ class Rules:
     app_labels: dict = field(default_factory=lambda: dict(DEFAULT_APP_LABELS))
     sites: dict = field(default_factory=lambda: dict(DEFAULT_SITES))
     app_projects: dict = field(default_factory=lambda: dict(DEFAULT_APP_PROJECTS))
+    #: lowercased alias -> canonical project name.
+    projects: dict = field(default_factory=dict)
+    ignore_classes: set = field(default_factory=set)
+    ignore_titles: list = field(default_factory=list)
+    redact_classes: set = field(default_factory=set)
+    redact_titles: list = field(default_factory=lambda: [re.compile(p, re.I) for p in DEFAULT_REDACT_TITLES])
 
 
 def default_rules_path() -> Path:
@@ -287,14 +303,34 @@ def default_rules_path() -> Path:
     return Path.home() / ".pytime" / "rules.json"
 
 
+def _compile_patterns(patterns: list, key: str) -> list:
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(pattern, re.I))
+        except re.error as exc:
+            raise RulesError(f"Invalid regex {pattern!r} in {key}: {exc}") from exc
+    return compiled
+
+
 def load_rules(path: Optional[Path] = None) -> Rules:
     """Build the effective rule set: defaults, extended by an optional JSON file.
 
-    The override file adds to the defaults rather than replacing them:
-    ``{"editor_classes": [...], "terminal_classes": [...],
-    "browser_classes": [...], "app_labels": {...}, "sites": {...},
-    "app_projects": {...}}`` --
-    every key is optional, and lists/dicts are merged in, not swapped out.
+    The override file adds to the defaults rather than replacing them; every
+    key is optional::
+
+        {
+          "editor_classes": [...], "terminal_classes": [...], "browser_classes": [...],
+          "app_labels": {"wm_class": "Label"},
+          "sites": {"substring": "Project"},
+          "app_projects": {"wm_class": "Project"},
+          "projects": {"Canonical": ["alias", "other-alias"]},
+          "ignore": {"apps": ["wm_class"], "titles": ["regex"]},
+          "redact": {"apps": ["wm_class"], "titles": ["regex"]}
+        }
+
+    Raises :class:`RulesError` when the file exists but is malformed, so a
+    typo is reported instead of silently falling back to the defaults.
     """
     rules = Rules()
     path = path or default_rules_path()
@@ -302,15 +338,41 @@ def load_rules(path: Optional[Path] = None) -> Rules:
         return rules
     try:
         overrides = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return rules
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RulesError(f"Could not read {path}: {exc}") from exc
+    if not isinstance(overrides, dict):
+        raise RulesError(f"{path} must contain a JSON object.")
+
     rules.editor_classes.update(c.lower() for c in overrides.get("editor_classes", []))
     rules.terminal_classes.update(c.lower() for c in overrides.get("terminal_classes", []))
     rules.browser_classes.update(c.lower() for c in overrides.get("browser_classes", []))
     rules.app_labels.update({k.lower(): v for k, v in overrides.get("app_labels", {}).items()})
     rules.sites.update({k.lower(): v for k, v in overrides.get("sites", {}).items()})
     rules.app_projects.update({k.lower(): v for k, v in overrides.get("app_projects", {}).items()})
+    for canonical, aliases in overrides.get("projects", {}).items():
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        for alias in [canonical, *aliases]:
+            rules.projects[alias.lower()] = canonical
+    for key, classes, titles in (
+        ("ignore", rules.ignore_classes, rules.ignore_titles),
+        ("redact", rules.redact_classes, rules.redact_titles),
+    ):
+        section = overrides.get(key, {})
+        classes.update(c.lower() for c in section.get("apps", []))
+        titles.extend(_compile_patterns(section.get("titles", []), f"{key}.titles"))
     return rules
+
+
+def privacy_action(win: WindowInfo, rules: Rules) -> str:
+    """Return ``"ignore"``, ``"redact"`` or ``""`` for a window."""
+    wm_class = (win.wm_class or "").lower()
+    title = win.title or ""
+    if wm_class in rules.ignore_classes or any(p.search(title) for p in rules.ignore_titles):
+        return "ignore"
+    if wm_class in rules.redact_classes or any(p.search(title) for p in rules.redact_titles):
+        return "redact"
+    return ""
 
 
 def _without_bracket(part: str) -> str:
@@ -353,13 +415,59 @@ def _classify_editor(win: WindowInfo, rules: Rules, app: str, project_first: boo
     return Classified(category="editor", app=app, project=project, detail=file_part, ext=_extension_of(file_part))
 
 
+#: Title written by ``pytime auto shell-init``: ``<command> @ <project dir>``.
+_COMMAND_TITLE_RE = re.compile(r"^(?P<cmd>.+?) @ (?P<path>[~/].*)$")
+
+#: Programs whose last argument is the file being edited in a terminal.
+_TERMINAL_EDITORS = {"vim", "nvim", "vi", "nano", "emacs", "hx", "helix", "micro", "kak"}
+
+
+def project_root_name(path_text: str) -> str:
+    """Name of the git repository containing ``path_text``, else its last part.
+
+    Lets a terminal sitting in ``~/projects/toolbox/pytoolbox/core`` count as
+    project ``toolbox``. Only consults the filesystem when the path exists
+    on this machine; never walks above the home directory.
+    """
+    raw = path_text.rstrip("/") or path_text
+    candidate = Path(raw).expanduser()
+    try:
+        current = candidate.resolve() if candidate.is_dir() else None
+        home = Path.home().resolve()
+    except OSError:
+        current = None
+    if current is not None:
+        for directory in (current, *current.parents):
+            if directory == home or directory == directory.parent:
+                break
+            if (directory / ".git").exists():
+                return directory.name
+    name = Path(raw).name
+    return "" if name in ("", "~") else name
+
+
 def _classify_terminal(win: WindowInfo, app: str) -> Classified:
-    path_match = _PATH_RE.search(win.title)
-    project = Path(path_match.group(1).rstrip("/")).name if path_match else ""
-    label = app
-    if "claude" in win.title.lower():
-        label = f"{app} (Claude Code)" if app != "Terminal" else "Terminal (Claude Code)"
-    return Classified(category="terminal", app=label, project=project, detail=win.title.strip(), ext="")
+    title = win.title.strip()
+    match = _COMMAND_TITLE_RE.match(title)
+    if match:
+        command = match.group("cmd").strip()
+        path_text = match.group("path").strip()
+        words = command.split()
+        program = Path(words[0]).name.lower() if words else ""
+        is_claude = program == "claude"
+    else:
+        command, program = "", ""
+        path_match = _PATH_RE.search(title)
+        path_text = path_match.group(1) if path_match else ""
+        is_claude = re.search(r"\bclaude\b", title.replace(path_text, "").lower()) is not None
+
+    project = project_root_name(path_text) if path_text else ""
+    detail, ext = (command or title), ""
+    if program in _TERMINAL_EDITORS and len(command.split()) > 1:
+        detail = command.split()[-1].rsplit("/", 1)[-1]
+        ext = _extension_of(detail)
+    label = f"{app} (Claude Code)" if is_claude else app
+    return Classified(category="terminal", app=label, project=project, detail=detail, ext=ext)
 
 
 def _site_matches(needle: str, lowered: str) -> bool:
@@ -368,16 +476,43 @@ def _site_matches(needle: str, lowered: str) -> bool:
     return re.search(rf"(?<![\w]){re.escape(needle)}(?![\w])", lowered) is not None
 
 
+#: GitHub tab titles name the repository: "Title · Issue #1 · owner/repo",
+#: "path at main · owner/repo", or a repo home page's "owner/repo: about".
+_GITHUB_TRAILING_RE = re.compile(r"·\s*[\w.-]+/(?P<repo>[\w.-]+)\s*$")
+_GITHUB_LEADING_RE = re.compile(r"^(?:github - )?[\w.-]+/(?P<repo>[\w.-]+)(?::\s|$)", re.I)
+#: GitLab: "Issues · group / sub / project · GitLab".
+_GITLAB_RE = re.compile(r"·\s*(?P<path>[^·]+?)\s*·\s*gitlab\s*$", re.I)
+#: Jira: "[ABC-123] Title - Jira".
+_JIRA_RE = re.compile(r"\[(?P<key>[A-Z][A-Z0-9]+)-\d+\]")
+
+
+def _site_project(page_title: str) -> str:
+    """A repository or issue-tracker project named in the tab title, if any."""
+    for pattern in (_GITHUB_TRAILING_RE, _GITHUB_LEADING_RE):
+        match = pattern.search(page_title)
+        if match:
+            return match.group("repo")
+    match = _GITLAB_RE.search(page_title)
+    if match:
+        return match.group("path").split("/")[-1].strip()
+    if "jira" in page_title.lower():
+        match = _JIRA_RE.search(page_title)
+        if match:
+            return match.group("key")
+    return ""
+
+
 def _classify_browser(win: WindowInfo, rules: Rules, app: str) -> Classified:
     page_title = _strip_app_suffix(win.title)
     if page_title.lower() in _APP_SUFFIXES:
         page_title = ""  # a new/blank tab: the title is just the browser's name
-    lowered = page_title.lower()
-    project = ""
-    for needle, label in rules.sites.items():
-        if _site_matches(needle, lowered):
-            project = label
-            break
+    project = _site_project(page_title)
+    if not project:
+        lowered = page_title.lower()
+        for needle, label in rules.sites.items():
+            if _site_matches(needle, lowered):
+                project = label
+                break
     return Classified(category="browser", app=app, project=project, detail=page_title, ext="")
 
 
@@ -387,10 +522,7 @@ def _classify_browser(win: WindowInfo, rules: Rules, app: str) -> Classified:
 _BIDI_CONTROLS_RE = re.compile("[‎‏‪-‮⁦-⁩]")
 
 
-def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Classified:
-    """Classify a raw window into a category, app, project, file/page, and extension."""
-    rules = rules or Rules()
-    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class)
+def _classify(win: WindowInfo, rules: Rules) -> Classified:
     wm_class = (win.wm_class or "").lower()
     app = rules.app_labels.get(wm_class, win.wm_class or "Unknown")
 
@@ -407,3 +539,30 @@ def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Classifie
     if project and wm_class not in rules.app_labels:
         app = project
     return Classified(category="other", app=app, project=project, detail=win.title.strip(), ext="")
+
+
+def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Optional[Classified]:
+    """Classify a raw window into a category, app, project, file/page, and extension.
+
+    Returns ``None`` for a window the rules say to ignore. A redacted window
+    keeps its category and app (so the time still counts) but loses
+    everything derived from its title.
+    """
+    rules = rules or Rules()
+    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class)
+    action = privacy_action(win, rules)
+    if action == "ignore":
+        return None
+    classified = _classify(win, rules)
+    if action == "redact":
+        return Classified(category=classified.category, app=classified.app, project="", detail="", ext="")
+    canonical = rules.projects.get(classified.project.lower()) if classified.project else None
+    if canonical:
+        classified = Classified(
+            category=classified.category,
+            app=classified.app,
+            project=canonical,
+            detail=classified.detail,
+            ext=classified.ext,
+        )
+    return classified

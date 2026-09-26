@@ -188,6 +188,111 @@ def test_auto_probe_prints_raw_and_classified(runner, db, monkeypatch):
     assert payload["classified"]["ext"] == "py"
 
 
+def _seed_today(db, spans):
+    """spans: (project, app, start_minutes_after_9am, end_minutes)."""
+    from datetime import datetime
+
+    base = datetime.now().astimezone().replace(hour=9, minute=0, second=0, microsecond=0).timestamp()
+    conn = connect(resolve_db_path(None))
+    for project, app, start, end in spans:
+        conn.execute(
+            "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts, end_ts) "
+            "VALUES ('editor', ?, ?, '', '', ?, ?)",
+            (app, project, base + start * 60, base + end * 60),
+        )
+    conn.commit()
+    conn.close()
+
+
+def test_auto_report_min_seconds_folds_quick_switches(runner, db):
+    _seed(db)
+    conn = connect(resolve_db_path(None))
+    conn.execute(
+        "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts, end_ts) "
+        "VALUES ('other', 'Files', '', 'x', '', ?, ?)",
+        (1_700_001_800.0, 1_700_001_803.0),
+    )
+    conn.commit()
+    conn.close()
+    folded = json.loads(runner.invoke(time_cli, ["auto", "report", "--format", "json"]).stdout)
+    raw = json.loads(runner.invoke(time_cli, ["auto", "report", "--format", "json", "--min-seconds", "0"]).stdout)
+    assert len(raw) == 4
+    assert len(folded) == 3
+
+
+def test_auto_today_summarizes_projects_and_apps(runner, db):
+    _seed_today(db, [("toolbox", "PyCharm", 0, 60), ("Claude", "Claude", 60, 90)])
+    payload = json.loads(runner.invoke(time_cli, ["auto", "today", "--json"]).stdout)
+    assert round(payload["total_hours"], 2) == 1.5
+    assert payload["projects"][0]["project"] == "toolbox"
+    assert payload["projects"][0]["share"] == "67%"
+    table = runner.invoke(time_cli, ["auto", "today"])
+    assert "Auto-tracked today: 01:30" in table.output
+
+
+def test_auto_suggest_then_apply_creates_manual_entries_once(runner, db):
+    _seed_today(db, [("toolbox", "PyCharm", 0, 30), ("ChatGPT", "Chrome", 30, 33), ("toolbox", "Terminal", 33, 60)])
+    preview = runner.invoke(time_cli, ["auto", "suggest"])
+    assert "toolbox" in preview.output and "01:00" in preview.output
+    assert "ChatGPT" not in preview.output  # absorbed detour
+
+    applied = runner.invoke(time_cli, ["auto", "suggest", "--apply", "--yes"])
+    assert "Added 1 manual entry" in applied.output
+    rows = json.loads(runner.invoke(time_cli, ["report", "--format", "json"]).stdout)
+    assert [(r["project"], r["task"], r["duration_hours"]) for r in rows] == [("toolbox", "auto-tracked", "1")]
+
+    again = runner.invoke(time_cli, ["auto", "suggest", "--apply", "--yes"])
+    assert "skip: overlaps entry 1" in again.output
+    assert "Nothing new to add" in again.output
+
+
+def test_auto_shell_init_prints_hook(runner):
+    result = runner.invoke(time_cli, ["auto", "shell-init", "bash"])
+    assert result.exit_code == 0
+    assert "__pytime_preexec" in result.output
+    assert "CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1" in result.output
+    assert "add-zsh-hook" in runner.invoke(time_cli, ["auto", "shell-init", "zsh"]).output
+
+
+def test_watch_pauses_while_screen_locked(runner, db, monkeypatch):
+    import pytoolbox.pytime as pt
+    from pytoolbox.core.activewindow import WindowInfo
+
+    ticks = {"n": 0}
+
+    def locked():
+        ticks["n"] += 1
+        if ticks["n"] >= 4:
+            import os
+            import signal
+
+            os.kill(os.getpid(), signal.SIGINT)
+        return ticks["n"] == 2
+
+    monkeypatch.setattr(pt, "detect_backend", lambda: "gnome")
+    monkeypatch.setattr(pt, "get_idle_seconds", lambda: None)
+    monkeypatch.setattr(pt, "is_screen_locked", locked)
+    monkeypatch.setattr(pt, "get_active_window", lambda backend=None: WindowInfo("a.py — toolbox", "code"))
+    result = runner.invoke(time_cli, ["auto", "watch", "--interval", "0.1"])
+    assert result.exit_code == 0, result.output
+    assert "(paused: screen locked)" in result.stderr
+    rows = json.loads(runner.invoke(time_cli, ["auto", "report", "--format", "json", "--min-seconds", "0"]).stdout)
+    assert len(rows) == 2  # tracking stopped at the lock and resumed after it
+
+
+def test_watch_rejects_broken_rules_file(runner, db, monkeypatch, tmp_path):
+    import pytoolbox.pytime as pt
+    from pytoolbox.core import activity_rules
+
+    bad = tmp_path / "rules.json"
+    bad.write_text("{oops", encoding="utf-8")
+    monkeypatch.setattr(activity_rules, "default_rules_path", lambda: bad)
+    monkeypatch.setattr(pt, "detect_backend", lambda: "gnome")
+    result = runner.invoke(time_cli, ["auto", "watch"])
+    assert result.exit_code != 0
+    assert "Could not read" in result.stderr
+
+
 def test_manual_and_auto_entries_do_not_interfere(runner, db):
     runner.invoke(time_cli, ["start", "-p", "demo", "write docs"])
     conn = connect(resolve_db_path(None))

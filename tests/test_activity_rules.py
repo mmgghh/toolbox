@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pytoolbox.core.activewindow import WindowInfo
-from pytoolbox.core.activity_rules import Rules, classify_window, load_rules
+from pytoolbox.core.activity_rules import RulesError, classify_window, load_rules
 
 
 def test_classify_vscode_title_with_em_dash():
@@ -170,8 +172,89 @@ def test_load_rules_merges_override_file(tmp_path):
     assert result.app == "My Editor"
 
 
-def test_load_rules_ignores_malformed_override_file(tmp_path):
+def test_load_rules_reports_malformed_override_file(tmp_path):
     path = tmp_path / "rules.json"
     path.write_text("{not valid json", encoding="utf-8")
+    with pytest.raises(RulesError, match="Could not read"):
+        load_rules(path)
+
+
+def test_load_rules_reports_bad_regex(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps({"ignore": {"titles": ["("]}}), encoding="utf-8")
+    with pytest.raises(RulesError, match="ignore.titles"):
+        load_rules(path)
+
+
+def test_project_aliases_map_to_canonical_name(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps({"projects": {"SAMT": ["samt", "samt-backend"]}}), encoding="utf-8")
     rules = load_rules(path)
-    assert rules.editor_classes == Rules().editor_classes
+    editor = classify_window(WindowInfo("samt – main.py", "jetbrains-pycharm-ce"), rules)
+    browser = classify_window(WindowInfo("Fix it · Issue #3 · org/samt-backend - Google Chrome", "google-chrome"), rules)
+    assert editor.project == "SAMT"
+    assert browser.project == "SAMT"
+
+
+def test_ignore_rules_drop_the_window(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps({"ignore": {"apps": ["org.keepassxc.KeePassXC"], "titles": ["bank"]}}), encoding="utf-8")
+    rules = load_rules(path)
+    assert classify_window(WindowInfo("Passwords", "org.keepassxc.KeePassXC"), rules) is None
+    assert classify_window(WindowInfo("My Bank - Google Chrome", "google-chrome"), rules) is None
+    assert classify_window(WindowInfo("News - Google Chrome", "google-chrome"), rules) is not None
+
+
+def test_incognito_windows_are_redacted_by_default():
+    result = classify_window(WindowInfo("YouTube - Google Chrome (Incognito)", "google-chrome"))
+    assert result.category == "browser"
+    assert result.app == "Chrome"
+    assert (result.project, result.detail, result.ext) == ("", "", "")
+
+
+def test_github_titles_give_the_repository():
+    cases = {
+        "Add auto tracking · Pull Request #7 · mmgghh/toolbox - Google Chrome": "toolbox",
+        "toolbox/pytoolbox/pytime.py at main · mmgghh/toolbox - Google Chrome": "toolbox",
+        "mmgghh/toolbox: Small CLI tools - Google Chrome": "toolbox",
+        "GitHub - mmgghh/toolbox: Small CLI tools - Google Chrome": "toolbox",
+    }
+    for title, repo in cases.items():
+        assert classify_window(WindowInfo(title, "google-chrome")).project == repo, title
+
+
+def test_gitlab_and_jira_titles():
+    gitlab = classify_window(WindowInfo("Issues · group / sub / shop · GitLab - Google Chrome", "google-chrome"))
+    jira = classify_window(WindowInfo("[SAMT-42] Fix login - Jira - Google Chrome", "google-chrome"))
+    assert gitlab.project == "shop"
+    assert jira.project == "SAMT"
+
+
+def test_terminal_shell_init_title_and_claude(tmp_path, monkeypatch):
+    repo = tmp_path / "home" / "projects" / "toolbox"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "pytoolbox" / "core").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    result = classify_window(WindowInfo("claude @ ~/projects/toolbox", "org.gnome.Terminal"))
+    assert result.project == "toolbox"
+    assert result.app == "Terminal (Claude Code)"
+    assert result.detail == "claude"
+
+    nested = classify_window(WindowInfo("mohammad@mg: ~/projects/toolbox/pytoolbox/core", "org.gnome.Terminal"))
+    assert nested.project == "toolbox"  # resolved to the git root, not "core"
+
+
+def test_terminal_editor_title_gives_file_and_extension():
+    result = classify_window(WindowInfo("nvim pytime.py @ ~/projects/toolbox", "kitty"))
+    assert result.detail == "pytime.py"
+    assert result.ext == "py"
+    assert result.project == "toolbox"
+
+
+def test_terminal_directory_named_claude_is_not_claude_code():
+    result = classify_window(WindowInfo("ls @ ~/projects/claude-notes", "kitty"))
+    assert "Claude Code" not in result.app
+
+
+def test_terminal_in_home_has_no_project():
+    assert classify_window(WindowInfo("mohammad@mg: ~", "org.gnome.Terminal")).project == ""
