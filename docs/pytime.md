@@ -303,10 +303,49 @@ If a report shows a blank project or the wrong app, run `pytime auto probe`,
 focus that window within 3 seconds, and compare the raw `wm_class`/`title`
 with the classification.
 
+### The built-in catalog
+
+`pytime auto` ships with a catalog (`pytoolbox/core/activity_catalog.py`) of
+about 170 apps, each listed with every window class it's known to report
+(X11 class, Wayland app id, Flatpak id) and the suffix it adds to titles:
+
+- **Editors and IDEs:** VS Code (+ Insiders, OSS, VSCodium), Cursor,
+  Windsurf, Zed, every JetBrains IDE and Android Studio, Sublime Text, Kate,
+  GNOME Text Editor, gedit, Geany, Emacs, Vim/Neovim/Neovide, Lapce,
+  Eclipse, NetBeans, Qt Creator, KDevelop, GNOME Builder, Spyder, RStudio,
+  Arduino IDE, Godot.
+- **Terminals:** GNOME Terminal, Console, Ptyxis, Konsole, Yakuake, Kitty,
+  Alacritty, WezTerm, Ghostty, Foot, Tilix, Terminator, Guake, Warp, Tabby,
+  Wave, Black Box and more.
+- **Browsers:** Chrome, Chromium, Firefox (+ Developer Edition, Nightly),
+  LibreWolf, Floorp, Zen, Brave, Edge, Opera, Vivaldi, qutebrowser, ...
+- **Developer tools**, recorded under their own name with no project:
+  Postman, Insomnia, Bruno, DBeaver, pgAdmin, Beekeeper Studio, MySQL
+  Workbench, MongoDB Compass, Redis Insight, Docker/Podman Desktop, Lens,
+  GitKraken, GitHub Desktop, Sublime Merge, Meld, Wireshark, VirtualBox,
+  Remmina, FileZilla, ...
+- **AI, chat, mail and notes**, whose time goes to the app as the project:
+  Claude, ChatGPT, Slack, Discord, Telegram, Signal, Element, Mattermost,
+  Teams, Zoom, Thunderbird/Evolution/Geary (project `Mail`), Obsidian,
+  Notion, Logseq, Joplin, Zotero, ...
+- **Password managers** (KeePassXC, Bitwarden, 1Password, ...) are redacted:
+  their time counts, their titles are never stored.
+
+Plus about 75 sites for browser tabs: AI assistants, code hosting, docs and
+package registries (MDN, PyPI, npm, crates.io, ...), cloud and monitoring
+consoles, notebooks, planning tools, mail and chat. Common words that would
+misfire on unrelated pages ("linear", "meet", "zoom", "medium") are left out
+on purpose.
+
+`pytime auto rules --dump` prints everything in effect -- the catalog merged
+with your `rules.json` -- in the same JSON shape `rules.json` uses, so you
+can search it (`| jq`) or copy a section to adapt.
+
 ### `~/.pytime/rules.json`
 
-Extends the built-in rules (never replaces them); every key is optional, and
-`pytime auto rules` validates the file and prints this shape:
+Extends the built-in rules (never replaces them), so it only needs what's
+missing or different; every key is optional, and `pytime auto rules`
+validates the file and prints this shape:
 
 ```json
 {

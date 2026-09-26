@@ -21,6 +21,12 @@ This project follows [Semantic Versioning](https://semver.org/).
   never mix with manual `pytime` entries.
 
   Also in `pytime auto`:
+  - A built-in catalog of about 170 apps (editors and IDEs, terminals,
+    browsers, AI/chat/mail/notes apps, database, API, git and container
+    tools, password managers) with every window class each is known to
+    report, and about 75 sites. `rules --dump` prints the effective rules as
+    a `rules.json`-shaped file. Edge titles (with their zero-width space)
+    are now parsed, and password managers are redacted by default.
   - `service install|uninstall|enable|disable|start|stop|restart|status|logs`
     runs the watcher as a systemd user service from login, restarting it if
     it exits. The unit pins the installing Python and the database.

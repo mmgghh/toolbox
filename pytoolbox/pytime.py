@@ -37,6 +37,7 @@ from pytoolbox.core.activity_rules import (
     classify_window,
     default_rules_path,
     load_rules,
+    rules_to_json,
 )
 from pytoolbox.core.activity_shell import SHELLS, snippet
 from pytoolbox.core.intervals import (
@@ -2283,13 +2284,28 @@ def auto_probe(delay: float) -> None:
 
 
 @auto.command("rules")
-def auto_rules() -> None:
+@click.option(
+    "--dump",
+    is_flag=True,
+    help="Print every rule in effect (built-in catalog plus rules.json) as a rules.json-shaped file.",
+)
+def auto_rules(dump: bool) -> None:
     """Show the active window backend and where to add custom classification rules.
+
+    \b
+    The built-in catalog covers common editors and IDEs, terminals,
+    browsers, AI and chat apps, database/API/git tools and developer sites;
+    rules.json only needs what's missing or different.
 
     \b
     Examples:
       pytime auto rules
+      pytime auto rules --dump | less
+      pytime auto rules --dump | jq '.app_labels | to_entries[] | select(.value == "DBeaver")'
     """
+    if dump:
+        console.emit_json(rules_to_json(_load_rules_or_fail()))
+        return
     path = default_rules_path()
     backend = detect_backend()
     locked = is_screen_locked()

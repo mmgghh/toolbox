@@ -21,223 +21,21 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from pytoolbox.core import procinfo
+from pytoolbox.core import activity_catalog, procinfo
 from pytoolbox.core.activewindow import WindowInfo
 
-#: wm_class values (lowercased) treated as code editors.
-DEFAULT_EDITOR_CLASSES = {
-    "code",
-    "code - oss",
-    "code-oss",
-    "codium",
-    "vscodium",
-    "cursor",
-    "code-url-handler",
-    "sublime_text",
-    "atom",
-    "jetbrains-pycharm",
-    "jetbrains-idea",
-    "jetbrains-webstorm",
-    "jetbrains-clion",
-    "jetbrains-goland",
-    "jetbrains-rider",
-    "jetbrains-phpstorm",
-    "jetbrains-rubymine",
-    "jetbrains-datagrip",
-    "pycharm",
-    "idea",
-    "webstorm",
-    "clion",
-    "goland",
-    "rider",
-    "phpstorm",
-    "vim",
-    "nvim",
-}
-
-#: wm_class values (lowercased) treated as terminal emulators.
-DEFAULT_TERMINAL_CLASSES = {
-    "gnome-terminal-server",
-    "gnome-terminal",
-    "konsole",
-    "xterm",
-    "alacritty",
-    "kitty",
-    "foot",
-    "wezterm",
-    "terminator",
-    "tilix",
-    "xfce4-terminal",
-    "terminology",
-    "st",
-    "urxvt",
-    "urxvt256c",
-    # Wayland app ids (GNOME/KDE report these instead of X11 classes).
-    "org.gnome.terminal",
-    "org.gnome.console",
-    "kgx",
-    "org.gnome.ptyxis",
-    "ptyxis",
-    "org.kde.konsole",
-    "org.wezfurlong.wezterm",
-    "com.mitchellh.ghostty",
-    "ghostty",
-}
-
-#: wm_class values (lowercased) treated as web browsers.
-DEFAULT_BROWSER_CLASSES = {
-    "google-chrome",
-    "chromium",
-    "chromium-browser",
-    "firefox",
-    "brave-browser",
-    "microsoft-edge",
-    "opera",
-    "vivaldi-stable",
-}
-
-#: wm_class -> human-readable app name, for whichever category matched.
-DEFAULT_APP_LABELS = {
-    "code": "VS Code",
-    "code - oss": "VS Code (OSS)",
-    "code-oss": "VS Code (OSS)",
-    "codium": "VSCodium",
-    "vscodium": "VSCodium",
-    "cursor": "Cursor",
-    "sublime_text": "Sublime Text",
-    "atom": "Atom",
-    "jetbrains-pycharm": "PyCharm",
-    "jetbrains-pycharm-ce": "PyCharm CE",
-    "jetbrains-idea": "IntelliJ IDEA",
-    "jetbrains-idea-ce": "IntelliJ IDEA CE",
-    "jetbrains-webstorm": "WebStorm",
-    "jetbrains-clion": "CLion",
-    "jetbrains-goland": "GoLand",
-    "jetbrains-rider": "Rider",
-    "jetbrains-phpstorm": "PhpStorm",
-    "jetbrains-rubymine": "RubyMine",
-    "jetbrains-datagrip": "DataGrip",
-    "pycharm": "PyCharm",
-    "idea": "IntelliJ IDEA",
-    "webstorm": "WebStorm",
-    "clion": "CLion",
-    "goland": "GoLand",
-    "rider": "Rider",
-    "phpstorm": "PhpStorm",
-    "vim": "Vim",
-    "nvim": "Neovim",
-    "gnome-terminal-server": "Terminal",
-    "gnome-terminal": "Terminal",
-    "konsole": "Konsole",
-    "xterm": "XTerm",
-    "alacritty": "Alacritty",
-    "kitty": "Kitty",
-    "foot": "Foot",
-    "wezterm": "WezTerm",
-    "terminator": "Terminator",
-    "tilix": "Tilix",
-    "xfce4-terminal": "Xfce Terminal",
-    "terminology": "Terminology",
-    "st": "st",
-    "urxvt": "urxvt",
-    "urxvt256c": "urxvt",
-    "org.gnome.terminal": "Terminal",
-    "org.gnome.console": "Console",
-    "kgx": "Console",
-    "org.gnome.ptyxis": "Ptyxis",
-    "ptyxis": "Ptyxis",
-    "org.kde.konsole": "Konsole",
-    "org.wezfurlong.wezterm": "WezTerm",
-    "com.mitchellh.ghostty": "Ghostty",
-    "ghostty": "Ghostty",
-    "google-chrome": "Chrome",
-    "chromium": "Chromium",
-    "chromium-browser": "Chromium",
-    "firefox": "Firefox",
-    "brave-browser": "Brave",
-    "microsoft-edge": "Edge",
-    "opera": "Opera",
-    "vivaldi-stable": "Vivaldi",
-}
-
-#: Substring (lowercased, matched against the browser tab title) -> project
-#: label. First match wins, so put more specific entries before generic ones
-#: if you add your own.
-DEFAULT_SITES = {
-    "chatgpt": "ChatGPT",
-    "claude": "Claude",
-    "github": "GitHub",
-    "gitlab": "GitLab",
-    "stack overflow": "Stack Overflow",
-    "notion": "Notion",
-    "figma": "Figma",
-    "jira": "Jira",
-    "confluence": "Confluence",
-    "slack": "Slack",
-    "youtube": "YouTube",
-    "gmail": "Gmail",
-    "google docs": "Google Docs",
-    "google sheets": "Google Sheets",
-    "google calendar": "Google Calendar",
-    "linear.app": "Linear",
-    "trello": "Trello",
-}
-
-#: wm_class (lowercased) of standalone desktop apps -> project label. Their
-#: titles rarely say more than the app's name, so the app itself is the
-#: most specific honest answer (the same way a ChatGPT browser tab is
-#: attributed to "ChatGPT").
-DEFAULT_APP_PROJECTS = {
-    "com.anthropic.claude": "Claude",
-    "claude": "Claude",
-    "chatgpt": "ChatGPT",
-    "com.openai.chatgpt": "ChatGPT",
-    "slack": "Slack",
-    "com.slack.slack": "Slack",
-    "discord": "Discord",
-    "com.discordapp.discord": "Discord",
-    "telegramdesktop": "Telegram",
-    "org.telegram.desktop": "Telegram",
-    "obsidian": "Obsidian",
-    "md.obsidian.obsidian": "Obsidian",
-    "notion": "Notion",
-    "spotify": "Spotify",
-    "com.spotify.client": "Spotify",
-    "zoom": "Zoom",
-    "us.zoom.zoom": "Zoom",
-    "thunderbird": "Thunderbird",
-    "org.mozilla.thunderbird": "Thunderbird",
-    "org.gnome.nautilus": "Files",
-}
-
+# Built-in knowledge lives in activity_catalog, one entry per app; these are
+# the lookups the classifier uses, derived from it.
+DEFAULT_EDITOR_CLASSES = activity_catalog.classes_of("editor")
+DEFAULT_TERMINAL_CLASSES = activity_catalog.classes_of("terminal")
+DEFAULT_BROWSER_CLASSES = activity_catalog.classes_of("browser")
+DEFAULT_APP_LABELS = activity_catalog.labels()
+DEFAULT_SITES = dict(activity_catalog.SITES)
+DEFAULT_APP_PROJECTS = activity_catalog.app_projects()
+DEFAULT_REDACT_CLASSES = activity_catalog.redacted_classes()
 #: Suffixes editors/browsers append to their window title, stripped before
 #: the remainder is treated as a project/page name.
-_APP_SUFFIXES = (
-    "visual studio code",
-    "code - oss",
-    "vscodium",
-    "cursor",
-    "pycharm community edition",
-    "pycharm",
-    "intellij idea community edition",
-    "intellij idea",
-    "webstorm",
-    "clion",
-    "goland",
-    "rider",
-    "phpstorm",
-    "rubymine",
-    "datagrip",
-    "sublime text",
-    "google chrome",
-    "chromium",
-    "mozilla firefox",
-    "firefox",
-    "brave",
-    "microsoft edge",
-    "opera",
-    "vivaldi",
-)
+_APP_SUFFIXES = activity_catalog.title_suffixes()
 
 _SEPARATOR_RE = re.compile(r"\s+[—–-]\s+")
 _BRACKET_RE = re.compile(r"\s*\[([^\]]*)\]\s*$")
@@ -295,7 +93,7 @@ class Rules:
     projects: dict = field(default_factory=dict)
     ignore_classes: set = field(default_factory=set)
     ignore_titles: list = field(default_factory=list)
-    redact_classes: set = field(default_factory=set)
+    redact_classes: set = field(default_factory=lambda: set(DEFAULT_REDACT_CLASSES))
     redact_titles: list = field(default_factory=lambda: [re.compile(p, re.I) for p in DEFAULT_REDACT_TITLES])
 
 
@@ -361,8 +159,34 @@ def load_rules(path: Optional[Path] = None) -> Rules:
     ):
         section = overrides.get(key, {})
         classes.update(c.lower() for c in section.get("apps", []))
-        titles.extend(_compile_patterns(section.get("titles", []), f"{key}.titles"))
+        known = {pattern.pattern for pattern in titles}
+        titles.extend(
+            pattern
+            for pattern in _compile_patterns(section.get("titles", []), f"{key}.titles")
+            if pattern.pattern not in known
+        )
     return rules
+
+
+def rules_to_json(rules: Rules) -> dict:
+    """The rules as a ``rules.json``-shaped dict; loading it back gives the same rules."""
+    projects: dict[str, list[str]] = {}
+    for alias, canonical in rules.projects.items():
+        if alias != canonical.lower():
+            projects.setdefault(canonical, []).append(alias)
+        else:
+            projects.setdefault(canonical, [])
+    return {
+        "editor_classes": sorted(rules.editor_classes),
+        "terminal_classes": sorted(rules.terminal_classes),
+        "browser_classes": sorted(rules.browser_classes),
+        "app_labels": dict(sorted(rules.app_labels.items())),
+        "app_projects": dict(sorted(rules.app_projects.items())),
+        "sites": dict(rules.sites),
+        "projects": {name: sorted(aliases) for name, aliases in projects.items()},
+        "ignore": {"apps": sorted(rules.ignore_classes), "titles": [p.pattern for p in rules.ignore_titles]},
+        "redact": {"apps": sorted(rules.redact_classes), "titles": [p.pattern for p in rules.redact_titles]},
+    }
 
 
 def privacy_action(win: WindowInfo, rules: Rules) -> str:
@@ -536,10 +360,11 @@ def _classify_browser(win: WindowInfo, rules: Rules, app: str) -> Classified:
     return Classified(category="browser", app=app, project=project, detail=page_title, ext="")
 
 
-#: Invisible bidi controls (LRM/RLM, embeddings, isolates). Chrome wraps
-#: right-to-left titles in them, which would hide the " - Google Chrome"
+#: Invisible characters: bidi controls (LRM/RLM, embeddings, isolates) that
+#: Chrome wraps right-to-left titles in, and zero-width spaces such as the
+#: one inside Edge's "Microsoft\u200bEdge". Either would hide the browser's
 #: suffix from an ``endswith`` check.
-_BIDI_CONTROLS_RE = re.compile("[‎‏‪-‮⁦-⁩]")
+_BIDI_CONTROLS_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
 
 def _classify(win: WindowInfo, rules: Rules) -> Classified:
