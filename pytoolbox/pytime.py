@@ -1894,8 +1894,8 @@ def auto_shell_init(shell: str) -> None:
 
     \b
     Only needed where /proc can't see what a terminal runs -- inside ssh,
-    tmux/screen, or a Flatpak terminal; elsewhere pytime reads the focused
-    tab's program and directory directly. Sets the title to
+    screen, or a Flatpak terminal; elsewhere (tmux included) pytime reads
+    the focused tab's program and directory directly. Sets the title to
     "<command> @ <project dir>" (the git root, or the current directory),
     never a command's arguments, and sets CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
     so Claude Code doesn't overwrite it. pytime must be on PATH when your rc

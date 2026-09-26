@@ -27,9 +27,10 @@ This project follows [Semantic Versioning](https://semver.org/).
   - Terminal windows are traced through `/proc` to the tab typed into most
     recently: its foreground program (so `claude` is recognised as Claude
     Code) and its working directory, resolved to the git repository root.
-    Only program names are stored, never arguments. Where `/proc` can't see
-    (ssh, tmux, Flatpak terminals) the title is used, and `shell-init
-    bash|zsh` prints a hook keeping it as `<command> @ <git root>`.
+    A tab attached to tmux is resolved to tmux's active pane. Only program
+    names are stored, never arguments. Where `/proc` can't see (ssh, screen,
+    Flatpak terminals) the title is used, and `shell-init bash|zsh` prints a
+    hook keeping it as `<command> @ <git root>`.
   - `today` summarizes hours per project and app; `suggest [--apply]` turns
     auto entries into timesheet-style manual entries, absorbing short
     detours and never double-counting an existing manual entry.

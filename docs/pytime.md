@@ -200,13 +200,17 @@ a prompt in ~/projects/toolbox          -> Terminal, project toolbox, detail "sh
 a prompt in ~                           -> Terminal, no project
 ```
 
+If the tab is attached to tmux, tmux is asked which pane is active and that
+pane is read the same way -- no tmux configuration needed, and `-L`/`-S`
+sockets are followed.
+
 Only the program's name (and, for terminal editors, the file's name) is
 stored, never its arguments. This needs no setup, but it can't see inside
-`ssh`, `tmux`/`screen`/`zellij` or containers, and sandboxed (Flatpak)
-terminals hide their processes entirely. There the window title is used,
-and `pytime auto shell-init bash|zsh` makes the title useful -- it keeps it
-as `<command> @ <git root>`, and works across ssh if the remote shell runs
-it too:
+`ssh`, `screen`/`zellij` or containers, and sandboxed (Flatpak) terminals
+hide their processes entirely. There the title is used -- the tmux pane's
+title for ssh inside tmux, else the window's -- and `pytime auto shell-init
+bash|zsh` makes the title useful: it keeps it as `<command> @ <git root>`,
+and works across ssh if the remote shell runs it too:
 
 ```shell
 # pytime must be on PATH when the rc file runs; from a virtualenv, use its full path:

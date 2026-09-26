@@ -450,6 +450,9 @@ def project_root_name(path_text: str) -> str:
 def _classify_terminal(win: WindowInfo, app: str) -> Classified:
     """What the focused tab runs, and where; from /proc when possible, else its title."""
     context = procinfo.terminal_context(win.pid)
+    if context is not None and context.program in procinfo.PASSTHROUGH and context.title:
+        # ssh inside tmux: the pane's own title is the only clue left.
+        return _classify_terminal_title(WindowInfo(title=context.title, wm_class=win.wm_class), app)
     if context is not None and context.program not in procinfo.PASSTHROUGH:
         detail = f"{context.program} {context.file}".strip() if context.program else "shell"
         label = f"{app} (Claude Code)" if context.program == "claude" else app

@@ -88,6 +88,56 @@ def test_idle_prompt_tab_reports_shell(tabs):
     assert ctx.cwd == str(root)
 
 
+@pytest.mark.skipif(not shutil.which("tmux"), reason="needs tmux")
+def test_tab_running_tmux_reads_the_active_pane(tabs):
+    import select
+    import subprocess
+
+    root, repo, started = tabs
+    socket = f"pytime-test-{os.getpid()}"
+    fd = started[1][1]
+    os.write(fd, f"TERM=xterm-256color tmux -L {socket} -f /dev/null new-session\n".encode())
+    try:
+        time.sleep(1.5)
+        os.write(fd, f"cd {repo}/src && exec -a claude sleep 30\n".encode())
+        _typed_last(started, 1)
+
+        def running():
+            while select.select([fd], [], [], 0)[0]:  # keep the pty from filling up
+                os.read(fd, 65536)
+            ctx = procinfo.terminal_context(os.getpid())
+            return ctx if ctx and ctx.program == "claude" else None
+
+        ctx = _wait_for(running)
+        assert ctx is not None, procinfo.terminal_context(os.getpid())
+        assert ctx.cwd == str(repo / "src")
+        classified = classify_window(WindowInfo("mohammad@mg: ~", "org.gnome.Terminal", pid=os.getpid()))
+        assert (classified.project, classified.app) == ("samt", "Terminal (Claude Code)")
+    finally:
+        subprocess.run(["tmux", "-L", socket, "kill-server"], capture_output=True)
+
+
+def test_tmux_socket_args(tmp_path, monkeypatch):
+    monkeypatch.setattr(procinfo, "_PROC", tmp_path)
+    for pid, argv in {1: ["tmux", "-L", "work", "attach"], 2: ["tmux", "-S/tmp/s", "new"], 3: ["tmux", "attach", "-t", "x"]}.items():
+        (tmp_path / str(pid)).mkdir()
+        (tmp_path / str(pid) / "cmdline").write_bytes("\0".join(argv).encode() + b"\0")
+    assert procinfo._tmux_socket_args(1) == ["-L", "work"]
+    assert procinfo._tmux_socket_args(2) == ["-S", "/tmp/s"]
+    assert procinfo._tmux_socket_args(3) == []
+
+
+def test_ssh_inside_tmux_uses_the_pane_title(monkeypatch):
+    monkeypatch.setattr(
+        procinfo,
+        "terminal_context",
+        lambda pid: procinfo.TerminalContext(cwd="/", program="ssh", title="claude @ ~/work/samt"),
+    )
+    result = classify_window(WindowInfo("mohammad@mg: ~", "org.gnome.Terminal", pid=123))
+    assert result.project == "samt"
+    assert "Claude Code" in result.app
+
+
 def test_unknown_pid_falls_back_to_title():
     assert procinfo.terminal_context(None) is None
     assert procinfo.terminal_context(2**22 + 12345) is None
