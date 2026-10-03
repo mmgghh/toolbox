@@ -712,3 +712,42 @@ def test_cover_page_shows_only_the_title(tmp_path):
     assert "The Title" in cover
     assert ".md" not in cover
     assert source.stem not in cover
+
+
+# ── HTML headings ───────────────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ('<h3 style="text-align: center;">فرآیند ثبت سند</h3>', (3, "فرآیند ثبت سند", "C")),
+        ("<h1>Title</h1>", (1, "Title", None)),
+        ("  <H2 class='x' style='text-align:right'>**Bold** one</H2>  ", (2, "**Bold** one", "R")),
+        ('<h4 align="left">Left</h4>', (4, "Left", "L")),
+        ("<h3>unclosed", None),
+        ("<h7>nope</h7>", None),
+        ("text <h3>inline</h3>", None),
+    ],
+)
+def test_html_heading_regex(line, expected):
+    assert pymd2pdf.parse_html_heading(line) == expected
+
+
+@needs_fonts
+def test_html_heading_is_rendered_as_a_heading_not_raw_text(monkeypatch, tmp_path):
+    calls = []
+    orig = render.add_heading
+
+    def spy(pdf, level, text, align=None):
+        calls.append((level, text, align))
+        return orig(pdf, level, text, align=align)
+
+    monkeypatch.setattr(render, "add_heading", spy)
+    paragraphs = []
+    monkeypatch.setattr(render, "add_paragraph", lambda pdf, text: paragraphs.append(text))
+
+    md = tmp_path / "a.md"
+    md.write_text('intro\n\n<h3 style="text-align: center;">فرآیند ثبت سند</h3>\n', encoding="utf-8")
+    pymd2pdf.convert(md, tmp_path / "a.pdf", title_page=False, quiet=True)
+
+    assert calls == [(3, "فرآیند ثبت سند", "C")]
+    assert not any("<h3" in p for p in paragraphs)
