@@ -111,7 +111,8 @@ def render_rich(pdf, text, base_size=None, base_style=""):
 
 
 
-def add_heading(pdf, level, text):
+def add_heading(pdf, level, text, align=None):
+    """Draw a heading. ``align`` ("L"/"R"/"C") overrides the direction-based default."""
     sizes = {1: 18, 2: 14, 3: 12, 4: 11, 5: 10, 6: 10}
     sz = sizes.get(level, 10)
     pdf.ln(4 if level > 1 else 6)
@@ -121,11 +122,11 @@ def add_heading(pdf, level, text):
         pdf.set_font(fonts.FONT_FA, "B", sz)
         pdf.multi_cell(
             0, sz * 0.6, shaping.shape_rtl(stripped),
-            align="R", new_x="LMARGIN", new_y="NEXT",
+            align=align or "R", new_x="LMARGIN", new_y="NEXT",
         )
     else:
         pdf.set_font(fonts.FONT_SANS, "B", sz)
-        pdf.multi_cell(0, sz * 0.6, stripped)
+        pdf.multi_cell(0, sz * 0.6, stripped, align=align or "L")
     pdf.ln(2)
     pdf.set_font(fonts.FONT_SANS, "", state.BODY_SIZE)
     pdf.set_text_color(*document.CLR_BODY)

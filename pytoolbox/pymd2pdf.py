@@ -37,8 +37,26 @@ _FENCE_RE = re.compile(r'^```\s*(\S*)')
 _TABLE_SEP_RE = re.compile(r'^[\s|:-]+$')
 _HR_RE = re.compile(r'^---+\s*$')
 _HEADING_RE = re.compile(r'^(#{1,6})\s+(.*)')
+#: A whole-line HTML heading, ``<h3 style="text-align: center;">text</h3>``:
+#: level, attribute string, inner text.
+_HTML_HEADING_RE = re.compile(r'^\s*<h([1-6])(\s[^>]*)?>(.*?)</h\1>\s*$', re.I | re.S)
+_ALIGN_RE = re.compile(r'(?:text-align\s*:|\balign\s*=)\s*["\']?\s*(left|right|center)', re.I)
+_ALIGN_CODES = {"left": "L", "right": "R", "center": "C"}
 _ORDERED_RE = re.compile(r'^(\s*)(\d+)\.\s+(.*)')
 _BULLET_RE = re.compile(r'^(\s*)[-*+]\s+(.*)')
+
+
+def parse_html_heading(line: str):
+    """``(level, text, align)`` for a whole-line ``<hN ...>text</hN>``, else ``None``.
+
+    ``align`` is ``"L"``/``"R"``/``"C"`` from a ``text-align`` style or
+    ``align`` attribute, or ``None`` when the heading does not set one.
+    """
+    m = _HTML_HEADING_RE.match(line)
+    if not m:
+        return None
+    align = _ALIGN_RE.search(m.group(2) or "")
+    return int(m.group(1)), m.group(3).strip(), _ALIGN_CODES[align.group(1).lower()] if align else None
 
 
 def _extract_title(lines):
@@ -124,6 +142,13 @@ class _Renderer:
             heading = _HEADING_RE.match(line)
             if heading:
                 render.add_heading(self.pdf, len(heading.group(1)), heading.group(2))
+                index += 1
+                continue
+
+            html_heading = parse_html_heading(line)
+            if html_heading:
+                level, text, align = html_heading
+                render.add_heading(self.pdf, level, text, align=align)
                 index += 1
                 continue
 
