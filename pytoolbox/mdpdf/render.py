@@ -268,6 +268,10 @@ def use_rtl_layout(pdf, text):
 
 def add_paragraph(pdf, text):
     pdf.set_text_color(*document.CLR_BODY)
+    # A list item's continuation line arrives still indented. Wrapping keeps
+    # that indent on the first rendered line only, so the rest of the text
+    # would sit further out than the line it belongs to.
+    text = text.strip()
     if use_rtl_layout(pdf, text):
         bold_m = WHOLE_BOLD_RE.match(text.strip())
         pdf.set_font(fonts.FONT_FA, "B" if bold_m else "", state.BODY_SIZE)

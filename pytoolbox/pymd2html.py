@@ -288,6 +288,9 @@ def render_inline(text: str, escape_html: bool = False) -> str:
         rendered = pattern.sub(lambda m, t=template: t.format(m.group(1)), rendered)
     # A trailing backslash or two trailing spaces is Markdown for "break here".
     rendered = re.sub(r"(?: {2,}|\\)\n", "<br>\n", rendered)
+    # Any other newline is Shift+Enter in an editor: a line break, as pymd2pdf
+    # draws it. Enter is a blank line, which ends the paragraph before it gets here.
+    rendered = re.sub(r"(?<!<br>)\n", "<br>\n", rendered)
     return _MARK_RE.sub(lambda m: store[int(m.group(1))], rendered)
 
 
@@ -592,7 +595,7 @@ class _Renderer:
                 break
             if body and self._is_table(lines, index):
                 break
-            body.append(lines[index])
+            body.append(lines[index].lstrip())
             index += 1
         text = render_inline("\n".join(body), self.escape_html)
         # A tight list item holds its text directly: <li>one</li>, not

@@ -265,3 +265,36 @@ def test_convert_returns_the_path_it_wrote(tmp_path):
     source = tmp_path / "n.md"
     source.write_text("# n", encoding="utf-8")
     assert convert(source, tmp_path / "out" / "n.html").exists()
+
+
+# ── Enter / Shift+Enter ─────────────────────────────────────────────
+
+
+def test_single_newline_is_a_line_break():
+    """Shift+Enter in an editor writes one newline: it must stay a line break,
+    as pymd2pdf draws it, not collapse into a space."""
+    assert body("one\ntwo\nthree") == "<p>one<br>\ntwo<br>\nthree</p>"
+
+
+def test_blank_line_is_a_new_paragraph():
+    """Enter writes a blank line: a new paragraph, not a line break."""
+    assert body("one\n\ntwo") == "<p>one</p>\n<p>two</p>"
+
+
+def test_explicit_hard_break_is_not_doubled():
+    assert body("one  \ntwo") == "<p>one<br>\ntwo</p>"
+    assert body("one\\\ntwo") == "<p>one<br>\ntwo</p>"
+
+
+def test_list_item_continuation_lines_are_line_breaks():
+    out = body("1. Hi\n2. test\n   first\n   second\n")
+    assert "<li>test<br>\nfirst<br>\nsecond</li>" in out
+    assert "<li>Hi</li>" in out
+
+
+def test_newline_inside_a_code_span_is_kept_as_is():
+    assert "<br>" not in body("`a\nb`")
+
+
+def test_emphasis_may_span_a_line_break():
+    assert body("**a\nb**") == "<p><strong>a<br>\nb</strong></p>"

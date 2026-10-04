@@ -751,3 +751,31 @@ def test_html_heading_is_rendered_as_a_heading_not_raw_text(monkeypatch, tmp_pat
 
     assert calls == [(3, "فرآیند ثبت سند", "C")]
     assert not any("<h3" in p for p in paragraphs)
+
+
+@needs_fonts
+@needs_shaper
+def test_indented_rtl_continuation_line_does_not_shift_its_first_wrapped_line(monkeypatch):
+    """A list item's continuation line is indented in the source. That indent
+    used to survive into the shaped text, pushing only the first wrapped line
+    away from the margin, so the following wrapped words sat further right
+    than their own line."""
+    pdf = document.PDF(orientation="P", unit="mm", format="A4")
+    if not pdf.has_persian:
+        pytest.skip("no Persian font installed")
+    pdf.doc_is_rtl = True
+    pdf.set_margins(20, 20, 20)
+    pdf.add_page()
+
+    drawn = []
+    orig = document.PDF.multi_cell
+
+    def spy(self, w, h=None, text="", *args, **kwargs):
+        drawn.append(text)
+        return orig(self, w, h, text, *args, **kwargs)
+
+    monkeypatch.setattr(document.PDF, "multi_cell", spy)
+    render.add_paragraph(pdf, "   " + "به دلیل عدم انطباق شماره همراه ثبت شده در سامانه آزمون " * 3)
+
+    assert len(drawn) > 1
+    assert not any(line.startswith(" ") for line in drawn)
