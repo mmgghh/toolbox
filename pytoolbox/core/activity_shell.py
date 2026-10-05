@@ -45,6 +45,9 @@ __pytime_preexec() {{
       *) break ;;
     esac
   done
+  # A line that is only "VAR=value" is an assignment, not a command, and the
+  # value may be a secret: never put it in the title.
+  case $first in *=*) return ;; esac
   last=${{cmd##*[[:space:]]}}
   case $first in
     vim|nvim|vi|nano|emacs|hx|helix|micro|kak) [ "$last" != "$first" ] && first="$first $last" ;;

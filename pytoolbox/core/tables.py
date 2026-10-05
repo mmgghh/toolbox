@@ -17,6 +17,26 @@ def _cell(value: object) -> str:
     return "" if value is None else str(value)
 
 
+_FORMULA_TRIGGERS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _spreadsheet_cell(value: object) -> object:
+    """``value`` made safe to open in a spreadsheet.
+
+    A text cell starting with ``=``, ``+``, ``-`` or ``@`` is run as a formula
+    by Excel and friends, and some of our text (window and page titles, task
+    names) is not ours. Prefixing a ``'`` makes it plain text. Numbers, and
+    text that is just a number, are left alone so they still sort and sum.
+    """
+    if not isinstance(value, str) or not value.startswith(_FORMULA_TRIGGERS):
+        return value
+    try:
+        float(value)
+    except ValueError:
+        return "'" + value
+    return value
+
+
 def render_table(rows: Sequence[dict], headers: Sequence[str]) -> str:
     """Render rows as a column-aligned text table."""
     if not rows:
@@ -55,7 +75,7 @@ def render_csv(rows: Sequence[dict], headers: Sequence[str]) -> str:
     writer = csv.writer(buffer)
     writer.writerow(headers)
     for row in rows:
-        writer.writerow([_cell(row.get(header)) for header in headers])
+        writer.writerow([_cell(_spreadsheet_cell(row.get(header))) for header in headers])
     return buffer.getvalue()
 
 
@@ -96,7 +116,7 @@ def write_excel(path: Path, rows: Sequence[dict], headers: Sequence[str]) -> Non
     sheet = workbook.active
     sheet.append(list(headers))
     for row in rows:
-        sheet.append([row.get(header, "") for header in headers])
+        sheet.append([_spreadsheet_cell(row.get(header, "")) for header in headers])
     for index, header in enumerate(headers, start=1):
         width = max(len(header), *(len(_cell(row.get(header))) for row in rows)) if rows else len(header)
         sheet.column_dimensions[sheet.cell(row=1, column=index).column_letter].width = min(width + 2, 60)

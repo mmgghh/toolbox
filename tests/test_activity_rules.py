@@ -258,3 +258,11 @@ def test_terminal_directory_named_claude_is_not_claude_code():
 
 def test_terminal_in_home_has_no_project():
     assert classify_window(WindowInfo("mohammad@mg: ~", "org.gnome.Terminal")).project == ""
+
+
+def test_classify_strips_terminal_escapes_from_a_page_title():
+    win = WindowInfo(title="\x1b]0;pwned\x07Hello\x9b2J\nWorld - Google Chrome", wm_class="google-chrome")
+    result = classify_window(win)
+    assert result.detail == "]0;pwnedHello2J World"
+    for field in (result.app, result.project, result.detail, result.ext):
+        assert not any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in field)

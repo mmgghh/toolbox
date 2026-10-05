@@ -366,6 +366,17 @@ def _classify_browser(win: WindowInfo, rules: Rules, app: str) -> Classified:
 #: suffix from an ``endswith`` check.
 _BIDI_CONTROLS_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
+#: Control characters (C0, DEL, C1, line/paragraph separators). A window title
+#: is attacker-influenced -- a web page picks its own -- and what we derive
+#: from it is later echoed to a terminal, so an escape sequence in it must not
+#: survive.
+_WHITESPACE_CONTROLS_RE = re.compile("[\t\n\r\v\f\u2028\u2029]+")
+_CONTROLS_RE = re.compile("[\x00-\x1f\x7f-\x9f]")
+
+
+def _strip_controls(text: str) -> str:
+    return _CONTROLS_RE.sub("", _WHITESPACE_CONTROLS_RE.sub(" ", text))
+
 
 def _classify(win: WindowInfo, rules: Rules) -> Classified:
     wm_class = (win.wm_class or "").lower()
@@ -394,11 +405,21 @@ def classify_window(win: WindowInfo, rules: Optional[Rules] = None) -> Optional[
     everything derived from its title.
     """
     rules = rules or Rules()
-    win = WindowInfo(title=_BIDI_CONTROLS_RE.sub("", win.title or "").strip(), wm_class=win.wm_class, pid=win.pid)
+    title = _strip_controls(_BIDI_CONTROLS_RE.sub("", win.title or "")).strip()
+    win = WindowInfo(title=title, wm_class=win.wm_class, pid=win.pid)
     action = privacy_action(win, rules)
     if action == "ignore":
         return None
     classified = _classify(win, rules)
+    # Not everything in it comes from the title (procinfo reads /proc), so
+    # clean the result rather than only the input.
+    classified = Classified(
+        category=classified.category,
+        app=_strip_controls(classified.app),
+        project=_strip_controls(classified.project),
+        detail=_strip_controls(classified.detail),
+        ext=_strip_controls(classified.ext),
+    )
     if action == "redact":
         return Classified(category=classified.category, app=classified.app, project="", detail="", ext="")
     canonical = rules.projects.get(classified.project.lower()) if classified.project else None

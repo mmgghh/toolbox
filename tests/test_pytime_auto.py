@@ -292,6 +292,27 @@ def test_bash_hook_joins_prompt_command_once(tmp_path, setup, expected):
     assert result.stdout.rstrip("\n").endswith(expected)
 
 
+@pytest.mark.parametrize(
+    ("command", "title"),
+    [
+        ("API_TOKEN=abc123secret", ""),
+        ("FOO=1 BAR=2", ""),
+        ("FOO=1 ls -l", "ls @ /x"),
+        ("sudo vim a/b.py", "vim a/b.py @ /x"),
+    ],
+)
+def test_shell_hook_never_titles_a_bare_assignment(tmp_path, command, title):
+    from pytoolbox.core.activity_shell import snippet
+
+    hook = tmp_path / "hook.sh"
+    hook.write_text(snippet("bash"))
+    script = f'source {hook}; __pytime_cwd=/x; __pytime_preexec "$1"'
+    result = subprocess.run(["bash", "-c", script, "bash", command], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "abc123secret" not in result.stdout
+    assert result.stdout == (f"\033]0;{title}\a" if title else "")
+
+
 def test_watch_pauses_while_screen_locked(runner, db, monkeypatch):
     import pytoolbox.pytime as pt
     from pytoolbox.core.activewindow import WindowInfo
