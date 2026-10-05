@@ -7,6 +7,57 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pytime auto`.** Records time automatically from the focused window --
+  `watch` polls it every few seconds and starts/stops entries on its own,
+  `status`/`report` mirror the manual commands (with `-g app`/`-g ext`/`-g
+  category` grouping), and `rules` shows the active backend plus where to add
+  custom classification rules. Built from window titles alone (X11 via
+  `xdotool`/`xprop`; Wayland via the GNOME "Focused Window D-Bus" extension,
+  `kdotool` on KDE, or Sway/Hyprland -- see `toolbox doctor`),
+  since real file paths and browser URLs need an editor plugin or browser
+  extension respectively, which this is not; titles are parsed with
+  heuristics for common editors/terminals/browsers instead, extensible via
+  `~/.pytime/rules.json`. Auto-tracked entries live in their own table and
+  never mix with manual `pytime` entries.
+
+  Also in `pytime auto`:
+  - A built-in catalog of about 170 apps (editors and IDEs, terminals,
+    browsers, AI/chat/mail/notes apps, database, API, git and container
+    tools, password managers) with every window class each is known to
+    report, and about 75 sites. `rules --dump` prints the effective rules as
+    a `rules.json`-shaped file. Edge titles (with their zero-width space)
+    are now parsed, and password managers are redacted by default.
+  - `service install|uninstall|enable|disable|start|stop|restart|status|logs`
+    runs the watcher as a systemd user service from login, restarting it if
+    it exits. The unit pins the installing Python and the database.
+  - Terminal windows are traced through `/proc` to the tab typed into most
+    recently: its foreground program (so `claude` is recognised as Claude
+    Code) and its working directory, resolved to the git repository root.
+    A tab attached to tmux is resolved to tmux's active pane. Only program
+    names are stored, never arguments. Where `/proc` can't see (ssh, screen,
+    Flatpak terminals) the title is used, and `shell-init bash|zsh` prints a
+    hook keeping it as `<command> @ <git root>`.
+  - `today` summarizes hours per project and app; `suggest [--apply]` turns
+    auto entries into timesheet-style manual entries, absorbing short
+    detours and never double-counting an existing manual entry.
+  - `report --min-seconds` (default 10) folds quick window switches into the
+    entry before them; `-q/--search`, `--no-project` and `delete` filter and
+    clean up entries.
+  - `rules.json` gains `projects` aliases (roll `samt`, `samt-backend`,
+    `org/samt` into one project), `ignore` and `redact` rules (private and
+    incognito windows are redacted by default), and is now validated rather
+    than silently ignored when malformed.
+  - GitHub, GitLab and Jira tabs are attributed to their repository or
+    project key; JetBrains IDEs (project-first titles), Wayland terminal app
+    ids and desktop apps like Claude are classified.
+  - Tracking pauses while the screen is locked, and on GNOME when idle.
+  - Suspend is not counted: after a jump in the clock the open entry ends
+    at the last check before it. An entry left open by a watcher that was
+    killed or lost power ends at its last heartbeat instead of running
+    forever. `--interval` is limited to 120 seconds. Only one watcher can
+    record into a database at a time, so running `watch` by hand next to
+    the service no longer counts time twice.
+
 - **`pydata convert`.** Converts JSON, CSV or Excel into another of the
   three, or Markdown -- `pydata convert sales.csv sales.xlsx`. The output
   format comes from the destination's suffix, or `--to` when it doesn't say.

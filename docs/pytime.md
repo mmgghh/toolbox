@@ -13,6 +13,7 @@ delete     Remove entries matching filters
 report     Report on tracked time, grouped and exported
 projects   List projects with entry counts and total hours
 tasks      List tasks with entry counts and total hours
+auto       Automatic tracking from the active window (watch, service, today, report, suggest, ...)
 ```
 
 Entries live in one SQLite file, so the data stays readable with any SQLite
@@ -124,6 +125,270 @@ toolbox | 12      | 18.25 | 2026-08-09
 notes   | 3       | 2.5   | 2026-08-02
 ```
 
+## Automatic tracking (`pytime auto`)
+
+`start`/`end` require you to remember to run them. `pytime auto` instead
+watches the focused window and records time on its own, from what the window
+title/class say -- no browser extension or editor plugin, nothing to
+remember to type. Auto entries live in their own table and never mix with
+manual ones (until you choose to copy them over with `suggest --apply`).
+
+### Setup
+
+```shell
+toolbox doctor                             # which window backend works here (see Platform support)
+pytime auto service install --now          # run the watcher now and at every login
+# only needed for tmux/ssh; see "Terminals and Claude Code" below
+echo 'eval "$(pytime auto shell-init bash)"' >> ~/.bashrc
+```
+
+### Day to day
+
+```shell
+pytime auto today                          # hours per project and per app, today
+pytime auto today --days 7
+pytime auto status                         # what's being tracked right now
+pytime auto report -g app -g project       # detailed, filterable, exportable
+pytime auto report --category editor -g ext
+pytime auto suggest                        # proposed manual entries for today
+pytime auto suggest --apply                # ...added to your manual pytime entries
+```
+
+### The service
+
+`pytime auto service` manages a systemd *user* service (no root) that runs
+`pytime auto watch` from login, restarting it if it exits -- e.g. when it
+starts before the desktop is ready to say which window is focused.
+
+```shell
+pytime auto service install [--now] [--interval 5] [--idle-timeout 5] [--force]
+pytime auto service enable [--now]         # start at login (--now: also start it now)
+pytime auto service disable [--now]        # don't start at login (--now: also stop it)
+pytime auto service start | stop | restart | status
+pytime auto service logs [-f]              # activity changes and pauses, from the journal
+pytime auto service uninstall              # stop, disable, remove the unit file
+```
+
+The unit pins the Python it was installed with (so a virtualenv keeps
+working) and the database path, and records your `PATH` (backends like
+`kdotool` often live in `~/.cargo/bin`). Re-run `install --force` after
+moving either. If your desktop never reaches `graphical-session.target`
+(some plain X11 window managers), install with `--target default.target`.
+Restart the service after editing `~/.pytime/rules.json`.
+
+Without systemd, run `pytime auto watch` from your desktop's autostart instead.
+
+### Pauses
+
+The watcher stops the current entry, rather than counting the time, while:
+the screen is locked (GNOME, or any desktop with the freedesktop screensaver
+D-Bus interface); you've been idle longer than `--idle-timeout` minutes (GNOME,
+or X11 with `xprintidle`); no window is focused; or the focused window matches
+an `ignore` rule.
+
+Suspend is not counted either. If a check comes much later than the previous
+one (3× `--interval`, at least 30 seconds), the watcher assumes the machine was
+asleep and ends the open entry at the last check before the jump.
+
+If the watcher dies without cleaning up (`kill -9`, power loss, an OOM kill),
+its entry doesn't keep running forever. The watcher stamps its open entry about
+once a minute (`last_seen_ts`), and any entry without a stamp for 10 minutes is
+ended at its last one: by `status`, `report` and the other readers, or right
+away by the next `watch` that starts. `--interval` is capped at 120 seconds so a
+live watcher is never mistaken for a dead one.
+
+Only one watcher records into a database at a time: a second `pytime auto
+watch` (say, run by hand while the service is running) refuses to start and
+names the pid holding `<database>.watch.lock`, instead of counting every
+minute twice.
+
+### Terminals and Claude Code
+
+For a focused terminal, `pytime auto` doesn't trust the title: it follows the
+window's process in `/proc` to each tab's shell, takes the tab you typed into
+most recently, and reads what's running there and in which directory. That
+directory is resolved to its git repository root:
+
+```
+claude running in ~/projects/samt/src   -> Terminal (Claude Code), project samt
+nvim pytime.py in ~/projects/toolbox    -> Terminal, project toolbox, file pytime.py (py)
+a prompt in ~/projects/toolbox          -> Terminal, project toolbox, detail "shell"
+a prompt in ~                           -> Terminal, no project
+```
+
+If the tab is attached to tmux, tmux is asked which pane is active and that
+pane is read the same way -- no tmux configuration needed, and `-L`/`-S`
+sockets are followed.
+
+Only the program's name (and, for terminal editors, the file's name) is
+stored, never its arguments. This needs no setup, but it can't see inside
+`ssh`, `screen`/`zellij` or containers, and sandboxed (Flatpak) terminals
+hide their processes entirely. There the title is used -- the tmux pane's
+title for ssh inside tmux, else the window's -- and `pytime auto shell-init
+bash|zsh` makes the title useful: it keeps it as `<command> @ <git root>`,
+and works across ssh if the remote shell runs it too:
+
+```shell
+# pytime must be on PATH when the rc file runs; from a virtualenv, use its full path:
+echo 'eval "$(~/projects/toolbox/venv/bin/pytime auto shell-init bash)"' >> ~/.bashrc
+```
+
+Like the `/proc` reader, the hook only puts a command's first word in the
+title. It also sets `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1`, since Claude Code
+would otherwise replace the title with its conversation topic. In bash it
+uses bash-preexec if you have it, or a `DEBUG` trap otherwise (replacing any
+`DEBUG` trap you had).
+
+`pytime auto probe` on a terminal shows both what `/proc` found and the raw
+title, so you can see which one was used.
+
+### Reports, search and cleanup
+
+`report` and `delete` take the same filters: `--id`, `-p/--project`,
+`--no-project`, `--app`, `--category`, `--ext`, `-q/--search` (substring of
+the captured title/file/page), `--interval`, `-s/--start`, `-e/--end`.
+
+```shell
+pytime auto report --no-project -g app     # what the rules didn't attribute
+pytime auto report -q youtube              # search captured titles
+pytime auto report --min-seconds 0         # every stored entry, unfolded
+pytime auto delete --app Chrome -q youtube # preview + confirm, then delete
+pytime auto delete --interval "1 hour" --yes
+pytime auto delete --all --yes             # every auto entry; manual entries are never touched
+```
+
+`report` folds back-to-back entries shorter than `--min-seconds` (default 10)
+into the entry before them, so an alt-tab through three windows doesn't show
+as three rows; totals are unchanged and stored entries are never modified.
+Grouping by `project` alone puts everything unattributed in one blank row --
+add `-g app` to split it.
+
+### Suggested manual entries
+
+`pytime auto suggest` turns auto entries into timesheet-style blocks: a
+project's entries join across breaks shorter than `--merge-gap` (10 minutes),
+a brief detour inside a stretch of work (a two-minute look at chat) is
+absorbed into it, unattributed time is dropped, and blocks shorter than
+`--min-block` (15 minutes) are left out. `--apply` adds them as manual
+entries (task `auto-tracked`, or `-t`), skipping any block that overlaps an
+existing manual entry -- so running it twice never double-counts.
+
+### How windows are classified
+
+There is no install-free way for a CLI to read a browser tab's real URL or an
+editor's real open file -- tools that do that (WakaTime, ActivityWatch's
+browser integration) rely on an editor plugin or a browser extension.
+`pytime auto` works from the window title and class, with heuristics for
+common apps:
+
+- **Editors** (VS Code, any JetBrains IDE, Sublime, vim/nvim): the title's
+  `file — project` (VS Code) or `project – file` (JetBrains) convention gives
+  a file (and its extension) and a project.
+- **Terminals**: the focused tab's program and directory from `/proc` (see
+  above); otherwise a `~/path` or `shell-init` title, resolved to its git root.
+- **Browsers** (Chrome, Chromium, Firefox, Brave, Edge, Opera, Vivaldi):
+  GitHub tabs are attributed to their repository (`… · owner/repo` →
+  `repo`), GitLab tabs to their project, Jira tabs (`[ABC-12] …`) to the
+  project key; other tabs are matched against a table of known sites
+  (ChatGPT, Claude, Notion, Figma, Slack, YouTube, Gmail, Google
+  Docs/Sheets/Calendar, Linear, Trello, ...).
+- **Desktop apps** whose titles say nothing useful (the Claude and ChatGPT
+  apps, Slack, Discord, Telegram, Obsidian, Zoom, ...) take the app itself as
+  the project -- the Claude app can't tell which of your projects a
+  conversation was about.
+- Anything else is category `other`, with the raw title as `detail` and no
+  project rather than a guessed one.
+
+If a report shows a blank project or the wrong app, run `pytime auto probe`,
+focus that window within 3 seconds, and compare the raw `wm_class`/`title`
+with the classification.
+
+### The built-in catalog
+
+`pytime auto` ships with a catalog (`pytoolbox/core/activity_catalog.py`) of
+about 170 apps, each listed with every window class it's known to report
+(X11 class, Wayland app id, Flatpak id) and the suffix it adds to titles:
+
+- **Editors and IDEs:** VS Code (+ Insiders, OSS, VSCodium), Cursor,
+  Windsurf, Zed, every JetBrains IDE and Android Studio, Sublime Text, Kate,
+  GNOME Text Editor, gedit, Geany, Emacs, Vim/Neovim/Neovide, Lapce,
+  Eclipse, NetBeans, Qt Creator, KDevelop, GNOME Builder, Spyder, RStudio,
+  Arduino IDE, Godot.
+- **Terminals:** GNOME Terminal, Console, Ptyxis, Konsole, Yakuake, Kitty,
+  Alacritty, WezTerm, Ghostty, Foot, Tilix, Terminator, Guake, Warp, Tabby,
+  Wave, Black Box and more.
+- **Browsers:** Chrome, Chromium, Firefox (+ Developer Edition, Nightly),
+  LibreWolf, Floorp, Zen, Brave, Edge, Opera, Vivaldi, qutebrowser, ...
+- **Developer tools**, recorded under their own name with no project:
+  Postman, Insomnia, Bruno, DBeaver, pgAdmin, Beekeeper Studio, MySQL
+  Workbench, MongoDB Compass, Redis Insight, Docker/Podman Desktop, Lens,
+  GitKraken, GitHub Desktop, Sublime Merge, Meld, Wireshark, VirtualBox,
+  Remmina, FileZilla, ...
+- **AI, chat, mail and notes**, whose time goes to the app as the project:
+  Claude, ChatGPT, Slack, Discord, Telegram, Signal, Element, Mattermost,
+  Teams, Zoom, Thunderbird/Evolution/Geary (project `Mail`), Obsidian,
+  Notion, Logseq, Joplin, Zotero, ...
+- **Password managers** (KeePassXC, Bitwarden, 1Password, ...) are redacted:
+  their time counts, their titles are never stored.
+
+Plus about 75 sites for browser tabs: AI assistants, code hosting, docs and
+package registries (MDN, PyPI, npm, crates.io, ...), cloud and monitoring
+consoles, notebooks, planning tools, mail and chat. Common words that would
+misfire on unrelated pages ("linear", "meet", "zoom", "medium") are left out
+on purpose.
+
+`pytime auto rules --dump` prints everything in effect -- the catalog merged
+with your `rules.json` -- in the same JSON shape `rules.json` uses, so you
+can search it (`| jq`) or copy a section to adapt.
+
+### `~/.pytime/rules.json`
+
+Extends the built-in rules (never replaces them), so it only needs what's
+missing or different; every key is optional, and `pytime auto rules`
+validates the file and prints this shape:
+
+```json
+{
+  "projects": {"SAMT": ["samt", "samt-backend"]},
+  "ignore": {"apps": ["org.keepassxc.keepassxc"], "titles": ["bank"]},
+  "redact": {"apps": ["thunderbird"], "titles": ["private"]},
+  "sites": {"my-site.com": "My Site"},
+  "app_projects": {"com.example.app": "Example"},
+  "editor_classes": ["my-editor-wm-class"],
+  "terminal_classes": [],
+  "browser_classes": [],
+  "app_labels": {"my-editor-wm-class": "My Editor"}
+}
+```
+
+- `projects` rolls different names for one project into one: a PyCharm
+  project `samt`, a terminal in `~/work/samt`, and GitHub repo
+  `org/samt-backend` can all report as `SAMT`. Aliases match the detected
+  project name, case-insensitively.
+- `ignore` (by window class, or title regex) skips a window entirely: while
+  it's focused nothing is recorded. `redact` keeps the time and the app but
+  stores no project, title or file. Private and incognito browser windows
+  are redacted by default.
+- A malformed file is reported (by `watch`, `probe` and `rules`) instead of
+  silently ignored.
+
+### Platform support
+
+Wayland deliberately hides the focused window from ordinary programs, so each
+desktop needs its own helper:
+
+| Session | Needs |
+| --- | --- |
+| X11 | `xdotool` (or `xprop` as a fallback) |
+| GNOME on Wayland | the [Focused Window D-Bus](https://extensions.gnome.org/extension/5592/focused-window-d-bus/) Shell extension, enabled, then log out/in |
+| KDE Plasma on Wayland | [`kdotool`](https://github.com/jinliu/kdotool) |
+| Sway / Hyprland | `swaymsg` / `hyprctl` (ship with the compositor) |
+
+`xprop` is not used on Wayland even when installed: it only sees XWayland
+windows and would misattribute everything else. `toolbox doctor` and
+`pytime auto rules` say which backend this machine uses, or exactly what to
+install if none.
+
 ## Schema
 
 ```sql
@@ -133,6 +398,18 @@ CREATE TABLE time_entries (
     task     TEXT NOT NULL,
     start_ts REAL NOT NULL,   -- Unix timestamp
     end_ts   REAL             -- NULL while running
+);
+
+CREATE TABLE activity_entries (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    category TEXT NOT NULL,   -- "editor" | "terminal" | "browser" | "other"
+    app      TEXT NOT NULL,
+    project  TEXT,
+    detail   TEXT,            -- filename (editor) or page/window title
+    ext      TEXT,            -- file extension, editor entries only
+    start_ts REAL NOT NULL,
+    end_ts   REAL,            -- NULL while running
+    last_seen_ts REAL         -- the watcher's last "still here" stamp
 );
 ```
 

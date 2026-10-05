@@ -7,18 +7,39 @@ output; internally everything is a UTC-based epoch timestamp.
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import signal
 import sqlite3
+import time as time_module
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
 import click
 
-from pytoolbox.core import console
+from pytoolbox.core import activity_service, console, procinfo
+from pytoolbox.core.activewindow import (
+    backend_hint,
+    detect_backend,
+    get_active_window,
+    get_idle_seconds,
+    is_screen_locked,
+)
+from pytoolbox.core.activity_blocks import fold_short_entries, suggest_blocks
+from pytoolbox.core.activity_rules import (
+    Classified,
+    Rules,
+    RulesError,
+    classify_window,
+    default_rules_path,
+    load_rules,
+    rules_to_json,
+)
+from pytoolbox.core.activity_shell import SHELLS, snippet
 from pytoolbox.core.intervals import (
     apply_interval,
     format_duration,
@@ -72,6 +93,21 @@ class TimeRecord:
     duration_hours: float
 
 
+@dataclass(frozen=True)
+class ActivityRecord:
+    """Normalized auto-tracked activity entry data (see ``pytime auto``)."""
+
+    entry_id: int
+    category: str
+    app: str
+    project: Optional[str]
+    detail: Optional[str]
+    ext: Optional[str]
+    start_dt: datetime
+    end_dt: Optional[datetime]
+    duration_hours: float
+
+
 def resolve_db_path(db_path: Optional[Path]) -> Path:
     """Return the database path, creating its parent directory when needed.
 
@@ -112,6 +148,29 @@ def _init_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_end ON time_entries(end_ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_project ON time_entries(project)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_task ON time_entries(task)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_entries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            app TEXT NOT NULL,
+            project TEXT,
+            detail TEXT,
+            ext TEXT,
+            start_ts REAL NOT NULL,
+            end_ts REAL,
+            last_seen_ts REAL
+        )
+        """
+    )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(activity_entries)")}
+    if "last_seen_ts" not in columns:
+        conn.execute("ALTER TABLE activity_entries ADD COLUMN last_seen_ts REAL")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_start ON activity_entries(start_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_end ON activity_entries(end_ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_project ON activity_entries(project)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_entries_ext ON activity_entries(ext)")
     conn.commit()
 
 
@@ -217,6 +276,42 @@ def fetch_records(
     return records
 
 
+def fetch_activity_records(
+    conn: sqlite3.Connection,
+    clauses: Iterable[str],
+    params: list[object],
+) -> list[ActivityRecord]:
+    """Fetch auto-tracked activity entries from the database and normalize them."""
+    close_stale_activity_entries(conn, time_module.time())
+    query = "SELECT id, category, app, project, detail, ext, start_ts, end_ts FROM activity_entries"
+    clause_list = list(clauses)
+    if clause_list:
+        query += " WHERE " + " AND ".join(clause_list)
+    query += " ORDER BY start_ts ASC, id ASC"
+
+    now = datetime.now().astimezone().replace(microsecond=0)
+    records = []
+    for row in conn.execute(query, params).fetchall():
+        start_dt = datetime.fromtimestamp(row["start_ts"], tz=local_timezone())
+        end_dt = datetime.fromtimestamp(row["end_ts"], tz=local_timezone()) if row["end_ts"] is not None else None
+        duration_end = end_dt or now
+        duration_hours = (duration_end - start_dt).total_seconds() / 3600
+        records.append(
+            ActivityRecord(
+                entry_id=row["id"],
+                category=row["category"],
+                app=row["app"],
+                project=row["project"],
+                detail=row["detail"],
+                ext=row["ext"],
+                start_dt=start_dt,
+                end_dt=end_dt,
+                duration_hours=duration_hours,
+            )
+        )
+    return records
+
+
 def record_to_row(record: TimeRecord, include_end: bool = True) -> dict[str, object]:
     """Convert a record to a printable/exportable row."""
     start_triplet = format_dt_triplet(record.start_dt)
@@ -244,25 +339,58 @@ def record_to_row(record: TimeRecord, include_end: bool = True) -> dict[str, obj
     return row
 
 
-def group_records(
-    records: list[TimeRecord],
-    group_by: list[str],
+def activity_record_to_row(record: ActivityRecord, include_end: bool = True) -> dict[str, object]:
+    """Convert an activity record to a printable/exportable row."""
+    start_triplet = format_dt_triplet(record.start_dt)
+    row: dict[str, object] = {
+        "id": record.entry_id,
+        "category": record.category,
+        "app": record.app,
+        "project": record.project or "",
+        "detail": record.detail or "",
+        "ext": record.ext or "",
+        "start_gregorian": start_triplet["gregorian"],
+        "start_jalali": start_triplet["jalali"],
+        "start_epoch": start_triplet["epoch"],
+        "duration_hours": format_total_value(record.duration_hours),
+    }
+    if include_end:
+        if record.end_dt is not None:
+            end_triplet = format_dt_triplet(record.end_dt)
+            row.update(
+                {
+                    "end_gregorian": end_triplet["gregorian"],
+                    "end_jalali": end_triplet["jalali"],
+                    "end_epoch": end_triplet["epoch"],
+                }
+            )
+        else:
+            row.update({"end_gregorian": "", "end_jalali": "", "end_epoch": ""})
+    return row
+
+
+def _group_records_generic(
+    records: Sequence,
+    group_by_set: set[str],
+    dimension_fields: Sequence[str],
     calendar: str,
 ) -> tuple[list[dict[str, object]], list[str]]:
-    """Group records and return aggregated rows with headers."""
-    group_by_set = set(group_by)
+    """Group records by any mix of ``dimension_fields`` plus year/month/day.
+
+    Shared by ``group_records`` (project/task) and ``group_activity_records``
+    (category/app/project/ext), which only differ in which attributes on the
+    record identify a group.
+    """
     grouped: dict[tuple[object, ...], dict[str, object]] = {}
 
     for record in records:
         parts: list[object] = []
         values: dict[str, object] = {}
 
-        if "project" in group_by_set:
-            values["project"] = record.project or ""
-            parts.append(values["project"])
-        if "task" in group_by_set:
-            values["task"] = record.task
-            parts.append(values["task"])
+        for field_name in dimension_fields:
+            if field_name in group_by_set:
+                values[field_name] = getattr(record, field_name) or ""
+                parts.append(values[field_name])
 
         y = m = d = None
         if group_by_set & {"year", "month", "day"}:
@@ -302,10 +430,7 @@ def group_records(
 
         grouped[key]["duration_hours"] += record.duration_hours
 
-    headers: list[str] = []
-    for field in ("project", "task", "year", "month", "day"):
-        if field in group_by_set:
-            headers.append(field)
+    headers: list[str] = [field for field in dimension_fields if field in group_by_set]
 
     if group_by_set & {"year", "month", "day"}:
         headers.extend(["date_gregorian", "date_jalali", "date_epoch"])
@@ -324,6 +449,24 @@ def group_records(
         rows.append(row)
 
     return rows, headers
+
+
+def group_records(
+    records: list[TimeRecord],
+    group_by: list[str],
+    calendar: str,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Group time entries and return aggregated rows with headers."""
+    return _group_records_generic(records, set(group_by), ("project", "task"), calendar)
+
+
+def group_activity_records(
+    records: list[ActivityRecord],
+    group_by: list[str],
+    calendar: str,
+) -> tuple[list[dict[str, object]], list[str]]:
+    """Group auto-tracked activity entries and return aggregated rows with headers."""
+    return _group_records_generic(records, set(group_by), ("category", "app", "project", "ext"), calendar)
 
 
 @click.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
@@ -548,6 +691,23 @@ _RECORD_HEADERS = [
     "id",
     "project",
     "task",
+    "start_gregorian",
+    "start_jalali",
+    "start_epoch",
+    "end_gregorian",
+    "end_jalali",
+    "end_epoch",
+    "duration_hours",
+]
+
+#: Columns of an ungrouped ``pytime auto report``, one row per activity entry.
+_ACTIVITY_HEADERS = [
+    "id",
+    "category",
+    "app",
+    "project",
+    "detail",
+    "ext",
     "start_gregorian",
     "start_jalali",
     "start_epoch",
@@ -1022,18 +1182,26 @@ def delete(
     click.echo("Delete completed.")
 
 
-def _normalize_group_by(group_by: tuple[str, ...]) -> list[str]:
+def _normalize_group_by_fields(group_by: tuple[str, ...], allowed: set[str]) -> list[str]:
     items: list[str] = []
     for value in group_by:
         for part in value.split(","):
             part = part.strip().lower()
             if not part:
                 continue
-            if part not in {"project", "task", "year", "month", "day"}:
+            if part not in allowed:
                 raise click.ClickException(f"Unknown group-by field: {part}")
             if part not in items:
                 items.append(part)
     return items
+
+
+def _normalize_group_by(group_by: tuple[str, ...]) -> list[str]:
+    return _normalize_group_by_fields(group_by, {"project", "task", "year", "month", "day"})
+
+
+def _normalize_activity_group_by(group_by: tuple[str, ...]) -> list[str]:
+    return _normalize_group_by_fields(group_by, {"category", "app", "project", "ext", "year", "month", "day"})
 
 
 def _validate_regex(pattern: str, enabled: bool) -> None:
@@ -1172,6 +1340,1007 @@ def _end_entries(
         if duration_hours > LONG_ENTRY_HOURS:
             console.warn(f"duration exceeds {LONG_ENTRY_HOURS} hours -- did a timer stay running? Use `pytime edit` to fix it.")
         click.echo("")
+
+
+# --------------------------------------------------------------------------
+# pytime auto -- best-effort automatic tracking from the active window.
+# --------------------------------------------------------------------------
+
+
+#: Current auto-tracking state: (open entry id, its bucket key), or None.
+ActivityState = Optional[tuple[int, tuple[str, str, str, str, str]]]
+
+
+def _activity_bucket_key(classified: Classified) -> tuple[str, str, str, str, str]:
+    return (classified.category, classified.app, classified.project, classified.detail, classified.ext)
+
+
+def _close_activity_entry(conn: sqlite3.Connection, entry_id: int, end_ts: float) -> None:
+    # MAX: an idle pause backdates the end, which must not precede the start.
+    # end_ts IS NULL: never move the end of a row already closed as stale.
+    conn.execute(
+        "UPDATE activity_entries SET end_ts = MAX(?, start_ts) WHERE id = ? AND end_ts IS NULL",
+        (end_ts, entry_id),
+    )
+    conn.commit()
+
+
+def _open_activity_entry(conn: sqlite3.Connection, classified: Classified, start_ts: float) -> int:
+    cursor = conn.execute(
+        "INSERT INTO activity_entries (category, app, project, detail, ext, start_ts, last_seen_ts) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (classified.category, classified.app, classified.project, classified.detail, classified.ext, start_ts, start_ts),
+    )
+    conn.commit()
+    return cursor.lastrowid
+
+
+#: How often the watcher records that its open entry is still live.
+HEARTBEAT_SECONDS = 60.0
+#: An open entry without a heartbeat for this long was left by a watcher that
+#: died (kill -9, power loss, OOM). Must stay well above the largest --interval.
+STALE_AFTER_SECONDS = 600.0
+#: Largest --interval accepted, so heartbeats always beat STALE_AFTER_SECONDS.
+MAX_INTERVAL_SECONDS = 120.0
+
+
+def _heartbeat_activity_entry(conn: sqlite3.Connection, entry_id: int, now_ts: float) -> bool:
+    """Mark the open entry live; ``False`` if it was closed meanwhile (e.g. as stale after a hang)."""
+    cursor = conn.execute(
+        "UPDATE activity_entries SET last_seen_ts = ? WHERE id = ? AND end_ts IS NULL", (now_ts, entry_id)
+    )
+    conn.commit()
+    return cursor.rowcount > 0
+
+
+class WatcherAlreadyRunning(RuntimeError):
+    """Another watcher holds the lock for this database."""
+
+
+def acquire_watch_lock(db_path: Path):
+    """Hold an exclusive lock so only one watcher records into ``db_path``.
+
+    Two watchers would each record the same time (counting it twice), and a
+    starting watcher closes every open entry -- including a live one's. The
+    lock is released by the OS when the process exits, however it exits.
+    Returns the open lock file, which must stay referenced; ``None`` where
+    ``fcntl`` doesn't exist (Windows).
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return None
+    path = db_path.with_name(db_path.name + ".watch.lock")
+    handle = open(path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.seek(0)
+        owner = handle.read().strip()
+        handle.close()
+        raise WatcherAlreadyRunning(owner) from None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(str(os.getpid()))
+    handle.flush()
+    return handle
+
+
+def close_stale_activity_entries(
+    conn: sqlite3.Connection, now_ts: float, stale_after: float = STALE_AFTER_SECONDS
+) -> int:
+    """Close open entries whose watcher stopped sending heartbeats, at their last heartbeat.
+
+    Without this, an entry left open by a crashed watcher would count as
+    running forever. Rows from before heartbeats existed close at their start.
+    Returns how many rows were closed.
+    """
+    cursor = conn.execute(
+        "UPDATE activity_entries SET end_ts = MAX(COALESCE(last_seen_ts, start_ts), start_ts) "
+        "WHERE end_ts IS NULL AND COALESCE(last_seen_ts, start_ts) <= ?",
+        (now_ts - stale_after,),
+    )
+    if cursor.rowcount:
+        conn.commit()
+    return cursor.rowcount
+
+
+def close_after_gap(
+    conn: sqlite3.Connection,
+    current: ActivityState,
+    last_tick_ts: Optional[float],
+    now_ts: float,
+    max_gap: float,
+) -> ActivityState:
+    """Close the open entry at the previous tick when the clock jumped past ``max_gap``.
+
+    A jump means the machine was suspended (or the watcher hung), and that
+    time must not land on whatever window was focused before it.
+    """
+    if current is None or last_tick_ts is None or now_ts - last_tick_ts <= max_gap:
+        return current
+    _close_activity_entry(conn, current[0], last_tick_ts)
+    return None
+
+
+def advance_activity(
+    conn: sqlite3.Connection,
+    current: ActivityState,
+    classified: Optional[Classified],
+    now_ts: float,
+) -> ActivityState:
+    """Apply one polling tick, opening/closing activity entries as needed.
+
+    ``classified`` is ``None`` when there is no active window to report, or
+    the user is judged AFK. Kept dependency-free of the polling loop itself
+    so it can be unit-tested with a scripted sequence of ticks.
+    """
+    if classified is None:
+        if current is not None:
+            _close_activity_entry(conn, current[0], now_ts)
+        return None
+
+    key = _activity_bucket_key(classified)
+    if current is not None and current[1] == key:
+        return current
+
+    if current is not None:
+        _close_activity_entry(conn, current[0], now_ts)
+
+    entry_id = _open_activity_entry(conn, classified, now_ts)
+    return (entry_id, key)
+
+
+@time_cli.group(cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
+def auto() -> None:
+    """Automatically record time from the active window (best-effort).
+
+    \b
+    Built from window titles, not a browser extension or editor plugin --
+    it cannot see real file paths or URLs, only what the window title shows.
+    See docs/pytime.md for exactly what it can and cannot know. Entries live
+    in their own table, entirely separate from manual pytime entries.
+
+    \b
+    Examples:
+      pytime auto service install --now    # track at every login
+      pytime auto today
+      pytime auto report -g project -g ext
+      pytime auto suggest --apply          # turn today into manual entries
+      eval "$(pytime auto shell-init bash)"
+    """
+
+
+def _load_rules_or_fail() -> Rules:
+    try:
+        return load_rules()
+    except RulesError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+_INTERVAL_TYPE = click.FloatRange(min=0.1, max=MAX_INTERVAL_SECONDS)
+
+
+@auto.command()
+@click.option("--interval", type=_INTERVAL_TYPE, default=5.0, show_default=True, help="Seconds between window checks.")
+@click.option(
+    "--idle-timeout",
+    type=float,
+    default=5.0,
+    show_default=True,
+    help="Minutes without keyboard/mouse input before pausing (GNOME, or X11 with xprintidle).",
+)
+@click.option("--quiet", is_flag=True, help="Only print pauses, not every activity change.")
+def watch(interval: float, idle_timeout: float, quiet: bool) -> None:
+    """Poll the active window and record time automatically until interrupted.
+
+    \b
+    Runs in the foreground. To run it at every login instead, use
+    `pytime auto service install --now`. Ctrl+C or SIGTERM closes the open
+    entry cleanly. Pauses while the screen is locked or you're idle.
+
+    \b
+    Examples:
+      pytime auto watch
+      pytime auto watch --interval 10 --idle-timeout 10
+    """
+    backend = detect_backend()
+    if backend is None:
+        raise click.ClickException(f"No supported window backend found. {backend_hint()}")
+    rules = _load_rules_or_fail()
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    try:
+        lock = acquire_watch_lock(db_path)  # noqa: F841 - held until the process exits
+    except WatcherAlreadyRunning as exc:
+        owner = f" (pid {exc})" if str(exc) else ""
+        raise click.ClickException(
+            f"Another `pytime auto watch` is already recording to {db_path}{owner}. "
+            "If it's the service, see `pytime auto service status`."
+        ) from exc
+
+    click.echo(f"pytime auto: watching via {backend}, every {interval:g}s. Press Ctrl+C to stop.", err=True)
+    pause_reason = ""
+
+    stop = {"flag": False}
+
+    def _handle_signal(signum: int, frame: object) -> None:
+        stop["flag"] = True
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    current: ActivityState = None
+    idle_seconds_threshold = idle_timeout * 60
+    # A tick this much later than the previous one means suspend or a hang.
+    max_gap = max(3 * interval, 30.0)
+    last_tick_ts: Optional[float] = None
+    last_heartbeat_ts = 0.0
+    with connect(db_path) as conn:
+        # Any entry still open belongs to a watcher that didn't exit cleanly.
+        leftovers = close_stale_activity_entries(conn, time_module.time(), stale_after=0.0)
+        if leftovers:
+            click.echo(f"(closed {leftovers} entry(ies) left open by an earlier watcher)", err=True)
+        try:
+            while not stop["flag"]:
+                now_ts = time_module.time()
+                if current is not None and close_after_gap(conn, current, last_tick_ts, now_ts, max_gap) is None:
+                    current = None
+                    gap = format_duration(now_ts - last_tick_ts)
+                    click.echo(f"(paused: clock jumped {gap}, suspended?)", err=True)
+                idle = get_idle_seconds()
+                classified: Optional[Classified] = None
+                if is_screen_locked():
+                    pause_reason = "screen locked"
+                elif idle is not None and idle >= idle_seconds_threshold:
+                    pause_reason = "idle"
+                    now_ts -= idle
+                else:
+                    window = get_active_window(backend)
+                    if window is None:
+                        pause_reason = "no focused window"
+                    else:
+                        classified = classify_window(window, rules)
+                        if classified is None:
+                            pause_reason = "ignored window"
+
+                previous_key = current[1] if current else None
+                current = advance_activity(conn, current, classified, now_ts)
+                new_key = current[1] if current else None
+
+                last_tick_ts = time_module.time()
+                if current is not None and last_tick_ts - last_heartbeat_ts >= HEARTBEAT_SECONDS:
+                    if not _heartbeat_activity_entry(conn, current[0], last_tick_ts):
+                        current = None  # closed under us: the next tick opens a fresh entry
+                    last_heartbeat_ts = last_tick_ts
+
+                if new_key != previous_key:
+                    if new_key is None:
+                        click.echo(f"(paused: {pause_reason})", err=True)
+                    elif not quiet:
+                        category, app, project, detail, _ext = new_key
+                        label = f"{app} [{category}] project={project or '-'}"
+                        if detail:
+                            label += f" | {detail[:80]}"
+                        click.echo(label, err=True)
+
+                for _ in range(int(interval * 10)):
+                    if stop["flag"]:
+                        break
+                    time_module.sleep(0.1)
+        finally:
+            if current is not None:
+                _close_activity_entry(conn, current[0], time_module.time())
+
+
+@auto.command("status")
+@click.option("--json", "as_json", is_flag=True, help="Print status as JSON.")
+def auto_status(as_json: bool) -> None:
+    """Show what pytime auto is currently tracking, if a watcher is running.
+
+    \b
+    Examples:
+      pytime auto status
+      pytime auto status --json
+    """
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, ["end_ts IS NULL"], [])
+
+    if not records:
+        if as_json:
+            console.emit_json({"running": False})
+            return
+        console.result("Nothing is being auto-tracked. Start with: pytime auto watch")
+        return
+
+    record = records[-1]
+    elapsed = record.duration_hours * 3600
+    payload = {
+        "category": record.category,
+        "app": record.app,
+        "project": record.project or "",
+        "detail": record.detail or "",
+        "ext": record.ext or "",
+        "started": record.start_dt.isoformat(),
+        "elapsed": format_duration(elapsed),
+        "elapsed_hours": round(record.duration_hours, 4),
+    }
+    if as_json:
+        console.emit_json({"running": True, **payload})
+        return
+    console.result(f"App: {payload['app']}")
+    console.result(f"Project: {payload['project']}")
+    if payload["detail"]:
+        console.result(f"Detail: {payload['detail']}")
+    emit_datetime_block("Start:", record.start_dt)
+    console.result(f"Elapsed: {payload['elapsed']} ({format_hours_minutes(record.duration_hours)})")
+
+
+_ACTIVITY_FILTER_OPTIONS = (
+    click.option("-i", "--id", "entry_id", type=int, help="Entry id filter (optional)."),
+    click.option("-p", "--project", type=str, help="Project filter, substring (optional)."),
+    click.option("--no-project", is_flag=True, help="Only entries with no project."),
+    click.option("--app", type=str, help="App filter, substring (optional)."),
+    click.option(
+        "--category",
+        type=click.Choice(["editor", "terminal", "browser", "other"], case_sensitive=False),
+        help="Category filter (optional).",
+    ),
+    click.option("--ext", type=str, help="File extension filter (optional)."),
+    click.option(
+        "-q", "--search", type=str, help="Substring of the captured title/file/page (the detail column)."
+    ),
+    click.option(
+        "--interval",
+        "interval_value",
+        type=str,
+        help="Relative interval (PostgreSQL style). When set, start/end are ignored.",
+    ),
+    click.option("-s", "--start", "start_value", type=str, help="Start time (optional)."),
+    click.option("-e", "--end", "end_value", type=str, help="End time (optional)."),
+    click.option(
+        "-c",
+        "--calendar",
+        type=click.Choice(["gregorian", "jalali", "g", "j"], case_sensitive=False),
+        help="Calendar for date inputs/grouping (jalali/gregorian).",
+    ),
+)
+
+
+def _activity_filter_options(func):
+    for option in reversed(_ACTIVITY_FILTER_OPTIONS):
+        func = option(func)
+    return func
+
+
+def _activity_filters(
+    entry_id: Optional[int],
+    project: Optional[str],
+    no_project: bool,
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    search: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar_value: str,
+    allow_fallback: bool,
+) -> tuple[list[str], list[object]]:
+    """SQL clauses for the filters ``auto report`` and ``auto delete`` share."""
+    if interval_value and (start_value or end_value):
+        raise click.ClickException("Interval is incompatible with start/end filters.")
+    if project and no_project:
+        raise click.ClickException("Use either --project or --no-project, not both.")
+
+    clauses: list[str] = []
+    params: list[object] = []
+    if entry_id is not None:
+        clauses.append("id = ?")
+        params.append(entry_id)
+    if no_project:
+        clauses.append("(project IS NULL OR project = '')")
+    for column, value in (("project", project), ("app", app), ("detail", search)):
+        if value:
+            clauses.append(f"{column} LIKE ? ESCAPE '\\' COLLATE NOCASE")
+            params.append(f"%{escape_like(value)}%")
+    if category:
+        clauses.append("category = ?")
+        params.append(category.lower())
+    if ext:
+        clauses.append("ext = ?")
+        params.append(ext.lower().lstrip("."))
+
+    if interval_value:
+        delta = parse_pg_interval(interval_value)
+        end_dt = datetime.now().astimezone()
+        start_dt = apply_interval(end_dt, delta, direction=-1)
+        clauses.append("start_ts >= ?")
+        params.append(start_dt.timestamp())
+        clauses.append("start_ts <= ?")
+        params.append(end_dt.timestamp())
+    else:
+        if start_value:
+            start_dt = parse_datetime_value(calendar_value, start_value, allow_fallback)
+            clauses.append("start_ts >= ?")
+            params.append(start_dt.timestamp())
+        if end_value:
+            end_dt = parse_datetime_value(calendar_value, end_value, allow_fallback)
+            clauses.append("start_ts <= ?")
+            params.append(end_dt.timestamp())
+    return clauses, params
+
+
+@auto.command("report")
+@_activity_filter_options
+@click.option(
+    "-g",
+    "--group-by",
+    "group_by",
+    multiple=True,
+    help="Group by fields (category, app, project, ext, year, month, day).",
+)
+@format_option()
+@click.option("-o", "--output", type=str, help="Write the report to this file instead of stdout.")
+@click.option("--no-total", is_flag=True, help="Omit the totals line under table output.")
+@click.option(
+    "--min-seconds",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Fold back-to-back entries shorter than this into the one before (0 shows every entry).",
+)
+def auto_report(
+    entry_id: Optional[int],
+    project: Optional[str],
+    no_project: bool,
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    search: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar: Optional[str],
+    group_by: tuple[str, ...],
+    output_format: str,
+    output: Optional[str],
+    no_total: bool,
+    min_seconds: float,
+) -> None:
+    """Report on auto-tracked time, optionally filtered, grouped and exported.
+
+    \b
+    Quick switches (under --min-seconds) are folded into the entry before
+    them, so an alt-tab through three windows doesn't become three rows.
+    Stored entries are never changed; pass --min-seconds 0 to see them all.
+
+    \b
+    Examples:
+      pytime auto report --interval "7 days"
+      pytime auto report -g app -g project
+      pytime auto report --category editor -g ext
+      pytime auto report -q chatgpt                # search captured titles
+      pytime auto report --no-project -g app       # what's still unattributed
+      pytime auto report --format json
+    """
+    group_items = _normalize_activity_group_by(group_by)
+    if {"month", "day"} & set(group_items) and "year" not in group_items:
+        raise click.ClickException("Grouping by month/day requires year.")
+    if "day" in group_items and "month" not in group_items:
+        raise click.ClickException("Grouping by day requires month.")
+
+    calendar_value, allow_fallback = parse_calendar(calendar)
+    clauses, params = _activity_filters(
+        entry_id, project, no_project, app, category, ext, search,
+        interval_value, start_value, end_value, calendar_value, allow_fallback,
+    )
+
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, clauses, params)
+
+    if not records:
+        click.echo("No records found.")
+        return
+
+    records = fold_short_entries(records, min_seconds, datetime.now().astimezone())
+    if group_items:
+        rows, headers = group_activity_records(records, group_items, calendar_value)
+    else:
+        rows = [activity_record_to_row(record) for record in records]
+        headers = _ACTIVITY_HEADERS
+
+    _emit_report(rows, headers, records, output_format, output, no_total)
+
+
+def _since_midnight(days: int) -> datetime:
+    """Start of the local day ``days - 1`` days ago (``1`` = today)."""
+    today = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)
+    return today - timedelta(days=max(days, 1) - 1)
+
+
+def _fetch_activity_since(start: datetime) -> list[ActivityRecord]:
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        return fetch_activity_records(conn, ["COALESCE(end_ts, ?) > ?"], [datetime.now().timestamp(), start.timestamp()])
+
+
+def _clip_to(records: Sequence[ActivityRecord], start: datetime) -> list[ActivityRecord]:
+    """Drop the part of each entry before ``start`` (an entry running over midnight)."""
+    clipped = []
+    for record in records:
+        if record.start_dt < start:
+            trimmed = (start - record.start_dt).total_seconds() / 3600
+            record = replace(record, start_dt=start, duration_hours=max(record.duration_hours - trimmed, 0.0))
+        clipped.append(record)
+    return clipped
+
+
+def _share_rows(records: Sequence[ActivityRecord], field_name: str, total: float, top: int) -> list[dict]:
+    totals: dict[str, float] = {}
+    for record in records:
+        key = getattr(record, field_name) or "(none)"
+        totals[key] = totals.get(key, 0.0) + record.duration_hours
+    ranked = sorted(totals.items(), key=lambda item: item[1], reverse=True)[:top]
+    return [
+        {
+            field_name: key,
+            "hours": format_total_value(round(hours, 2)),
+            "time": format_hours_minutes(hours),
+            "share": f"{hours / total * 100:.0f}%" if total else "-",
+        }
+        for key, hours in ranked
+    ]
+
+
+@auto.command("today")
+@click.option("--days", type=int, default=1, show_default=True, help="Cover this many days, ending today.")
+@click.option("--top", type=int, default=10, show_default=True, help="Rows per table.")
+@click.option("--json", "as_json", is_flag=True, help="Print as JSON.")
+def auto_today(days: int, top: int, as_json: bool) -> None:
+    """Summarize today's auto-tracked time by project and by app.
+
+    \b
+    Examples:
+      pytime auto today
+      pytime auto today --days 7
+      pytime auto today --json
+    """
+    start = _since_midnight(days)
+    records = _clip_to(_fetch_activity_since(start), start)
+    total = sum(record.duration_hours for record in records)
+    projects = _share_rows(records, "project", total, top)
+    apps = _share_rows(records, "app", total, top)
+
+    if as_json:
+        console.emit_json(
+            {"since": start.isoformat(), "total_hours": round(total, 4), "projects": projects, "apps": apps}
+        )
+        return
+    if not records:
+        console.result("Nothing auto-tracked yet. Start with: pytime auto watch")
+        return
+    label = "today" if days <= 1 else f"last {days} days"
+    console.result(f"Auto-tracked {label}: {format_hours_minutes(total)} ({format_total_value(round(total, 2))} h)")
+    console.result("")
+    console.result(render_table(projects, ["project", "hours", "time", "share"]))
+    console.result("")
+    console.result(render_table(apps, ["app", "hours", "time", "share"]))
+
+
+@auto.command("suggest")
+@click.option("--days", type=int, default=1, show_default=True, help="Cover this many days, ending today.")
+@click.option(
+    "--merge-gap",
+    type=float,
+    default=10.0,
+    show_default=True,
+    help="Minutes: breaks and detours this short don't split a block.",
+)
+@click.option("--min-block", type=float, default=15.0, show_default=True, help="Minutes: drop shorter blocks.")
+@click.option("-t", "--task", type=str, default="auto-tracked", show_default=True, help="Task name for created entries.")
+@click.option("--apply", "apply_", is_flag=True, help="Add the suggested blocks as manual pytime entries.")
+@click.option("-y", "--yes", "assume_yes", is_flag=True, help="With --apply, don't ask for confirmation.")
+def auto_suggest(
+    days: int,
+    merge_gap: float,
+    min_block: float,
+    task: str,
+    apply_: bool,
+    assume_yes: bool,
+) -> None:
+    """Propose manual time entries built from auto-tracked time.
+
+    \b
+    Joins a project's entries across short breaks, absorbs brief detours
+    (a two-minute look at chat inside an hour of coding), and drops
+    unattributed time. Blocks overlapping an existing manual entry are
+    skipped, so running it twice never double-counts.
+
+    \b
+    Examples:
+      pytime auto suggest
+      pytime auto suggest --days 2 --merge-gap 15
+      pytime auto suggest --apply
+    """
+    start = _since_midnight(days)
+    now = datetime.now().astimezone()
+    records = _clip_to(_fetch_activity_since(start), start)
+    blocks = suggest_blocks(records, now, merge_gap * 60, min_block * 60)
+    if not blocks:
+        console.result("No blocks to suggest (nothing attributed to a project for long enough).")
+        return
+
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    rows = []
+    with connect(db_path) as conn:
+        for block in blocks:
+            overlap = conn.execute(
+                "SELECT id FROM time_entries WHERE start_ts < ? AND COALESCE(end_ts, ?) > ? LIMIT 1",
+                (block.end.timestamp(), now.timestamp(), block.start.timestamp()),
+            ).fetchone()
+            rows.append(
+                {
+                    "project": block.project,
+                    "start": block.start.strftime("%Y-%m-%d %H:%M"),
+                    "end": block.end.strftime("%H:%M"),
+                    "time": format_hours_minutes(block.seconds / 3600),
+                    "apps": ", ".join(block.top_apps()),
+                    "status": f"skip: overlaps entry {overlap['id']}" if overlap else "new",
+                    "_block": block,
+                }
+            )
+
+        console.result(render_table(rows, ["project", "start", "end", "time", "apps", "status"]))
+        new_rows = [row for row in rows if row["status"] == "new"]
+        if not apply_:
+            if new_rows:
+                console.result("")
+                console.result("Add these with: pytime auto suggest --apply")
+            return
+        if not new_rows:
+            console.result("Nothing new to add.")
+            return
+        if not assume_yes and not click.confirm(f"Add {len(new_rows)} manual entries?"):
+            console.result("Canceled.")
+            return
+        conn.executemany(
+            "INSERT INTO time_entries (project, task, start_ts, end_ts) VALUES (?, ?, ?, ?)",
+            [
+                (row["project"], task, row["_block"].start.timestamp(), row["_block"].end.timestamp())
+                for row in new_rows
+            ],
+        )
+    console.result(f"Added {len(new_rows)} manual entr{'y' if len(new_rows) == 1 else 'ies'}; see `pytime report`.")
+
+
+@auto.command("shell-init")
+@click.argument("shell", type=click.Choice(SHELLS))
+def auto_shell_init(shell: str) -> None:
+    """Print a shell hook that makes terminal titles say which project you're in.
+
+    \b
+    Only needed where /proc can't see what a terminal runs -- inside ssh,
+    screen, or a Flatpak terminal; elsewhere (tmux included) pytime reads
+    the focused tab's program and directory directly. Sets the title to
+    "<command> @ <project dir>" (the git root, or the current directory),
+    never a command's arguments, and sets CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1
+    so Claude Code doesn't overwrite it. pytime must be on PATH when your rc
+    file runs; from a virtualenv, use its full path.
+
+    \b
+    Examples:
+      echo 'eval "$(pytime auto shell-init bash)"' >> ~/.bashrc
+      echo 'eval "$(~/venv/bin/pytime auto shell-init zsh)"' >> ~/.zshrc
+    """
+    click.echo(snippet(shell), nl=False)
+
+
+@auto.group("service", cls=AliasedGroup, context_settings=CONTEXT_SETTINGS)
+def auto_service() -> None:
+    """Run the watcher as a systemd user service, started at every login.
+
+    \b
+    Examples:
+      pytime auto service install --now
+      pytime auto service status
+      pytime auto service logs -f
+      pytime auto service disable --now
+      pytime auto service uninstall
+    """
+
+
+def _service_call(func, *args):
+    try:
+        return func(*args)
+    except activity_service.ServiceError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+
+def _require_installed() -> None:
+    if not activity_service.is_installed():
+        raise click.ClickException("The service isn't installed. Run: pytime auto service install --now")
+
+
+def _print_service_state() -> None:
+    state = _service_call(activity_service.state)
+    console.result(f"{activity_service.UNIT_NAME}: {state['active']}, {state['enabled']} at login")
+
+
+@auto_service.command("install")
+@click.option("--interval", type=_INTERVAL_TYPE, default=5.0, show_default=True, help="Seconds between window checks.")
+@click.option("--idle-timeout", type=float, default=5.0, show_default=True, help="Minutes idle before pausing.")
+@click.option(
+    "--target",
+    type=click.Choice(activity_service.TARGETS),
+    default="graphical-session.target",
+    show_default=True,
+    help="Start with this systemd target. Use default.target if your desktop never reaches graphical-session.target.",
+)
+@click.option("--now", "start_now", is_flag=True, help="Also enable it at login and start it right away.")
+@click.option("--force", is_flag=True, help="Overwrite an existing unit file.")
+def service_install(interval: float, idle_timeout: float, target: str, start_now: bool, force: bool) -> None:
+    """Create the unit file (and optionally enable and start it)."""
+    if activity_service.is_installed() and not force:
+        raise click.ClickException(
+            f"Already installed at {activity_service.unit_path()}. Pass --force to rewrite it."
+        )
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    unit_text = activity_service.render_unit(db_path, interval, idle_timeout, target)
+    path = _service_call(activity_service.install, unit_text)
+    console.result(f"Wrote {path}")
+    if start_now:
+        _service_call(activity_service.import_session_environment)
+        _service_call(activity_service.systemctl, "enable", "--now", activity_service.UNIT_NAME)
+        _print_service_state()
+    else:
+        console.result("Enable and start it with: pytime auto service enable --now")
+
+
+@auto_service.command("uninstall")
+def service_uninstall() -> None:
+    """Stop and disable the service, and remove its unit file."""
+    path = _service_call(activity_service.uninstall)
+    console.result(f"Removed {path}" if path else "Not installed; nothing to do.")
+
+
+@auto_service.command("enable")
+@click.option("--now", "start_now", is_flag=True, help="Also start it right away.")
+def service_enable(start_now: bool) -> None:
+    """Start the service automatically at login."""
+    _require_installed()
+    if start_now:
+        _service_call(activity_service.import_session_environment)
+    args = ["enable", "--now"] if start_now else ["enable"]
+    _service_call(activity_service.systemctl, *args, activity_service.UNIT_NAME)
+    _print_service_state()
+
+
+@auto_service.command("disable")
+@click.option("--now", "stop_now", is_flag=True, help="Also stop it right away.")
+def service_disable(stop_now: bool) -> None:
+    """Stop starting the service at login."""
+    _require_installed()
+    args = ["disable", "--now"] if stop_now else ["disable"]
+    _service_call(activity_service.systemctl, *args, activity_service.UNIT_NAME)
+    _print_service_state()
+
+
+@auto_service.command("start")
+def service_start() -> None:
+    """Start the service now (without changing whether it starts at login)."""
+    _require_installed()
+    _service_call(activity_service.import_session_environment)
+    _service_call(activity_service.systemctl, "start", activity_service.UNIT_NAME)
+    _print_service_state()
+
+
+@auto_service.command("stop")
+def service_stop() -> None:
+    """Stop the service now (it still starts at next login if enabled)."""
+    _require_installed()
+    _service_call(activity_service.systemctl, "stop", activity_service.UNIT_NAME)
+    _print_service_state()
+
+
+@auto_service.command("restart")
+def service_restart() -> None:
+    """Restart the service -- needed after editing ~/.pytime/rules.json."""
+    _require_installed()
+    _service_call(activity_service.import_session_environment)
+    _service_call(activity_service.systemctl, "restart", activity_service.UNIT_NAME)
+    _print_service_state()
+
+
+@auto_service.command("status")
+def service_status() -> None:
+    """Show whether the service is installed, running, and enabled at login."""
+    if not activity_service.is_installed():
+        console.result("Not installed. Install with: pytime auto service install --now")
+        return
+    console.result(f"Unit file: {activity_service.unit_path()}")
+    _print_service_state()
+
+
+@auto_service.command("logs")
+@click.option("-n", "--lines", type=int, default=50, show_default=True, help="How many recent lines.")
+@click.option("-f", "--follow", is_flag=True, help="Keep printing new lines.")
+def service_logs(lines: int, follow: bool) -> None:
+    """Show the watcher's output (activity changes and pauses) from the journal."""
+    _service_call(activity_service.logs, lines, follow)
+
+
+@auto.command("delete")
+@_activity_filter_options
+@click.option("--all", "delete_all", is_flag=True, help="Allow deleting with no filters (every auto entry).")
+@click.option("-y", "--yes", "assume_yes", is_flag=True, help="Delete without confirmation.")
+def auto_delete(
+    entry_id: Optional[int],
+    project: Optional[str],
+    no_project: bool,
+    app: Optional[str],
+    category: Optional[str],
+    ext: Optional[str],
+    search: Optional[str],
+    interval_value: Optional[str],
+    start_value: Optional[str],
+    end_value: Optional[str],
+    calendar: Optional[str],
+    delete_all: bool,
+    assume_yes: bool,
+) -> None:
+    """Delete auto-tracked entries matching filters (manual entries are never touched).
+
+    \b
+    Takes the same filters as `pytime auto report`, so run the report first
+    to see exactly what will go.
+
+    \b
+    Examples:
+      pytime auto delete --id 12
+      pytime auto delete --app Chrome -q "YouTube" --yes
+      pytime auto delete --interval "1 hour"
+      pytime auto delete --all --yes
+    """
+    calendar_value, allow_fallback = parse_calendar(calendar)
+    clauses, params = _activity_filters(
+        entry_id, project, no_project, app, category, ext, search,
+        interval_value, start_value, end_value, calendar_value, allow_fallback,
+    )
+    if not clauses and not delete_all:
+        raise click.ClickException("No filters given; pass --all to delete every auto-tracked entry.")
+
+    db_path = resolve_db_path(click.get_current_context().obj["db_path"])
+    with connect(db_path) as conn:
+        records = fetch_activity_records(conn, clauses, params)
+        if not records:
+            click.echo("No records matched the delete filters.")
+            return
+
+        total_hours = sum(record.duration_hours for record in records)
+        if not assume_yes:
+            click.echo(f"Records to delete: {len(records)}")
+            click.echo(f"Total duration (hours): {format_total_value(round(total_hours, 3))}")
+            if not click.confirm("Proceed with deletion?"):
+                click.echo("Deletion canceled.")
+                return
+
+        conn.executemany("DELETE FROM activity_entries WHERE id = ?", [(r.entry_id,) for r in records])
+
+    click.echo(f"Deleted {len(records)} auto-tracked entr{'y' if len(records) == 1 else 'ies'}.")
+
+
+@auto.command("probe")
+@click.option(
+    "--delay",
+    type=float,
+    default=3.0,
+    show_default=True,
+    help="Seconds to wait first, so you can focus the window you want to inspect.",
+)
+def auto_probe(delay: float) -> None:
+    """Show what the watcher sees for the focused window, raw and classified.
+
+    \b
+    Use it when a report shows a blank project or the wrong app: the raw
+    title and class it prints are what to put in ~/.pytime/rules.json.
+
+    \b
+    Examples:
+      pytime auto probe
+      pytime auto probe --delay 0
+    """
+    backend = detect_backend()
+    if backend is None:
+        raise click.ClickException(f"No supported window backend found. {backend_hint()}")
+    if delay > 0:
+        click.echo(f"Focus the window to inspect; reading it in {delay:g}s...", err=True)
+        time_module.sleep(delay)
+    window = get_active_window(backend)
+    if window is None:
+        raise click.ClickException(f"The {backend} backend reported no focused window.")
+    classified = classify_window(window, _load_rules_or_fail())
+    context = procinfo.terminal_context(window.pid) if classified and classified.category == "terminal" else None
+    console.emit_json(
+        {
+            "backend": backend,
+            "raw": {"wm_class": window.wm_class, "title": window.title, "pid": window.pid},
+            "terminal": None
+            if context is None
+            else {"cwd": context.cwd, "program": context.program, "file": context.file},
+            "ignored": classified is None,
+            "classified": None
+            if classified is None
+            else {
+                "category": classified.category,
+                "app": classified.app,
+                "project": classified.project,
+                "detail": classified.detail,
+                "ext": classified.ext,
+            },
+        }
+    )
+
+
+@auto.command("rules")
+@click.option(
+    "--dump",
+    is_flag=True,
+    help="Print every rule in effect (built-in catalog plus rules.json) as a rules.json-shaped file.",
+)
+def auto_rules(dump: bool) -> None:
+    """Show the active window backend and where to add custom classification rules.
+
+    \b
+    The built-in catalog covers common editors and IDEs, terminals,
+    browsers, AI and chat apps, database/API/git tools and developer sites;
+    rules.json only needs what's missing or different.
+
+    \b
+    Examples:
+      pytime auto rules
+      pytime auto rules --dump | less
+      pytime auto rules --dump | jq '.app_labels | to_entries[] | select(.value == "DBeaver")'
+    """
+    if dump:
+        console.emit_json(rules_to_json(_load_rules_or_fail()))
+        return
+    path = default_rules_path()
+    backend = detect_backend()
+    locked = is_screen_locked()
+    console.result(f"Window backend: {backend or 'none detected -- ' + backend_hint()}")
+    console.result(f"Idle detection: {'available' if get_idle_seconds() is not None else 'unavailable'}")
+    console.result(f"Lock detection: {'unavailable' if locked is None else 'available'}")
+    if path.is_file():
+        try:
+            load_rules(path)
+            state = "exists, valid"
+        except RulesError as exc:
+            state = f"INVALID -- {exc}"
+    else:
+        state = "not created yet"
+    console.result(f"Rules override file: {path} ({state})")
+    console.result("")
+    console.result("Add JSON like this to extend the defaults (every key optional, values merge in):")
+    console.result(
+        json.dumps(
+            {
+                "projects": {"SAMT": ["samt", "samt-backend"]},
+                "ignore": {"apps": ["org.keepassxc.keepassxc"], "titles": ["bank"]},
+                "redact": {"apps": ["thunderbird"], "titles": ["private"]},
+                "sites": {"my-site.com": "My Site"},
+                "app_projects": {"com.example.app": "Example"},
+                "editor_classes": ["my-editor-wm-class"],
+                "terminal_classes": [],
+                "browser_classes": [],
+                "app_labels": {"my-editor-wm-class": "My Editor"},
+            },
+            indent=2,
+        )
+    )
+    console.result("")
+    console.result("Restart the watcher after editing (pytime auto service restart, if you use the service).")
 
 
 if __name__ == "__main__":

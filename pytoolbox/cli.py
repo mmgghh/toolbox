@@ -197,10 +197,30 @@ def doctor() -> None:
         ("soffice", "pydocx2pdf (falls back to the Markdown pipeline)"),
         ("mmdc", "offline Mermaid rendering in pymd2pdf"),
         ("fc-cache", "font cache refresh for pymd2pdf"),
+        ("xdotool", "pytime auto watch (X11 active-window polling)"),
+        ("xprop", "pytime auto watch (X11 fallback if xdotool is absent)"),
+        ("xprintidle", "pytime auto watch (X11 idle/AFK detection)"),
+        ("swaymsg", "pytime auto watch (Sway active-window polling)"),
+        ("hyprctl", "pytime auto watch (Hyprland active-window polling)"),
+        ("kdotool", "pytime auto watch (KDE Wayland active-window polling)"),
+        ("gdbus", "pytime auto watch (GNOME Wayland, with the Focused Window D-Bus extension)"),
     ):
         found = shutil.which(tool)
         status = click.style("ok", fg="green") if found else click.style("missing", fg="yellow")
         click.echo(f"  {tool:<18} {status:<30} {purpose}")
+
+    click.echo("")
+    click.echo("Window tracking (pytime auto)")
+    from pytoolbox.core.activewindow import backend_hint, detect_backend, get_idle_seconds
+
+    window_backend = detect_backend()
+    if window_backend:
+        click.echo(f"  {click.style('ok', fg='green')} using {window_backend}")
+    else:
+        click.echo(f"  {click.style('missing', fg='yellow')} -- {backend_hint()}")
+    idle_status = "ok" if get_idle_seconds() is not None else "unavailable"
+    idle_color = "green" if idle_status == "ok" else "yellow"
+    click.echo(f"  idle/AFK detection: {click.style(idle_status, fg=idle_color)} (X11 xprintidle, or GNOME)")
 
     click.echo("")
     click.echo("Clipboard")
