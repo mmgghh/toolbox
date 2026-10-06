@@ -779,3 +779,36 @@ def test_indented_rtl_continuation_line_does_not_shift_its_first_wrapped_line(mo
 
     assert len(drawn) > 1
     assert not any(line.startswith(" ") for line in drawn)
+
+
+@needs_fonts
+def test_list_continuation_line_is_drawn_with_its_items_indent(monkeypatch, tmp_path):
+    """An indented line right under a list item belongs to that item, so it
+    must sit at the item's indent, not at the page margin like a paragraph."""
+    items, paragraphs = [], []
+    monkeypatch.setattr(render, "add_list_item", lambda pdf, prefix, text, indent: items.append((prefix.strip(), text.strip(), indent)))
+    monkeypatch.setattr(render, "add_paragraph", lambda pdf, text: paragraphs.append(text))
+
+    md = tmp_path / "a.md"
+    md.write_text(
+        "intro\n\n"
+        "6. first\n"
+        "   continued six\n\n"
+        "   2. nested\n"
+        "      continued nested\n"
+        "\n"
+        "plain paragraph\n"
+        "   indented but no list before it\n",
+        encoding="utf-8",
+    )
+    pymd2pdf.convert(md, tmp_path / "a.pdf", title_page=False, quiet=True)
+
+    assert items == [
+        ("6.", "first", 0),
+        ("", "continued six", 0),
+        ("2.", "nested", 3),
+        ("", "continued nested", 3),
+    ]
+    assert [p.strip() for p in paragraphs] == [
+        "intro", "plain paragraph", "indented but no list before it",
+    ]

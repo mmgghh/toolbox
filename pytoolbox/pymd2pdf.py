@@ -114,6 +114,7 @@ class _Renderer:
         self._in_code = False
         self._code_lines: list[str] = []
         self._code_lang = ""
+        self._list_indent: Optional[int] = None
         self._in_table = False
         self._table_header: list[str] = []
         self._table_rows: list[list[str]] = []
@@ -122,6 +123,11 @@ class _Renderer:
         index = 0
         while index < len(self.lines):
             line = self.lines[index]
+            list_indent = self._list_indent
+            if line.strip() and not (_ORDERED_RE.match(line) or _BULLET_RE.match(line)):
+                # Any other block ends the list; only an indented plain line,
+                # handled below, carries on the item it follows.
+                self._list_indent = None
 
             consumed = self._code_fence(index)
             if consumed is not None:
@@ -156,6 +162,7 @@ class _Renderer:
             if ordered:
                 indent, number, text = ordered.groups()
                 render.add_list_item(self.pdf, f"  {number}. ", text, len(indent))
+                self._list_indent = len(indent)
                 index += 1
                 continue
 
@@ -180,7 +187,13 @@ class _Renderer:
                 index += 1
                 continue
 
-            render.add_paragraph(self.pdf, line)
+            if list_indent is not None and len(line) - len(line.lstrip()) > list_indent:
+                # A continuation of the list item above: same indent as the
+                # item, no marker, so it lines up with the item's own lines.
+                self._list_indent = list_indent
+                render.add_list_item(self.pdf, "", line, list_indent)
+            else:
+                render.add_paragraph(self.pdf, line)
             index += 1
 
         self._flush_table()
@@ -246,6 +259,7 @@ class _Renderer:
     def _bullet_item(self, match: re.Match) -> None:
         indent = len(match.group(1))
         body = match.group(2)
+        self._list_indent = indent
         task = render.TASK_RE.match(body)
         if task:
             marker = "  [x] " if task.group(1).lower() == "x" else "  [ ] "
