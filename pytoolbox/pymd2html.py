@@ -333,6 +333,11 @@ def _list_marker(line: str):
     return None
 
 
+#: ``--table-text`` values that change how text sits inside a table's cells.
+TABLE_TEXT_CHOICES = ("auto", "ltr", "rtl", "center")
+_TABLE_TEXT_ALIGN = {"ltr": "left", "rtl": "right", "center": "center"}
+
+
 def _alignments(rule: str) -> list[str]:
     """Per-column alignment read off the `:---:` row."""
     columns = []
@@ -380,9 +385,10 @@ class _Renderer:
     HTML is trusted.
     """
 
-    def __init__(self, escape_html: bool = False, offline: bool = False) -> None:
+    def __init__(self, escape_html: bool = False, offline: bool = False, table_text: str = "auto") -> None:
         self.escape_html = escape_html
         self.offline = offline
+        self.table_text = table_text
         self.anchors: dict[str, int] = {}
 
     # ── entry point ─────────────────────────────────────────────
@@ -563,12 +569,17 @@ class _Renderer:
             rows.append(_split_row(lines[index]))
             index += 1
 
+        # A column's own `:--:` marker is the author's choice for that column
+        # and outranks the table-wide option.
+        default_align = _TABLE_TEXT_ALIGN.get(self.table_text, "")
+
         def cell(tag: str, text: str, column: int) -> str:
-            align = aligns[column] if column < len(aligns) else ""
+            align = (aligns[column] if column < len(aligns) else "") or default_align
             style = f' style="text-align:{align}"' if align else ""
             return f"<{tag}{style}>{render_inline(text, self.escape_html)}</{tag}>"
 
-        parts = ["<table>", "<thead>", "<tr>"]
+        direction = f' dir="{self.table_text}"' if self.table_text in ("ltr", "rtl") else ""
+        parts = [f"<table{direction}>", "<thead>", "<tr>"]
         parts += [cell("th", text, column) for column, text in enumerate(headers)]
         parts += ["</tr>", "</thead>", "<tbody>"]
         for row in rows:
@@ -609,7 +620,9 @@ class _Renderer:
 # ═══════════════════════════════════════════════════════════════════
 
 
-def render_body(text: str, escape_html: bool = False, offline: bool = False) -> str:
+def render_body(
+    text: str, escape_html: bool = False, offline: bool = False, table_text: str = "auto"
+) -> str:
     """Render Markdown to an HTML fragment: no ``<html>``, no stylesheet."""
     # NUL is the placeholder sentinel, and a control character no document
     # needs; dropping it up front is what makes the placeholders unforgeable.
@@ -619,7 +632,7 @@ def render_body(text: str, escape_html: bool = False, offline: bool = False) -> 
         # The empty string after a file's final newline is not a blank line,
         # and inside an unclosed code fence it would be printed as one.
         lines.pop()
-    return _Renderer(escape_html=escape_html, offline=offline).blocks(lines)
+    return _Renderer(escape_html=escape_html, offline=offline, table_text=table_text).blocks(lines)
 
 
 def is_rtl(text: str) -> bool:
@@ -644,9 +657,10 @@ def render_document(
     rtl: Optional[bool] = None,
     escape_html: bool = False,
     offline: bool = False,
+    table_text: str = "auto",
 ) -> str:
     """Render Markdown to one self-contained HTML page."""
-    body = render_body(text, escape_html=escape_html, offline=offline)
+    body = render_body(text, escape_html=escape_html, offline=offline, table_text=table_text)
     heading = title if title is not None else extract_title(text)
     direction = is_rtl(text) if rtl is None else rtl
     attributes = f' lang="{html.escape(lang, quote=True)}"' if lang else ""
@@ -679,12 +693,13 @@ def convert(
     rtl: Optional[bool] = None,
     escape_html: bool = False,
     offline: bool = False,
+    table_text: str = "auto",
 ) -> Path:
     """Convert one Markdown file, returning the path written."""
     md_path = Path(md_path)
     text = md_path.read_text(encoding="utf-8")
     if fragment:
-        output = render_body(text, escape_html=escape_html, offline=offline) + "\n"
+        output = render_body(text, escape_html=escape_html, offline=offline, table_text=table_text) + "\n"
     else:
         output = render_document(
             text,
@@ -694,6 +709,7 @@ def convert(
             rtl=rtl,
             escape_html=escape_html,
             offline=offline,
+            table_text=table_text,
         )
 
     html_path = Path(html_path)
@@ -743,6 +759,14 @@ def convert(
 @click.option("--rtl", is_flag=True, help="Force right-to-left layout.")
 @click.option("--ltr", is_flag=True, help="Force left-to-right layout.")
 @click.option(
+    "--table-text",
+    type=click.Choice(TABLE_TEXT_CHOICES, case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Text inside table cells: left-to-right (left-aligned), right-to-left "
+    "(right-aligned, columns mirrored) or centered. A column's own :---: marker still wins.",
+)
+@click.option(
     "--escape-html",
     is_flag=True,
     help="Show raw HTML in the Markdown as text instead of passing it through. "
@@ -766,6 +790,7 @@ def md2html_cli(
     lang: Optional[str],
     rtl: bool,
     ltr: bool,
+    table_text: str,
     escape_html: bool,
     offline: bool,
     quiet: bool,
@@ -795,6 +820,7 @@ def md2html_cli(
       pymd2html post.md --fragment           # body only, for a template
       pymd2html doc.md --css mine.css --lang fa
       pymd2html notes.md --offline           # skip the mermaid.ink fallback
+      pymd2html report.md --table-text center
     """
     if output and len(files) > 1:
         raise click.UsageError("-o/--output can only be used with a single input file.")
@@ -827,6 +853,7 @@ def md2html_cli(
             rtl=direction,
             escape_html=escape_html,
             offline=offline,
+            table_text=table_text.lower(),
         )
         if not quiet and str(written) != "-":
             click.echo(f"  {md_path} -> {written}", err=True)

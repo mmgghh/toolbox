@@ -298,3 +298,41 @@ def test_newline_inside_a_code_span_is_kept_as_is():
 
 def test_emphasis_may_span_a_line_break():
     assert body("**a\nb**") == "<p><strong>a<br>\nb</strong></p>"
+
+
+# ── --table-text ────────────────────────────────────────────────────
+
+TABLE_MD = "| a | b |\n|---|--:|\n| 1 | 2 |\n"
+
+
+def test_table_text_auto_changes_nothing():
+    assert render_body(TABLE_MD, table_text="auto") == render_body(TABLE_MD)
+    assert "dir=" not in render_body(TABLE_MD)
+
+
+@pytest.mark.parametrize(
+    ("value", "direction", "align"),
+    [("ltr", ' dir="ltr"', "left"), ("rtl", ' dir="rtl"', "right"), ("center", "", "center")],
+)
+def test_table_text_sets_direction_and_alignment(value, direction, align):
+    rendered = render_body(TABLE_MD, table_text=value)
+    assert f"<table{direction}>" in rendered
+    assert f'<th style="text-align:{align}">a</th>' in rendered
+    assert f'<td style="text-align:{align}">1</td>' in rendered
+
+
+def test_table_text_yields_to_a_columns_own_alignment():
+    rendered = render_body(TABLE_MD, table_text="center")
+    assert '<td style="text-align:right">2</td>' in rendered
+
+
+def test_table_text_cli_and_fragment(tmp_path):
+    from click.testing import CliRunner
+
+    source = tmp_path / "t.md"
+    source.write_text(TABLE_MD, encoding="utf-8")
+    runner = CliRunner()
+    result = runner.invoke(md2html_cli, [str(source), "--table-text", "rtl", "--fragment", "-o", "-"])
+    assert result.exit_code == 0
+    assert '<table dir="rtl">' in result.output
+    assert runner.invoke(md2html_cli, [str(source), "--table-text", "sideways"]).exit_code != 0

@@ -812,3 +812,52 @@ def test_list_continuation_line_is_drawn_with_its_items_indent(monkeypatch, tmp_
     assert [p.strip() for p in paragraphs] == [
         "intro", "plain paragraph", "indented but no list before it",
     ]
+
+
+TEXT_TABLE = """# Test
+
+| MARKCELL | b |
+| --- | --- |
+| x | y |
+"""
+
+
+def _cell_x(tmp_path, table_text):
+    pypdf = pytest.importorskip("pypdf")
+    source = tmp_path / f"{table_text}.md"
+    source.write_text(TEXT_TABLE, encoding="utf-8")
+    target = tmp_path / f"{table_text}.pdf"
+    pymd2pdf.convert(source, target, quiet=True, table_text=table_text)
+    found = {}
+
+    def visitor(text, cm, tm, font_dict, font_size):
+        if "MARKCELL" in text:
+            found["x"] = tm[4]
+
+    pypdf.PdfReader(target).pages[-1].extract_text(visitor_text=visitor)
+    return found["x"]
+
+
+@needs_fonts
+def test_table_text_positions_cell_text(tmp_path):
+    left = _cell_x(tmp_path, "ltr")
+    centre = _cell_x(tmp_path, "center")
+    right = _cell_x(tmp_path, "rtl")
+    auto = _cell_x(tmp_path, "auto")
+    assert auto == left
+    # rtl mirrors the columns, so the first column (MARKCELL) moves right.
+    assert right > left
+    assert centre > left
+
+
+@needs_fonts
+def test_table_text_cli_rejects_unknown_value(tmp_path):
+    from click.testing import CliRunner
+
+    source = tmp_path / "t.md"
+    source.write_text(TEXT_TABLE, encoding="utf-8")
+    runner = CliRunner()
+    assert runner.invoke(pymd2pdf_cli, [str(source), "--table-text", "sideways"]).exit_code != 0
+    ok = runner.invoke(pymd2pdf_cli, [str(source), "--table-text", "center", "-q"])
+    assert ok.exit_code == 0
+    assert (tmp_path / "t.pdf").exists()

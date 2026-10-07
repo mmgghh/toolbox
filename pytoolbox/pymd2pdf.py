@@ -107,8 +107,9 @@ class _Renderer:
     :mod:`pytoolbox.mdpdf.render`, which each take already-resolved text.
     """
 
-    def __init__(self, pdf, lines: list[str], md_path: Path) -> None:
+    def __init__(self, pdf, lines: list[str], md_path: Path, table_text: str = "auto") -> None:
         self.pdf = pdf
+        self.table_text = table_text
         self.lines = lines
         self.md_path = md_path
         self._in_code = False
@@ -245,7 +246,7 @@ class _Renderer:
 
     def _flush_table(self) -> None:
         if self._in_table:
-            tables.add_table(self.pdf, self._table_header, self._table_rows)
+            tables.add_table(self.pdf, self._table_header, self._table_rows, self.table_text)
             self._in_table, self._table_header, self._table_rows = False, [], []
 
     def _blockquote(self, index: int) -> int:
@@ -277,6 +278,7 @@ def convert(
     font_size=None,
     title_page=True,
     quiet=False,
+    table_text="auto",
 ):
     """Render one Markdown file to a document.PDF.
 
@@ -313,7 +315,7 @@ def convert(
         _add_title_page(pdf, title)
 
     pdf.add_page()
-    _Renderer(pdf, lines, md_path).run()
+    _Renderer(pdf, lines, md_path, table_text).run()
 
     try:
         pdf.output(str(pdf_path))
@@ -376,6 +378,14 @@ def convert(
          "Tried before the auto-detected symbol font. Colour-bitmap emoji "
          "fonts (e.g. NotoColorEmoji) cannot be used.",
 )
+@click.option(
+    "--table-text",
+    type=click.Choice(["auto", "ltr", "rtl", "center"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Text inside table cells: left-to-right (left-aligned), right-to-left "
+         "(right-aligned, columns mirrored) or centered.",
+)
 @click.option("--no-title-page", is_flag=True, help="Skip the generated cover page.")
 @click.option(
     "--offline",
@@ -393,6 +403,7 @@ def pymd2pdf_cli(
     margin: float,
     font_size: float | None,
     fallback_font: tuple[Path, ...],
+    table_text: str,
     no_title_page: bool,
     offline: bool,
     quiet: bool,
@@ -413,6 +424,7 @@ def pymd2pdf_cli(
       pymd2pdf a.md b.md c.md                # writes a.pdf, b.pdf, c.pdf
       pymd2pdf *.md -d ./pdfs --page-size a5
       pymd2pdf notes.md --no-title-page --font-size 11 --offline
+      pymd2pdf report.md --table-text center
 
     \b
     ── Fonts ──────────────────────────────────────────────────────────
@@ -495,6 +507,7 @@ def pymd2pdf_cli(
             font_size=font_size,
             title_page=not no_title_page,
             quiet=quiet,
+            table_text=table_text.lower(),
         )
 
 

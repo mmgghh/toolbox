@@ -7,6 +7,12 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`--table-text auto|ltr|rtl|center` for `pymd2pdf` and `pymd2html`.** Sets how
+  text sits inside table cells: `ltr` left-aligned with columns left to right,
+  `rtl` right-aligned with the columns mirrored, `center` centered. `auto` (the
+  default) keeps the old behaviour. In HTML a column's own `:---:` marker still
+  wins over the option.
+
 - **`pytime auto`.** Records time automatically from the focused window --
   `watch` polls it every few seconds and starts/stops entries on its own,
   `status`/`report` mirror the manual commands (with `-g app`/`-g ext`/`-g

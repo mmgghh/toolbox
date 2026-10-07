@@ -86,7 +86,15 @@ def _isolated_annotations(pdf):
         saved.extend(drawn)
 
 
-def add_table(pdf, headers, rows):
+def add_table(pdf, headers, rows, table_text="auto"):
+    """Draw a table.
+
+    ``table_text`` sets how text sits in the cells: ``"ltr"`` left-aligned with
+    columns running left to right, ``"rtl"`` right-aligned with the columns
+    mirrored, ``"center"`` centered (column order still follows the content),
+    or ``"auto"`` to follow the content. Fonts and shaping always follow the
+    content, so Persian text keeps its face whatever is asked for here.
+    """
     from fpdf.enums import TableCellFillMode
     from fpdf.fonts import FontFace
 
@@ -101,9 +109,12 @@ def add_table(pdf, headers, rows):
         or any(shaping.is_rtl(c) for row in rows for c in row)
     )
     table_font  = fonts.FONT_FA if has_persian else fonts.FONT_SANS
-    text_align  = "RIGHT" if has_persian else "LEFT"
+    mirrored    = {"ltr": False, "rtl": True}.get(table_text, has_persian)
+    text_align  = {"ltr": "LEFT", "rtl": "RIGHT", "center": "CENTER"}.get(
+        table_text, "RIGHT" if has_persian else "LEFT"
+    )
 
-    if has_persian:
+    if mirrored:
         # Mirror column order: markdown's first (e.g. label) column should
         # land on the right, matching RTL reading order, since fpdf2 always
         # lays table columns out left-to-right regardless of text_align.
