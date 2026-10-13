@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from pytoolbox.mdpdf import document, fonts, shaping, state
+from pytoolbox.mdpdf import document, fonts, inline_code, shaping, state
 
 #: An inline link or image: the label is drawn, the target is not.
 _MD_LINK_RE = re.compile(r'!?\[([^\]]*)\]\(([^)]*)\)')
@@ -111,6 +111,23 @@ def render_rich(pdf, text, base_size=None, base_style=""):
 
 
 
+def add_rtl_with_code(pdf, body, outer_width, lh, marker="", bold=False, align="R"):
+    """Draw an RTL block whose text has inline code, boxing each span.
+
+    ``outer_width`` is the width a ``multi_cell`` would be given, starting at
+    the left margin; text is laid out inside its ``c_margin`` padding exactly
+    as ``multi_cell`` would, so blocks look the same with or without code.
+    """
+    carrier, spans = inline_code.protect_code(body)
+    left = pdf.l_margin + pdf.c_margin
+    right = pdf.l_margin + outer_width - pdf.c_margin
+    lines = inline_code.layout_rtl(
+        pdf, strip_md(carrier), spans, right - left, marker=marker, bold=bold,
+    )
+    for runs in lines:
+        inline_code.draw_line(pdf, runs, lh, left, right, align=align, bold=bold)
+
+
 def add_heading(pdf, level, text, align=None):
     """Draw a heading. ``align`` ("L"/"R"/"C") overrides the direction-based default."""
     sizes = {1: 18, 2: 14, 3: 12, 4: 11, 5: 10, 6: 10}
@@ -120,10 +137,16 @@ def add_heading(pdf, level, text, align=None):
     stripped = strip_md(text)
     if use_rtl_layout(pdf, stripped):
         pdf.set_font(fonts.FONT_FA, "B", sz)
-        pdf.multi_cell(
-            0, sz * 0.6, shaping.shape_rtl(stripped),
-            align=align or "R", new_x="LMARGIN", new_y="NEXT",
-        )
+        if inline_code.has_code(text):
+            add_rtl_with_code(
+                pdf, strip_links(text), pdf.w - pdf.l_margin - pdf.r_margin,
+                sz * 0.6, bold=True, align=align or "R",
+            )
+        else:
+            pdf.multi_cell(
+                0, sz * 0.6, shaping.shape_rtl(stripped),
+                align=align or "R", new_x="LMARGIN", new_y="NEXT",
+            )
     else:
         pdf.set_font(fonts.FONT_SANS, "B", sz)
         pdf.multi_cell(0, sz * 0.6, stripped, align=align or "L")
@@ -282,6 +305,9 @@ def add_paragraph(pdf, text):
         width = pdf.w - pdf.l_margin - pdf.r_margin - 2 * pdf.c_margin
         lh = document.body_lh(pdf)
         body = bold_m.group(1) if bold_m else text
+        if inline_code.has_code(body):
+            add_rtl_with_code(pdf, body, pdf.w - pdf.l_margin - pdf.r_margin, lh, bold=bool(bold_m))
+            return
         for line in shaping.shape_rtl_lines(pdf, strip_md(body), width):
             pdf.multi_cell(0, lh, line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
@@ -303,6 +329,9 @@ def add_list_item(pdf, prefix, text, indent):
         # text width or lines we judge to "just fit" wrap again inside multi_cell.
         usable_width = width - 2 * pdf.c_margin
         inner = bold_m.group(1) if bold_m else body
+        if inline_code.has_code(inner):
+            add_rtl_with_code(pdf, inner, width, lh, marker=prefix.strip(), bold=bool(bold_m))
+            return
         lines = shaping.shape_rtl_lines(pdf, strip_md(inner), usable_width, marker=prefix.strip())
         for line in lines:
             pdf.set_x(pdf.l_margin)
@@ -337,9 +366,12 @@ def add_blockquote(pdf, lines):
         width = pdf.w - pdf.l_margin - pdf.r_margin - indent
         usable_width = width - 2 * pdf.c_margin
         body = bold_m.group(1) if bold_m else text
-        for line in shaping.shape_rtl_lines(pdf, strip_md(body), usable_width):
-            pdf.set_x(pdf.l_margin)
-            pdf.multi_cell(width, document.body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
+        if inline_code.has_code(body):
+            add_rtl_with_code(pdf, body, width, document.body_lh(pdf), bold=bool(bold_m))
+        else:
+            for line in shaping.shape_rtl_lines(pdf, strip_md(body), usable_width):
+                pdf.set_x(pdf.l_margin)
+                pdf.multi_cell(width, document.body_lh(pdf), line, align="R", new_x="LMARGIN", new_y="NEXT")
     else:
         pdf.set_font(fonts.FONT_SANS, "I", state.BODY_SIZE)
         pdf.set_left_margin(pdf.l_margin + indent)

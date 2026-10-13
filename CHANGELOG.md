@@ -7,6 +7,15 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pymd2pdf` draws inline code in right-to-left text as boxed monospace.**
+  `` `code` `` in a Persian/Arabic heading, paragraph, list item or blockquote
+  is now a monospace run on a light rounded box, as in Typora and the HTML
+  output, instead of plain text with the backticks dropped. A span holding only
+  combining marks (a lone diacritic) sits centred in a box of its own. Spans
+  are laid out as units, so they wrap with the line and `*args` or
+  `snake_case` inside them are no longer mistaken for emphasis. Spans follow
+  CommonMark's backtick rules, so ``` `` ` `` ``` is a boxed literal backtick.
+
 - **`--table-text auto|ltr|rtl|center` for `pymd2pdf` and `pymd2html`.** Sets how
   text sits inside table cells: `ltr` left-aligned with columns left to right,
   `rtl` right-aligned with the columns mirrored, `center` centered. `auto` (the
@@ -125,6 +134,14 @@ This project follows [Semantic Versioning](https://semver.org/).
   either hop opens.
 
 ### Fixed
+
+- **`pymd2pdf` reordered a parenthesised Latin run in RTL text.** A phrase like
+  `(U+0652)، U+0653` after Persian text came out with its two Latin runs merged
+  (`U+0652)، U+0653`) and the parentheses split from their contents. python-bidi's
+  algorithm predates Unicode's paired-bracket rule (UAX #9, N0), so bracket
+  pairs are now resolved explicitly before reordering. This also corrects
+  nested pairs and `f(x)`-style text, which previously mirrored the wrong
+  brackets.
 
 - **`pymd2html` showed Mermaid diagrams as a plain code block instead of
   rendering them.** ` ```mermaid ` fences went through the same path as any

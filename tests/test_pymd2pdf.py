@@ -861,3 +861,150 @@ def test_table_text_cli_rejects_unknown_value(tmp_path):
     ok = runner.invoke(pymd2pdf_cli, [str(source), "--table-text", "center", "-q"])
     assert ok.exit_code == 0
     assert (tmp_path / "t.pdf").exists()
+
+
+# ── Inline code inside RTL blocks (Typora-style boxes) ──────────────
+
+DIACRITICS_SAMPLE = (
+    "### ب) اعراب (`arabic_diacritics_codepoints`)\n\n"
+    "اعراب اضافه‌شده: `ٌ` (U+064C)، `ْ` (U+0652)، U+0653، U+0654 "
+    "و `ٰ` (U+0670). بقیهٔ اعراب از قبل مجاز بودند و این‌ها مجموعه را "
+    "کامل می‌کنند. این نویسه‌ها بدون عرض هستند و خطری ندارند.\n"
+)
+
+
+def _rtl_pdf():
+    from pytoolbox.mdpdf import inline_code  # noqa: F401  (import must exist)
+
+    pdf = document.PDF(orientation="P", unit="mm", format="A4")
+    if not pdf.has_persian:
+        pytest.skip("no Persian font installed")
+    pdf.doc_is_rtl = True
+    pdf.set_margins(20, 20, 20)
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.set_font(fonts.FONT_FA, "", state.BODY_SIZE)
+    return pdf
+
+
+def test_protect_code_swaps_each_span_for_its_own_placeholder():
+    from pytoolbox.mdpdf import inline_code
+
+    carrier, spans = inline_code.protect_code("a `x` b `*args` c")
+    assert spans == ["x", "*args"]
+    assert "`" not in carrier
+    placeholders = [c for c in carrier if c not in "a b c "]
+    assert len(placeholders) == 2 and placeholders[0] != placeholders[1]
+    # Placeholders are strong right-to-left letters, which is what keeps the
+    # Latin text on either side of a code span from merging into one run.
+    import unicodedata
+
+    assert all(unicodedata.bidirectional(c) == "R" for c in placeholders)
+
+
+def test_protect_code_follows_commonmark_backtick_runs():
+    from pytoolbox.mdpdf import inline_code
+
+    # A span opened by N backticks closes at the next run of exactly N, so it
+    # can hold a literal backtick; one padding space on each side is dropped.
+    _, spans = inline_code.protect_code("a `` ` `` b `x` c ``p`q`` d `<` `>`")
+    assert spans == ["`", "x", "p`q", "<", ">"]
+    # Padding is kept when the content is only spaces, and a lone opening run
+    # with no closer is just text.
+    assert inline_code.protect_code("`  `")[1] == ["  "]
+    assert inline_code.protect_code("open ` only") == ("open ` only", [])
+    assert inline_code.protect_code("a``b`")[1] == []
+
+
+def test_protect_code_leaves_plain_text_alone():
+    from pytoolbox.mdpdf import inline_code
+
+    assert inline_code.protect_code("no code *here*") == ("no code *here*", [])
+    assert not inline_code.has_code("no code")
+    assert inline_code.has_code("a `b`")
+
+
+@needs_fonts
+@needs_shaper
+def test_rtl_runs_put_code_boxes_in_reading_order():
+    from pytoolbox.mdpdf import inline_code
+
+    pdf = _rtl_pdf()
+    para = DIACRITICS_SAMPLE.split("\n\n")[1].strip()
+    carrier, spans = inline_code.protect_code(para)
+    lines = inline_code.layout_rtl(pdf, render.strip_md(carrier), spans, 170)
+    first = lines[0]
+    # Left to right on the page; reading right to left gives 064C, 0652, 0670.
+    assert [t for k, t in first if k == "code"] == ["ٰ", "ْ", "ٌ"]
+    plain = [t for k, t in first if k == "text"]
+    # The Latin numbers stay intact (never reversed or split) ...
+    assert any("U+0653" in t and "U+0654" in t for t in plain)
+    # ... and each parenthesised code point stays in one piece.
+    for cp in ("U+064C", "U+0652", "U+0670"):
+        assert any(f"({cp})" in t or f"){cp}(" in t for t in plain)
+
+
+@needs_fonts
+@needs_shaper
+def test_rtl_runs_wrap_without_losing_or_duplicating_code_spans():
+    from pytoolbox.mdpdf import inline_code
+
+    pdf = _rtl_pdf()
+    text = " ".join(f"کلمه `code{i}` متن" for i in range(30))
+    carrier, spans = inline_code.protect_code(text)
+    lines = inline_code.layout_rtl(pdf, render.strip_md(carrier), spans, 100)
+    assert len(lines) > 1
+    seen = [t for line in lines for k, t in line if k == "code"]
+    assert sorted(seen) == sorted(spans)
+    for line in lines:
+        assert inline_code.runs_width(pdf, line) <= 100 + 0.01
+
+
+@needs_fonts
+def test_lone_mark_code_box_has_a_width():
+    from pytoolbox.mdpdf import inline_code
+
+    pdf = _rtl_pdf()
+    assert inline_code.code_width(pdf, "ٌ") > 2 * inline_code.CODE_PAD_X
+
+
+@needs_fonts
+@needs_shaper
+def test_rtl_inline_code_is_drawn_in_boxes_in_heading_and_paragraph(tmp_path, monkeypatch):
+    boxes = []
+    orig_rect = document.PDF.rect
+
+    def spy(self, x, y, w, h, style=None, round_corners=False, corner_radius=0):
+        if round_corners:
+            boxes.append((x, w))
+        return orig_rect(self, x, y, w, h, style, round_corners, corner_radius)
+
+    monkeypatch.setattr(document.PDF, "rect", spy)
+    source = tmp_path / "doc.md"
+    source.write_text(DIACRITICS_SAMPLE, encoding="utf-8")
+    target = tmp_path / "doc.pdf"
+    pymd2pdf.convert(source, target, quiet=True)
+    # one box for the heading's identifier + one per diacritic
+    assert len(boxes) == 4
+    assert all(w > 0 for _, w in boxes)
+
+
+@needs_shaper
+@pytest.mark.parametrize(
+    "logical, visual",
+    [
+        # A parenthesised Latin run after RTL text is one unit (UAX #9 N0):
+        # it must not merge with the Latin run after it, nor lose its brackets.
+        ("اعراب א (U+064C)، ב (U+0652)، U+0653، U+0654 ג (U+0670).",
+         ".(U+0670) ג U+0653، U+0654 ،(U+0652) ב ،(U+064C) א بارعا"),
+        # A pair opened in Latin context stays with that Latin text.
+        ("foo (bar) باز foo", "foo زاب foo (bar)"),
+        ("مقدار f(x) برابر g(y) در", "رد g(y) ربارب f(x) رادقم"),
+        ("متن ((a) b) c متن", "نتم c (b (a)) نتم"),
+        # Unchanged cases.
+        ("x (y) z", "x (y) z"),
+        ("نام (SRS) را", "ار (SRS) مان"),
+    ],
+)
+def test_bidi_display_pairs_brackets_like_uax9(logical, visual):
+    assert shaping._bidi_display(logical) == visual
