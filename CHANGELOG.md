@@ -7,6 +7,16 @@ This project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`pydocx2md` reads a heading from its size when the document styled none.**
+  A document written without heading styles still shows its structure the one
+  way left: the title is bigger. A short line (up to 120 characters) that is
+  bold throughout, set at one size and at least 15% larger than the body text
+  becomes a heading, one level per distinct size, largest first. Sizes are
+  resolved as Word does -- run, paragraph style, default paragraph style,
+  document defaults -- and the body size is the one most characters use. Lines
+  in a table never qualify, and the heading does not repeat the bold markers
+  its text had.
+
 - **`pymd2pdf` draws inline code in right-to-left text as boxed monospace.**
   `` `code` `` in a Persian/Arabic heading, paragraph, list item or blockquote
   is now a monospace run on a light rounded box, as in Typora and the HTML
@@ -134,6 +144,60 @@ This project follows [Semantic Versioning](https://semver.org/).
   either hop opens.
 
 ### Fixed
+
+- **`pypdf2md` read a merged cell as several.** The cells of a table were
+  taken from columns shared by every row, but a merged cell is only a row where
+  a rule between two columns was not drawn. Each row's cells are now read from
+  that row's own rules, with the columns taken from every rule inside the
+  table's bounds, joined or not, and a merged cell's text goes in the first
+  column its reader reaches (the rightmost on a right-to-left table). On a
+  meeting-minutes form full of merged cells, the text now matches the `.docx`
+  conversion of the same document at 0.99 similarity, where it was 0.40. Columns nothing is written in and blank
+  rows above the header are dropped, and a table continued on the next page is
+  sewn back together whether or not the header is repeated.
+
+- **`pypdf2md` split words in a justified Word line.** Word fits a line with
+  character spacing, added after every glyph, and the reader counted it once
+  per string -- so runs ended in the wrong place and a space squeezed to
+  nothing was read as a gap, splitting `تهیه` in two. Spacing is counted per
+  glyph, a run ends where its last glyph's ink does, and whitespace is judged
+  by the room it takes: squeezed spaces are dropped, two that add up to one
+  gap become one, and a space covered by both neighbours is not a gap.
+
+- **`pypdf2md` put zero-width non-joiners inside words that had none.** A
+  space glyph lapping a letter looks like a non-joiner to a geometric test. A
+  letter known to be drawn joined now vetoes the marker after it. Across the
+  three documents that exist as both `.pdf` and `.docx`, and counting the
+  `.docx` as the truth, false markers went from 1 to 0 and correct ones from
+  1042 to 1066 (with the spacing fix above).
+
+- **`pypdf2md` lost list markers Word writes unusually, and ran contents
+  entries together.** `1-` numbering (common in Persian documents), Word's
+  Symbol-font bullets and its Courier `o` second-level bullets are now list
+  items, a list that opens at 14 keeps saying 14, and a list inside a table
+  cell keeps its markers one item to a line. A contents entry with a row of
+  dots to its page number is its own line, the dots a space. A blank line set
+  at a heading's size no longer becomes an empty `######`.
+
+- **`pydocx2md` kept what only a printed page needed.** A page or column break
+  in a paragraph was written as a newline, splitting a heading in two; the
+  page numbers of a table of contents (`PAGEREF`, `PAGE`, `NUMPAGES`,
+  `SECTIONPAGES` fields, including the one-element `fldSimple` form) were glued
+  to the title; and a picture anchored in a heading to decorate it became part
+  of the heading and of its anchor. A break is now a space, those fields are
+  dropped, and the picture is left out.
+
+- **`pydocx2md` wrote internal links that went nowhere.** A table of contents
+  entry links to a Word bookmark such as `_Toc229559997`, which exists nowhere
+  in Markdown. The link now points at the anchor of the heading carrying the
+  bookmark, computed the way `pymd2html` does it (`#scope`, `#scope-2` for a
+  repeat); a link whose bookmark is not on a heading keeps its text only.
+
+- **`pydocx2md` fragmented emphasis around a link and flattened lists in
+  cells.** Bold text with a link in the middle had asterisks around each of
+  its three pieces, which fragments the emphasis and trips some renderers; it
+  is now one pair of markers around the stretch. A list in a table cell lost its bullets
+  and numbers; each item now keeps its marker on a line of its own.
 
 - **`pymd2pdf` reordered a parenthesised Latin run in RTL text.** A phrase like
   `(U+0652)، U+0653` after Persian text came out with its two Latin runs merged
