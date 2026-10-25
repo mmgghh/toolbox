@@ -241,8 +241,10 @@ def _piece(previous: Optional[TextRun], run: TextRun, following: Optional[TextRu
     """
     if run.text.strip():
         return run.text
-    if _over(run, following):
-        return bidi_text.MARK if _between_letters(previous, following) else None
+    if _over(run, following) or _buried(run, previous, following):
+        if _between_letters(previous, following) and not _drawn_joined(following):
+            return bidi_text.MARK
+        return None
     return run.text
 
 
@@ -252,6 +254,44 @@ def _over(run: TextRun, other: Optional[TextRun]) -> bool:
     if other is None or width <= 0:
         return False
     return _covered(run, other) > DRAWN_OVER * width
+
+
+def _drawn_joined(run: Optional[TextRun]) -> bool:
+    """True when the glyph the document drew first in ``run`` is a joined shape.
+
+    A non-joiner leaves the letter before it in its closed shape. A space that
+    merely laps a letter drawn joined to what comes next did not break
+    anything, so it is not one.
+    """
+    return run is not None and run.shapes[:1] == "j"
+
+
+def _buried(run: TextRun, before: Optional[TextRun], after: Optional[TextRun]) -> bool:
+    """True when the two runs either side of ``run`` together cover it.
+
+    Neither has to cover most of it alone: a space that sits across the join
+    between two letters is lapped by both, and between them they leave no room
+    for it. A real gap between words is a stretch of page with nothing drawn
+    in it, which no pair of neighbours can cover.
+    """
+    width = _end(run) - run.x
+    if width <= 0 or before is None or after is None:
+        return False
+    # Only letters cover anything: a second space drawn over this one is the
+    # same gap twice, not a gap with something in it.
+    if not before.text.strip() or not after.text.strip():
+        return False
+    spans = sorted(
+        (max(run.x, other.x), min(_end(run), _end(other))) for other in (before, after)
+    )
+    covered = 0.0
+    reach = run.x
+    for low, high in spans:
+        if high <= low:
+            continue
+        covered += max(0.0, high - max(low, reach))
+        reach = max(reach, high)
+    return covered > DRAWN_OVER * width
 
 
 def _between_letters(previous: Optional[TextRun], following: Optional[TextRun]) -> bool:

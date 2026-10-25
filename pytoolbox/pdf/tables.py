@@ -77,12 +77,40 @@ def find(page: Page, base: Optional[str] = None) -> tuple[list[Table], list[Text
         rows = _bands([piece.at for piece in group if not piece.vertical])
         if len(columns) < MIN_COLUMNS or len(rows) < MIN_ROWS:
             continue
-        table = _fill(page, rows, columns, base, taken)
+        verticals = _rules_within(segments, rows, columns)
+        # The columns are every rule inside the table, joined or not: the one
+        # that touches nothing still says there is a column beside it.
+        columns = _bands([piece.at for piece in verticals]) or columns
+        table = _fill(page, rows, columns, verticals, base, taken)
         if table is not None:
             tables.append(table)
 
     tables.sort(key=lambda table: -table.top)
     return tables, [run for run in page.runs if id(run) not in taken]
+
+
+def _rules_within(
+    segments: list[Segment],
+    rows: list[tuple[float, float]],
+    columns: list[tuple[float, float]],
+) -> list[Segment]:
+    """Every vertical rule drawn inside the table's bounds, joined or not.
+
+    The cluster that defines the grid is the rules that touch. A writer that
+    draws each cell's borders on their own, with a gap between cells, leaves a
+    row's inner rules in clusters of their own -- still that row's rules, and
+    what says whether two of its columns are one cell.
+    """
+    left, right = columns[0][0] - MIN_TRACK, columns[-1][1] + MIN_TRACK
+    low, high = rows[0][0] - EDGE_TOLERANCE, rows[-1][1] + EDGE_TOLERANCE
+    return [
+        piece
+        for piece in segments
+        if piece.vertical
+        and left <= piece.at <= right
+        and piece.high >= low
+        and piece.low <= high
+    ]
 
 
 def _outermost(rules: list[RuleBox]) -> list[RuleBox]:
@@ -214,17 +242,32 @@ def _span(band: tuple[float, float]) -> float:
     return band[1] - band[0]
 
 
+@dataclass
+class _Cell:
+    """One cell of one row: where it sits, and which shared columns it covers."""
+
+    low: float
+    high: float
+    first: int
+    last: int
+
+
 def _fill(
     page: Page,
     rows: list[tuple[float, float]],
     columns: list[tuple[float, float]],
+    verticals: list[Segment],
     base: Optional[str],
     taken: set[int],
 ) -> Optional[Table]:
     """Sort the runs inside the grid into cells, top row first."""
     bottom, top = rows[0][0], rows[-1][1]
+    cells_of = [_row_cells(row, columns, verticals) for row in rows]
 
-    cells: list[list[list[TextRun]]] = [[[] for _ in columns] for _ in rows]
+    # A cell is read as one whole however many columns it spans: text in a
+    # merged cell is laid out against the width of the cell, not of the
+    # columns the rows above and below it happen to share.
+    found: list[dict[int, list[TextRun]]] = [{} for _ in rows]
     inside = False
     for run in page.runs:
         if id(run) in taken:
@@ -233,25 +276,89 @@ def _fill(
         column = _track(columns, _middle(run))
         if row is None or column is None:
             continue
+        index = _cell_at(cells_of[row], _middle(run))
         # Blank runs are kept: a space between two words is a run of its own
         # in some writers, and dropping it here would close the gap.
-        cells[row][column].append(run)
+        found[row].setdefault(index, []).append(run)
         taken.add(id(run))
         inside = inside or bool(run.text.strip())
     if not inside:
         return None
 
-    table = Table(page=page.number, top=top, bottom=bottom)
-    table.rows = [
-        [to_lines(cell, page.number, base) for cell in row]
-        for row in reversed(cells)  # PDF y grows upwards; a table reads downwards.
+    lined = [
+        {index: to_lines(runs, page.number, base) for index, runs in row.items()} for row in found
     ]
-    table.rtl = any(line.rtl for row in table.rows for cell in row for line in cell)
-    if table.rtl:
+    rtl = any(line.rtl for row in lined for lines in row.values() for line in lines)
+
+    table = Table(page=page.number, top=top, bottom=bottom, rtl=rtl)
+    width = len(columns)
+    for row, cells in zip(reversed(lined), reversed(cells_of)):  # PDF y grows upwards.
+        out: list[list[Line]] = [[] for _ in range(width)]
+        # Cells that fall in one column (the shared columns can be coarser than
+        # a row's own rules) are read the way the table is: from the right on
+        # a right-to-left one.
+        for index in reversed(range(len(cells))) if rtl else range(len(cells)):
+            cell = cells[index]
+            # A merged cell's text goes in the column its reader reaches first:
+            # the leftmost, or on a right-to-left table the rightmost.
+            out[cell.last if rtl else cell.first].extend(row.get(index, []))
         # The grid was read left to right off the page; a right-to-left table's
         # first column is the rightmost one.
-        table.rows = [list(reversed(row)) for row in table.rows]
+        table.rows.append(list(reversed(out)) if rtl else out)
     return table if any(any(cell for cell in row) for row in table.rows) else None
+
+
+def _row_cells(
+    row: tuple[float, float],
+    columns: list[tuple[float, float]],
+    verticals: list[Segment],
+) -> list[_Cell]:
+    """The cells of one row, from the rules that row itself has.
+
+    Rules are drawn row by row, so a merged cell is a row where a rule between
+    two columns was simply not drawn -- and which rules a row has is read off
+    that row, not off the table's shared columns. Those are a compromise: the
+    edges of every row's boxes, folded together wherever they lie too close to
+    be told apart, which can leave one row's rule a few points from anywhere.
+
+    A row says something about its cells only once it is closed at both ends.
+    One missing an outer edge has said nothing about its inner boundaries and
+    keeps the table's columns.
+    """
+    separate = [_Cell(low, high, index, index) for index, (low, high) in enumerate(columns)]
+    middle = (row[0] + row[1]) / 2
+    positions = [
+        piece.at
+        for piece in verticals
+        if piece.low - EDGE_TOLERANCE <= middle <= piece.high + EDGE_TOLERANCE
+    ]
+    bands = _bands(positions) if len(positions) > 1 else []
+    left, right = columns[0][0], columns[-1][1]
+    if not bands or abs(bands[0][0] - left) > MIN_TRACK or abs(bands[-1][1] - right) > MIN_TRACK:
+        return separate
+
+    cells: list[_Cell] = []
+    for low, high in bands:
+        covered = [
+            index
+            for index, (start, stop) in enumerate(columns)
+            if low <= (start + stop) / 2 <= high
+        ]
+        if not covered:
+            centre = (low + high) / 2
+            covered = [
+                min(range(len(columns)), key=lambda i: abs((columns[i][0] + columns[i][1]) / 2 - centre))
+            ]
+        cells.append(_Cell(low, high, min(covered), max(covered)))
+    return cells
+
+
+def _cell_at(cells: list[_Cell], position: float) -> int:
+    """Which cell a run's middle falls in, or the nearest when it falls between."""
+    for index, cell in enumerate(cells):
+        if cell.low - EDGE_TOLERANCE <= position <= cell.high + EDGE_TOLERANCE:
+            return index
+    return min(range(len(cells)), key=lambda i: abs((cells[i].low + cells[i].high) / 2 - position))
 
 
 def _middle(run: TextRun) -> float:

@@ -44,6 +44,12 @@ class TextRun:
     letters are drawn differently depending on what they join to -- and which
     of them was used is the only record some files keep of that shaping. It is
     empty when the glyphs could not be lined up with the letters.
+
+    ``shapes`` says what the document's glyph numbers reveal about each
+    character, one per character of ``text``: ``c`` for a shape that joins
+    nothing after it, ``j`` for one that does and ``?`` where the document
+    gives no reason to say. :mod:`~pytoolbox.pdf.shaping` fills it in; it is
+    empty until then, and for a font that draws each letter one way.
     """
 
     text: str
@@ -55,6 +61,7 @@ class TextRun:
     italic: bool = False
     end: Optional[float] = None
     codes: str = ""
+    shapes: str = ""
 
 
 @dataclass
@@ -263,29 +270,31 @@ def _content(source: Any) -> tuple[list[TextRun], list[Placement], list[RuleBox]
         if state.font is None:
             return
         shown = state.text_state_params(raw)
+        movement = _movement(shown)
         if shown.text:
             font = str(getattr(shown.font, "name", "") or "")
             if id(shown.font) not in repairs:
                 repairs[id(shown.font)] = _digits(shown.font)
-            drawn, behind = _letters(shown)
-            runs.append(
-                TextRun(
-                    text=drawn.translate(repairs[id(shown.font)]),
-                    codes=behind,
-                    x=shown.tx,
-                    y=shown.ty,
-                    size=abs(shown.font_height) or abs(float(shown.font_size)),
-                    font=font,
-                    bold=_is_bold(font) or _weighted(shown.font),
-                    italic=_is_italic(font) or _sloped(shown.font),
-                    # A negative advance is a width the font did not supply,
-                    # not a glyph drawn backwards.
-                    end=max(shown.displaced_tx, shown.tx),
+            drawn, behind = _without_roomless(shown, *_letters(shown))
+            if drawn:
+                runs.append(
+                    TextRun(
+                        text=drawn.translate(repairs[id(shown.font)]),
+                        codes=behind,
+                        x=shown.tx,
+                        y=shown.ty,
+                        size=abs(shown.font_height) or abs(float(shown.font_size)),
+                        font=font,
+                        bold=_is_bold(font) or _weighted(shown.font),
+                        italic=_is_italic(font) or _sloped(shown.font),
+                        # A negative advance is a width the font did not supply,
+                        # not a glyph drawn backwards.
+                        end=max(_end_of(shown, movement), shown.tx),
+                    )
                 )
-            )
         # The whole point of the walk: step past what was just drawn, so the
         # next operator's position is its own rather than the line's.
-        state.add_trm(shown.displacement_matrix())
+        state.add_trm(movement)
 
     def walk(ops: Any, fonts: dict, resources: Any, end: Optional[bytes], depth: int) -> None:
         for operands, operator in ops:
@@ -425,6 +434,116 @@ def _letters(shown: Any) -> tuple[str, str]:
         letters.append(drawn)
         behind.append(code * len(drawn))
     return "".join(letters), "".join(behind)
+
+
+def _movement(shown: Any) -> list[float]:
+    """The matrix the pen moves by after ``shown``, spacing included.
+
+    pypdf adds the character spacing (``Tc``) once per string. The PDF model
+    adds it after *every* glyph, and Word uses it to squeeze and stretch whole
+    lines -- sometimes by nearly a glyph's width, which is how a run of two
+    spaces ends up taking no room at all. Counting it once puts the end of a
+    run, and so every gap, overlap and table cell measured from it, in the
+    wrong place.
+    """
+    font = shown.font
+    word = shown._decoded_value if isinstance(shown.value, bytes) else shown.value
+    width = 0.0
+    spaces = 0
+    for char in word:
+        if char == font.space_char:
+            width += font.space_width
+            spaces += 1
+        else:
+            width += font.get_text_width(char)
+    advance = (shown.font_size * width / 1000.0 + len(word) * shown.Tc + spaces * shown.Tw) * (
+        shown.Tz / 100.0
+    )
+    return [1.0, 0.0, 0.0, 1.0, advance, 0.0]
+
+
+#: A run of spaces that moves the pen less than this share of one space's own
+#: width has been squeezed out of existence by the writer.
+ROOMLESS_SHARE = 0.3
+
+#: A space moving the pen less than this share of its width has been squeezed.
+SQUEEZED_SHARE = 0.8
+
+
+def _without_roomless(shown: Any, drawn: str, behind: str) -> tuple[str, str]:
+    """Take out the spaces the writer left no room for.
+
+    Word cancels spaces' widths with a negative character spacing. Sometimes
+    that leaves a space glyph taking no room at all, with the pen moved on to
+    the next word by hand: it is not a gap -- the real ones are the jumps
+    between runs -- and keeping it splits a word where a letter changes shape.
+    Sometimes a word gap is set as two spaces squeezed until they add up to
+    about one. So spaces are judged in groups, by what the group takes
+    together: none is nothing, a squeezed few are one, anything else stands.
+
+    A text state that cannot be lined up with the letters is left as it is.
+    """
+    decoded = shown._decoded_value if isinstance(shown.value, bytes) else shown.value
+    if not any(char.isspace() for char in drawn) or len(decoded) != len(drawn):
+        return drawn, behind
+
+    font = shown.font
+    scale = shown.Tz / 100.0
+    space = shown.font_size * font.space_width / 1000.0 * scale
+    if space <= 0:
+        return drawn, behind
+
+    def advance(code: str) -> float:
+        width = shown.font_size * font.get_text_width(code) / 1000.0
+        if code == font.space_char:
+            width = shown.font_size * font.space_width / 1000.0 + shown.Tw
+        return (width + shown.Tc) * scale
+
+    keep = [True] * len(drawn)
+    index = 0
+    while index < len(drawn):
+        if not drawn[index].isspace():
+            index += 1
+            continue
+        stop = index
+        while stop < len(drawn) and drawn[stop].isspace():
+            stop += 1
+        moves = [advance(code) for code in decoded[index:stop]]
+        if sum(moves) < ROOMLESS_SHARE * space:
+            # Squeezed to nothing inside a word it is noise. Set on its own it
+            # is all there is to say that two runs are two words, because a
+            # justified line squeezes its gaps below what geometry would call
+            # one; the writer's own space is kept, one of it, with no width.
+            alone = stop - index == len(drawn)
+            keep[index:stop] = [alone] + [False] * (stop - index - 1)
+        elif stop - index > 1 and any(move < SQUEEZED_SHARE * space for move in moves):
+            keep[index + 1 : stop] = [False] * (stop - index - 1)
+        index = stop
+
+    if all(keep):
+        return drawn, behind
+    aligned = len(behind) == len(drawn)
+    return (
+        "".join(char for char, kept in zip(drawn, keep) if kept),
+        "".join(code for code, kept in zip(behind, keep) if kept) if aligned else behind,
+    )
+
+
+def _end_of(shown: Any, movement: list[float]) -> float:
+    """Where the last glyph just shown stops, on the page.
+
+    That is not where the pen goes next. The character spacing after the last
+    glyph is air, not ink -- and when Word squeezes a line with a negative
+    spacing it is nearly the glyph's whole width, so the next word starts
+    right where this one's last letter does, not a letter's width past it.
+    """
+    from pypdf._text_extraction import mult
+
+    ink = list(movement)
+    if shown.text.strip():
+        # A string of spaces has no ink, so there its end is the pen's.
+        ink[4] -= shown.Tc * shown.Tz / 100.0
+    return float(mult(ink, shown.transform)[4])
 
 
 def _apply(matrix: Any, x: float, y: float) -> tuple[float, float]:

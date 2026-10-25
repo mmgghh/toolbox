@@ -292,6 +292,58 @@ def test_a_space_that_takes_no_room_is_a_non_joiner():
     assert lines[0].text == "پرسش‌های"
 
 
+def test_a_space_buried_between_two_letters_is_not_a_space():
+    # Neither neighbour covers most of it on its own, but together they cover
+    # all of it, so it took no room of its own: it is not a gap between words.
+    # (The letter before it does not join forwards, so it is not a joiner
+    # either, and what is left is a word.)
+    lines = to_lines(
+        [
+            run("ﻦ", 72, 700, end=103),
+            run(" ", 101, 700, end=106),
+            run("ﻭ", 103, 700, end=110),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "ون"
+
+
+def test_a_space_drawn_twice_is_still_one_space():
+    # Word sometimes draws the same gap as two space glyphs a hair apart. Each
+    # covers the other, which is no reason to find no gap at all.
+    lines = to_lines(
+        [
+            run("ﺪﻨﺳ", 72, 700, end=100),
+            run(" ", 100, 700, end=105),
+            run(" ", 100.2, 700, end=105.2),
+            run("ﻦﯾﺍ", 105, 700, end=140),
+        ],
+        base="R",
+    )
+
+    assert lines[0].text == "این سند"
+
+
+def test_a_space_over_a_letter_known_to_be_joined_is_not_a_non_joiner():
+    # The same overlap that marks a non-joiner in one writer is just a space
+    # glyph lapping a letter in another. What tells them apart is the letter
+    # beside it: a non-joiner leaves it in its closed shape, and one drawn
+    # joined was not broken by anything.
+    # Plain letters, as a font that maps every shape back to one letter gives.
+    with_shape = lambda shapes: to_lines(  # noqa: E731
+        [
+            run("یاه", 72, 700, end=100),
+            run(" ", 100, 700, end=105),
+            run("شسرپ", 100, 700, end=140, shapes=shapes),
+        ],
+        base="R",
+    )
+
+    assert with_shape("j???")[0].text == "پرسشهای"
+    assert with_shape("")[0].text == "پرسش‌های"
+
+
 def test_a_real_space_between_words_is_kept():
     lines = to_lines(
         [

@@ -42,6 +42,11 @@ APART = 0.25
 #: one, and a majority of two is not a reading.
 MIN_USES = 3
 
+#: A joined shape is closed so rarely that this share of its uses, at the
+#: least, are where it joins. Anything less is not evidence it is a joined
+#: shape: a closed one used before real non-joiners looks the same by count.
+JOINED_SHARE = 0.9
+
 #: One glyph, named by the font it belongs to.
 Glyph = tuple[str, str]
 
@@ -59,10 +64,11 @@ def restore_joiners(document: Document) -> None:
     if not _shaped(document):
         return
     lines = [line for page in document.pages for line in _lines(page.runs)]
-    closed = _closed_shapes(lines)
-    if not closed:
-        return
-    _mark(lines, closed)
+    closed, joined = _classify(lines)
+    if closed:
+        _mark(lines, closed)
+    if closed or joined:
+        _label(document, closed, joined)
 
 
 def _shaped(document: Document) -> bool:
@@ -111,8 +117,9 @@ def _apart(previous: TextRun, run: TextRun) -> bool:
     return run.x - end > APART * max(previous.size, run.size, 1.0)
 
 
-def _closed_shapes(lines: list[list[Place]]) -> set[Glyph]:
-    """The glyphs that are a shape joining nothing after them."""
+def _classify(lines: list[list[Place]]) -> tuple[set[Glyph], set[Glyph]]:
+    """The glyphs that are a shape joining nothing after them, and the ones
+    that are a shape joining what follows."""
     drawn: dict[tuple[str, str], set[str]] = {}
     letters: dict[Glyph, str] = {}
     uses: dict[Glyph, list[int]] = {}
@@ -127,15 +134,31 @@ def _closed_shapes(lines: list[list[Place]]) -> set[Glyph]:
             following = places[index - 1][2] if index else ""
             tally = uses.setdefault(glyph, [0, 0])
             tally[bool(bidi_text.joins_backward(following))] += 1
-    return {
-        glyph
-        for glyph, (closing, joining) in uses.items()
+
+    closed: set[Glyph] = set()
+    joined: set[Glyph] = set()
+    for glyph, (closing, joining) in uses.items():
         # A letter the font draws one way tells us nothing: its single glyph
         # ends words like any other, and would condemn every other use of it.
-        if closing > joining
-        and closing + joining >= MIN_USES
-        and len(drawn[(glyph[0], letters[glyph])]) > 1
-    }
+        if len(drawn[(glyph[0], letters[glyph])]) < 2 or closing + joining < MIN_USES:
+            continue
+        if closing > joining:
+            closed.add(glyph)
+        elif joining >= JOINED_SHARE * (closing + joining):
+            joined.add(glyph)
+    return closed, joined
+
+
+def _label(document: Document, closed: set[Glyph], joined: set[Glyph]) -> None:
+    """Record, run by run, what each character's glyph says about its shape."""
+    for page in document.pages:
+        for run in page.runs:
+            if len(run.codes) != len(run.text):
+                continue
+            run.shapes = "".join(
+                "c" if (run.font, code) in closed else "j" if (run.font, code) in joined else "?"
+                for code in run.codes
+            )
 
 
 def _mark(lines: list[list[Place]], closed: set[Glyph]) -> None:

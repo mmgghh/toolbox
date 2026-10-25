@@ -207,6 +207,73 @@ def test_character_spacing_does_not_leak_past_its_own_q_block(tmp_path):
     assert width(after) == pytest.approx(width(plain), abs=0.01)
 
 
+def test_character_spacing_lands_between_glyphs_not_after_the_last(tmp_path):
+    # Tc moves the pen after every glyph, not once per string -- Word squeezes
+    # and stretches whole lines with it, so a run's end is wrong by a glyph
+    # per character if it is counted once. But the last glyph's spacing is
+    # air, not ink: a run ends where its last glyph does, which is where the
+    # next word starts when Word has packed the line this way.
+    from tests.pdf_fixtures import kerned
+
+    path = write_pdf(
+        tmp_path / "tc.pdf",
+        [[text(72, 720, 12, "Squeezed"), kerned(72, 700, 12, "Squeezed", -3)]],
+    )
+
+    runs = sorted(reader.read(path).pages[0].runs, key=lambda run: -run.y)
+    natural, squeezed = (run.end - run.x for run in runs)
+
+    assert squeezed == pytest.approx(natural - 3 * (len("Squeezed") - 1), abs=0.01)
+
+
+def test_a_space_squeezed_to_nothing_is_not_a_space(tmp_path):
+    # Word cancels a space's width with a negative character spacing and moves
+    # the pen to the next word by hand. The glyph is in the string but takes no
+    # room on the page, so it is not a gap -- reading it as one splits a word
+    # such as "تهیه" in half.
+    from tests.pdf_fixtures import kerned
+
+    # Helvetica's space is 278/1000 of the size: 3.336 points at 12.
+    path = write_pdf(
+        tmp_path / "squeezed.pdf",
+        [[kerned(72, 720, 12, "ab cd", -3.336), text(72, 700, 12, "ab cd")]],
+    )
+
+    runs = {round(run.y): run.text for run in reader.read(path).pages[0].runs}
+
+    assert runs[720] == "abcd"
+    assert runs[700] == "ab cd"
+
+
+def test_two_squeezed_spaces_that_add_up_to_a_gap_are_one_space(tmp_path):
+    # The same writer sets a real word gap as two space glyphs and squeezes
+    # each so that together they take about one space. That is a gap, and one
+    # of them -- not two, and not none.
+    from tests.pdf_fixtures import kerned
+
+    path = write_pdf(
+        tmp_path / "pair.pdf",
+        [[kerned(72, 700, 12, "ab  cd", -1.668)]],
+    )
+
+    assert [run.text for run in reader.read(path).pages[0].runs] == ["ab cd"]
+
+
+def test_a_squeezed_space_standing_alone_still_marks_a_word_break(tmp_path):
+    # A justified line squeezes its word gaps below what geometry alone would
+    # call a space. The space glyph set on its own, taking no room, is then the
+    # only evidence there is a break -- inside a word it is noise, but between
+    # two runs it is the break, so it stays as a space that has no width.
+    from tests.pdf_fixtures import kerned
+
+    path = write_pdf(tmp_path / "alone.pdf", [[kerned(72, 700, 12, "  ", -3.336)]])
+
+    (run,) = reader.read(path).pages[0].runs
+
+    assert run.text == " "
+    assert run.end == pytest.approx(run.x, abs=0.01)
+
+
 def test_a_multi_letter_glyph_is_turned_to_face_paint_order():
     # One glyph, two letters: the file gives them in reading order while
     # everything around them is in paint order, so they have to be turned.

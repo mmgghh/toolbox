@@ -132,3 +132,156 @@ def test_a_background_behind_each_line_does_not_split_the_cell(tmp_path):
 
     assert len(found) == 1
     assert (len(found[0].rows), len(found[0].rows[0])) == (2, 2)
+
+
+def _ruled(page, *, horizontals, verticals):
+    """Draw a table's borders as hairline rectangles, the way Word does."""
+    for y, x0, x1 in horizontals:
+        page.rules.append(reader.RuleBox(x0, y - 0.25, x1, y + 0.25))
+    for x, y0, y1 in verticals:
+        page.rules.append(reader.RuleBox(x - 0.25, y0, x + 0.25, y1))
+
+
+def _merged_row_page(rtl=False):
+    """Three columns of header, then one row merged across all of them.
+
+    The merged row's text is laid out as separate runs that fall either side
+    of the column boundaries the header row draws, which is how a writer sets
+    a long line of text in a wide cell.
+    """
+    page = reader.Page(number=0, width=612.0, height=792.0)
+    _ruled(
+        page,
+        horizontals=[(700, 72, 432), (680, 72, 432), (640, 72, 432)],
+        verticals=[(72, 640, 700), (432, 640, 700), (192, 680, 700), (312, 680, 700)],
+    )
+    header = ("ﺪﻨﺳ", "ﻡﺎﻧ", "ﺦﯾﺭﺎﺗ") if rtl else ("A", "B", "C")
+    body = ("ﻪﺨﺴﻧ", "ﻡﺎﻧ", "ﺪﻨﺳ") if rtl else ("alpha", "beta", "gamma")
+    for x, word in zip((80, 200, 320), header):
+        page.runs.append(reader.TextRun(text=word, x=x, y=686, size=10, end=x + 30))
+    # Right to left, the first word sits at the right of the merged cell.
+    positions = (330, 200, 80) if rtl else (80, 200, 330)
+    for x, word in zip(positions, body):
+        page.runs.append(reader.TextRun(text=word, x=x, y=655, size=10, end=x + 40))
+    return page
+
+
+def test_text_in_a_merged_cell_is_one_cell_not_cut_at_the_columns_above():
+    found, outside = tables.find(_merged_row_page())
+
+    cells = [[" ".join(line.text for line in cell) for cell in row] for row in found[0].rows]
+    assert cells == [["A", "B", "C"], ["alpha beta gamma", "", ""]]
+    assert outside == []
+
+
+def test_a_right_to_left_merged_cell_sits_in_the_column_read_first():
+    found, _ = tables.find(_merged_row_page(rtl=True), "R")
+
+    assert found[0].rtl
+    merged = found[0].rows[1]
+    assert merged[0] and not merged[1] and not merged[2]
+
+
+def test_a_row_open_at_one_side_keeps_the_columns_of_the_table():
+    # Merging is read from a row's own rules, and only a row closed at both
+    # ends has any. One whose right edge was never drawn has told us nothing
+    # about its inner boundaries, so it is read against the table's columns.
+    page = reader.Page(number=0, width=612.0, height=792.0)
+    _ruled(
+        page,
+        horizontals=[(700, 72, 432), (680, 72, 432), (640, 72, 432)],
+        verticals=[
+            (72, 640, 700), (192, 680, 700), (312, 680, 700), (432, 680, 700),
+        ],
+    )
+    for x, word in zip((80, 200, 320), ("A", "B", "C")):
+        page.runs.append(reader.TextRun(text=word, x=x, y=686, size=10, end=x + 30))
+    for x, word in zip((80, 200, 320), ("one", "two", "three")):
+        page.runs.append(reader.TextRun(text=word, x=x, y=655, size=10, end=x + 30))
+
+    found, _ = tables.find(page)
+
+    cells = [[" ".join(line.text for line in cell) for cell in row] for row in found[0].rows]
+    assert cells == [["A", "B", "C"], ["one", "two", "three"]]
+
+
+def test_an_inner_rule_that_touches_nothing_still_separates_its_cells():
+    # Word draws each cell's own borders with a gap between cells, so a row's
+    # inner rules can fall into a cluster of their own. They are still that
+    # row's rules: reading them only from the cluster that defines the grid
+    # would call a perfectly ordinary row merged.
+    page = reader.Page(number=0, width=612.0, height=792.0)
+    _ruled(
+        page,
+        horizontals=[(700, 72, 432), (680, 72, 432), (640, 72, 432)],
+        verticals=[
+            (72, 640, 700), (432, 640, 700),
+            (192, 640, 680), (312, 640, 680),  # the bottom row, touching the borders
+            (192, 684, 696), (312, 684, 696),  # the top row, stopping short of them
+        ],
+    )
+    for x, word in zip((80, 200, 320), ("A", "B", "C")):
+        page.runs.append(reader.TextRun(text=word, x=x, y=686, size=10, end=x + 30))
+    for x, word in zip((80, 200, 320), ("one", "two", "three")):
+        page.runs.append(reader.TextRun(text=word, x=x, y=655, size=10, end=x + 30))
+
+    found, _ = tables.find(page)
+
+    cells = [[" ".join(line.text for line in cell) for cell in row] for row in found[0].rows]
+    assert cells == [["A", "B", "C"], ["one", "two", "three"]]
+
+
+def test_a_rows_own_rules_decide_its_cells_even_where_other_rows_blur_the_grid():
+    # Other rows' edges can lie a few points either side of this row's rule --
+    # nested boxes, checkboxes -- close enough that the table's shared columns
+    # fold them into one boundary somewhere else. The row's cells come from the
+    # row's own rules, not from where the shared columns ended up.
+    page = reader.Page(number=0, width=612.0, height=792.0)
+    _ruled(
+        page,
+        horizontals=[(700, 40, 540), (680, 40, 540), (640, 40, 540)],
+        verticals=[
+            (40, 640, 700), (540, 640, 700),
+            # The top row is three cells, split at 207.3 and 283.8 ...
+            (207.3, 680, 700), (283.8, 680, 700),
+            # ... while the bottom row's edges crowd the same stretch at 211.7,
+            # 273.4 and 279.3, which the shared columns fold into 273.4.
+            (211.7, 640, 680), (238.7, 640, 680), (273.4, 640, 680),
+            (279.3, 640, 680), (332.9, 640, 680),
+        ],
+    )
+    page.runs += [
+        reader.TextRun(text="left", x=60, y=686, size=10, end=90),
+        reader.TextRun(text="middle", x=225, y=686, size=10, end=260),
+        reader.TextRun(text="right", x=300, y=686, size=10, end=330),
+    ]
+
+    found, _ = tables.find(page)
+
+    top = [" ".join(line.text for line in cell) for cell in found[0].rows[0] if cell]
+    assert top == ["left", "middle", "right"]
+
+
+def test_the_tables_columns_count_every_rule_inside_it_not_only_the_joined_ones():
+    # The same unconnected rule that says a row's cells are separate says the
+    # table has that column, and a right-to-left table's cells must still read
+    # from the right.
+    page = reader.Page(number=0, width=612.0, height=792.0)
+    _ruled(
+        page,
+        horizontals=[(700, 72, 432), (680, 72, 432), (660, 72, 432)],
+        verticals=[
+            (72, 660, 700), (432, 660, 700), (192, 660, 700), (312, 660, 700),
+            # Between 312 and 432, in the top row only, and touching nothing.
+            (372, 684, 696),
+        ],
+    )
+    for y, words in ((686, ("ﺪﻨﺳ", "ﻡﺎﻧ", "ﺦﯾﺭﺎﺗ", "ﻪﺨﺴﻧ")), (666, ("ﺪﻨﺳ", "ﻡﺎﻧ", "ﺦﯾﺭﺎﺗ"))):
+        for x, word in zip((80, 200, 320, 380), words):
+            page.runs.append(reader.TextRun(text=word, x=x, y=y, size=10, end=x + 30))
+
+    found, _ = tables.find(page, "R")
+
+    assert all(len(row) == 4 for row in found[0].rows)
+    first_row = [" ".join(line.text for line in cell) for cell in found[0].rows[0]]
+    assert first_row == ["نسخه", "تاریخ", "نام", "سند"]

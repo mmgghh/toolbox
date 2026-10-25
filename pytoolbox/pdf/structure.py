@@ -48,9 +48,24 @@ INDENT_STEP = 12.0
 #: List indents closer together than this are the same nesting level.
 INDENT_TOLERANCE = 4.0
 
-_BULLET = re.compile(r"^[•◦▪·⁃–‐-]\s+")
-_ORDERED = re.compile(r"^(\d{1,3}|[a-zA-Z]|[ivxIVX]{1,5})[.)]\s+")
+#: The bullets Word draws in its Symbol and Wingdings fonts reach the text as
+#: private-use characters: round, square, arrow, tick and diamond.
+_SYMBOL_BULLETS = "\uf0a7\uf0b7\uf0d8\uf0fc\uf076"
+_BULLET = re.compile(rf"^[•◦▪·⁃–‐{_SYMBOL_BULLETS}-]\s+")
+#: "1." and "a)" -- and "1-", which a lot of Persian documents number with. The
+#: dash must hug the number and be followed by a space, so "10-12 people" and
+#: "5 - 3" stay what they are.
+_ORDERED = re.compile(r"^(?:(\d{1,3}|[a-zA-Z]|[ivxIVX]{1,5})[.)]|(\d{1,3})[-–])\s+")
 _URL = re.compile(r"https?://[^\s<>()\[\]]+")
+
+#: The row of dots between a contents entry and its page number: four or more
+#: dots, or an ellipsis character, and only dots -- "Well..." is a sentence.
+_LEADER = re.compile(r"\s*(?:\.{4,}|…{2,}|(?:\.\s){4,}\.?)\s*")
+
+#: Word's second-level bullet is an "o", and the only thing that makes it a
+#: bullet is the typeface it is set in.
+_MONOSPACE = ("courier", "consolas", "lucida console", "monaco", "menlo")
+_O_BULLET = re.compile(r"^o\s+")
 
 #: Schemes a link annotation may use. A PDF's annotations are attacker-supplied
 #: like the rest of the file, and "javascript:" or "data:text/html" targets stay
@@ -83,6 +98,8 @@ class ListItem:
     level: int
     ordered: bool
     runs: list[Run] = field(default_factory=list)
+    #: The number the page gave the item, when it was a plain one.
+    number: Optional[int] = None
 
 
 @dataclass
@@ -146,10 +163,12 @@ def build(
 def _rejoin(blocks: list[Block]) -> list[Block]:
     """Sew a table back together where a page break cut it in two.
 
-    A table running over a page is drawn twice, and its header is repeated at
-    the top of the second half so the reader can still tell what the columns
-    are. That repeated header is the signal: two tables in a row, the second
-    opening with the first's header, were one table before it was printed.
+    A table running over a page is drawn twice. Most writers repeat its header
+    at the top of the second half so the reader can still tell what the
+    columns are, and that repeat is dropped. Others just carry on, and then
+    nothing separates the two halves from a table that is all one piece: two
+    tables in a row with the same columns, and nothing between them to
+    explain why, were one table before it was printed.
     """
     out: list[Block] = []
     for block in blocks:
@@ -161,9 +180,9 @@ def _rejoin(blocks: list[Block]) -> list[Block]:
             and block.rows
             and previous.rtl == block.rtl
             and len(block.rows[0]) == len(previous.rows[0])
-            and _row_text(block.rows[0]) == _row_text(previous.rows[0])
         ):
-            previous.rows.extend(block.rows[1:])
+            repeated = _row_text(block.rows[0]) == _row_text(previous.rows[0])
+            previous.rows.extend(block.rows[1:] if repeated else block.rows)
             continue
         out.append(block)
     return out
@@ -188,13 +207,43 @@ def _table(grid: Grid, page: Optional[Page]) -> Table:
     so a table of one-word bold cells would otherwise come out as a table of
     headings -- and each wrapped line of one as a heading of its own.
     """
-    return Table(
+    table = Table(
         rtl=grid.rtl,
         rows=[
             [Cell(blocks=_page_blocks(cell, page, [], [], {}, {}, headings=False)) for cell in row]
             for row in grid.rows
         ],
     )
+    return _tidy(table)
+
+
+def _blank(cell: Cell) -> bool:
+    return not any(
+        run.text.strip() for block in cell.blocks for run in getattr(block, "runs", [])
+    ) and not any(isinstance(block, Image) for block in cell.blocks)
+
+
+def _tidy(table: Table) -> Table:
+    """Drop what a drawn grid has that a table does not.
+
+    A column with nothing in it at any row is a spacer the writer drew between
+    two cells, and a blank row above the header would be taken for the header.
+    Both are left out; a column with a heading but an empty body is kept, since
+    it is a column the author named.
+    """
+    rows = table.rows
+    while len(rows) > 1 and all(_blank(cell) for cell in rows[0]):
+        rows = rows[1:]
+    width = max((len(row) for row in rows), default=0)
+    keep = [
+        index
+        for index in range(width)
+        if any(index < len(row) and not _blank(row[index]) for row in rows)
+    ]
+    if keep and len(keep) < width:
+        rows = [[row[index] for index in keep if index < len(row)] for row in rows]
+    table.rows = rows
+    return table
 
 
 def _at(lines: list[Line], index: int) -> Optional[Line]:
@@ -245,6 +294,18 @@ def _page_blocks(
     for index, line in enumerate(lines):
         catch_up(line.y)
 
+        # Nothing to say: spaces set at a heading's size are not a heading.
+        if not line.text.strip():
+            continue
+
+        # A contents entry is a line of its own, however full the dots make it.
+        if _LEADER.search(line.text):
+            flush()
+            open_item = None
+            open_heading = None
+            blocks.append(_entry(line, page))
+            continue
+
         alone = line.bold and not any(
             other.bold and other.page == line.page
             for other in (lines[index - 1] if index else None, _at(lines, index + 1))
@@ -294,6 +355,14 @@ def _page_blocks(
     flush()
     catch_up(float("-inf"))
     return blocks
+
+
+def _entry(line: Line, page: Optional[Page]) -> Paragraph:
+    """A table-of-contents line with its row of dots turned into a space."""
+    runs = _runs(line, page)
+    for run in runs:
+        run.text = _LEADER.sub(" ", run.text)
+    return Paragraph(runs=_merge(runs))
 
 
 def _body_size(lines: list[Line]) -> float:
@@ -358,17 +427,32 @@ def _heading_of(
 def _list_of(line: Line, indents: list[float]) -> Optional[ListItem]:
     """``line`` as a list item, or None when it does not start with a marker."""
     text = line.text.strip()
-    bullet = _BULLET.match(text)
+    bullet = _BULLET.match(text) or _monospace_bullet(line, text)
     ordered = None if bullet else _ORDERED.match(text)
     marker = bullet or ordered
     if marker is None:
         return None
 
+    digits = next((group for group in (ordered.groups() if ordered else ()) if group and group.isdigit()), None)
     return ListItem(
         level=_indent_level(_inset(line), indents),
         ordered=bullet is None,
+        number=int(digits) if digits else None,
         runs=_link_runs([Run(text=text[marker.end() :], bold=line.bold, italic=line.italic)]),
     )
+
+
+def _monospace_bullet(line: Line, text: str):
+    """The "o" Word sets in Courier New for a second-level bullet, if that is it."""
+    marker = _O_BULLET.match(text)
+    if marker is None:
+        return None
+    # The marker leads the line, which is its right-hand end on a Persian page.
+    visible = [run for run in line.runs if run.text.strip()]
+    if not visible:
+        return None
+    first = (max(visible, key=lambda run: run.end or run.x) if line.rtl else min(visible, key=lambda run: run.x))
+    return marker if any(name in first.font.lower() for name in _MONOSPACE) else None
 
 
 def _list_indents(lines: list[Line]) -> list[float]:
@@ -377,7 +461,11 @@ def _list_indents(lines: list[Line]) -> list[float]:
     Nesting is read from the indents a document actually uses rather than from
     a fixed step, since one writer indents by 18 points and the next by 36.
     """
-    marked = sorted(_inset(line) for line in lines if _marker(line.text.strip()))
+    marked = sorted(
+        _inset(line)
+        for line in lines
+        if _marker(line.text.strip()) or _monospace_bullet(line, line.text.strip())
+    )
     clusters: list[float] = []
     for position in marked:
         if not clusters or position - clusters[-1] > INDENT_TOLERANCE:

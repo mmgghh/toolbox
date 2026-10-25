@@ -29,7 +29,9 @@ paragraph, which is the outcome that loses the least.
 | A short bold line with no closing punctuation | `###` |
 | Consecutive body lines | One reflowed paragraph |
 | A word split by a hyphen at a line break | Rejoined, hyphen removed |
-| `•`, `-`, `1.`, `a)` at the start of a line | `- ` / `1. `, nested by indent |
+| `•`, `-`, `1.`, `1-`, `a)` at the start of a line | `- ` / `1. `, nested by indent |
+| Word's Symbol-font bullets, and its Courier `o` sub-bullets | `- `, nested by indent |
+| A contents entry with a row of dots to its page number | Its own line, the dots a space |
 | Bold and italic fonts | `**`, `*` |
 | A link annotation, or a bare `https://` URL | `[text](url)` |
 | An embedded image | `![](<name>.assets/imageN.png)` |
@@ -73,14 +75,30 @@ look like on the page.
 Working from the grid rather than from the gaps settles the awkward cases for
 free, because each is a question about the grid and the grid is known: an empty
 cell, a cell whose text wrapped over three lines, a cell merged across two
-columns. A table split by a page break is sewn back together when the second
-half opens with the first's header, which is how a printed table says it is
-continued.
+columns.
+
+A merged cell is a row where a rule between two columns was simply not drawn, so
+the cells of each row are read from **that row's own rules**, and the columns
+are every rule inside the table's bounds, whether or not it touches the rest of
+the grid. A merged cell is read as one whole, against its own width, and its text
+goes in the first column its reader reaches -- the leftmost, or on a
+right-to-left table the rightmost -- with the columns it covers left empty. A
+column nothing is written in at any row is a spacer the writer drew between two
+cells and is dropped, as is a blank row above the header.
+
+A table split by a page break is sewn back together. Most writers repeat the
+header at the top of the second half, and that repeat is dropped; others just
+carry on, and then two tables in a row with the same columns and nothing between
+them are taken to be one.
 
 Cells are read with the paragraph and list rules but not the heading ones: a
 header cell is bold and short, which is exactly the shape of a heading. Markdown
-has no row spans and no line breaks inside a cell, so a wrapped cell is put back
-on one line and the top row becomes the header whether or not it was one.
+has no row spans and no line breaks inside a cell, so a wrapped paragraph is put
+back on one line and the top row becomes the header whether or not it was one.
+A list in a cell is the exception: each item keeps its marker and starts a line
+of its own (`1. one<br>2. two`), since running the items together would lose
+what the page showed. A numbered list that opens at 14 -- carried on from the
+page before, or one item to each row -- keeps saying 14.
 
 A table nobody drew a border around is read as running text. Inferring one from
 spacing is the least reliable guess available, and a wrong guess destroys
@@ -155,6 +173,22 @@ the two — no such font exists — but two entries filled in wrongly. Taken at
 face value they turn `۱۴۰۵` into `1۴0۵`. A font that really holds both sets
 keeps both.
 
+## Lines Word squeezes
+
+Word fits a justified line by changing the **character spacing** rather than by
+moving words, and that spacing is added after every glyph, not once per string.
+The reader counts it per glyph, and ends a run where its last glyph's ink ends,
+because the spacing after the last glyph is air. Spaces are then judged by the
+room they take on the page, not by being in the string:
+
+- A space squeezed to nothing is not a gap. Reading it as one splits a word such
+  as `تهیه` in half.
+- Two squeezed spaces that add up to about one are one space.
+- A squeezed space set on its own between two runs is the only evidence of a
+  break there, so it stays, as a space without width.
+- A space covered by the letters on both sides took no room of its own, and is
+  not a gap either.
+
 ## Options
 
 | Option | Meaning |
@@ -180,9 +214,13 @@ stderr and the rest still convert, with a non-zero exit code at the end.
   terms separated by commas inside a Persian sentence, can be laid out
   identically from more than one source ordering. The page's own reading is
   what comes back.
-- **A list marker drawn as a shape is lost.** Some writers paint bullets as
-  filled circles rather than text, and a marker that is not in the text layer
-  cannot be read; those items come through as paragraphs.
+- **A list marker drawn as a shape is lost.** Word's bullets are read -- they
+  are glyphs in its Symbol and Wingdings fonts, and the second-level `o` is a
+  letter set in Courier New -- but a writer that paints bullets as filled
+  circles puts nothing in the text layer, and those items come through as
+  paragraphs.
+- **A merged cell has one home.** Its text goes in the first column it covers
+  and the others are empty, since Markdown has no spans.
 - **Non-joiners need a font that distinguishes the shapes**, one way or
   another: named shapes, a space drawn with no width, or one letter drawn with
   more than one glyph. A font with a single glyph per letter records nothing,

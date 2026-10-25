@@ -73,3 +73,39 @@ def test_a_document_with_nothing_to_read_is_untouched():
 def test_a_marker_that_lands_outside_a_word_is_dropped():
     assert bidi_text.settle_marks(f"راه{bidi_text.MARK} است") == "راه است"
     assert bidi_text.settle_marks(f"به{bidi_text.MARK}م") == "به‌م"
+
+
+def test_each_letter_is_labelled_with_the_shape_it_was_drawn_in():
+    # "c" for a shape that joins nothing after it, "j" for one that joins, and
+    # "?" where the document gives no reason to say. The layout reads these to
+    # tell a non-joiner from a space that merely overlaps a letter.
+    joined = [painted("بهار", 700 - n * 12) for n in range(4)]
+    ends = [painted("راه", 640 - n * 12, heh="B") for n in range(3)]
+    inside = painted("بهم", 580, heh="B")
+
+    shaping.restore_joiners(document(*joined, *ends, inside))
+
+    # Painted reversed, so "بهار" reads "راهب": heh is the third glyph painted.
+    assert joined[0].shapes[2] == "j"
+    assert inside.shapes[inside.text.index("ه")] == "c"
+    assert len(inside.shapes) == len(inside.text)
+    # Letters the font draws one way say nothing either way.
+    assert joined[0].shapes[0] == "?"
+
+
+def test_a_shape_that_is_often_closed_is_not_called_joined():
+    # A closed shape used mostly before real non-joiners looks, by the count of
+    # where it could have joined, like a joined one. Calling it joined would
+    # throw away those non-joiners, so only a shape that is almost never closed
+    # earns the label.
+    joined = [painted("بهار", 700 - n * 12) for n in range(10)]
+    # Heh in its "B" shape before a non-joiner four times, at the end of a word
+    # twice: used where it could join in two of every three uses -- too often
+    # for a closed shape, and far too often closed for a joined one.
+    ends = [painted("راه", 560 - n * 12, heh="B") for n in range(2)]
+    inside = [painted("بهم", 500 - n * 12, heh="B") for n in range(4)]
+
+    shaping.restore_joiners(document(*joined, *ends, *inside))
+
+    assert joined[0].shapes[2] == "j"
+    assert all(run.shapes[run.text.index("ه")] == "?" for run in inside)

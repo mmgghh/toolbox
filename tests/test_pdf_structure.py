@@ -149,6 +149,48 @@ def test_numbered_lines_become_an_ordered_list():
     assert all(isinstance(block, ListItem) and block.ordered for block in blocks)
 
 
+def test_a_number_followed_by_a_dash_is_a_list_marker():
+    # "1- text" is how a lot of Persian documents number their items.
+    lines = [line("1- first", 700), line("2- second", 688)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert all(isinstance(block, ListItem) and block.ordered for block in blocks)
+    assert [block.runs[0].text for block in blocks] == ["first", "second"]
+
+
+def test_a_list_item_remembers_the_number_it_was_given():
+    # A list that carries on over a page, or sits one item to a table row,
+    # starts at 14: renumbering it from 1 would change what the page said.
+    blocks = build(document(one_page()), [[line("14- fourteenth", 700), line("b) lettered", 688)]])
+
+    assert [block.number for block in blocks] == [14, None]
+
+
+def test_a_range_is_not_a_list_marker():
+    lines = [line("10-12 people came to the meeting that was held in the afternoon.", 700)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert isinstance(blocks[0], Paragraph)
+
+
+def test_a_symbol_font_bullet_is_a_bullet():
+    # Word draws its bullets in the Symbol and Wingdings fonts, whose glyphs
+    # reach the text as private-use characters -- one per kind of bullet.
+    lines = [
+        line("\uf0b7 round", 700),
+        line("\uf0a7 square", 688),
+        line("\uf0d8 arrow", 676),
+        line("\uf0fc tick", 664),
+    ]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [isinstance(block, ListItem) and not block.ordered for block in blocks] == [True] * 4
+    assert [block.runs[0].text for block in blocks] == ["round", "square", "arrow", "tick"]
+
+
 def test_an_indented_bullet_nests():
     lines = [line("• top", 700), line("• nested", 688, x=108)]
 
@@ -299,3 +341,152 @@ def test_a_right_to_left_paragraph_breaks_on_its_own_ragged_edge():
     blocks = build(document(one_page()), [lines])
 
     assert len(blocks) == 2
+
+
+def test_a_blank_line_is_never_a_heading():
+    # A run of spaces set at a heading's size has no text to be a heading of.
+    lines = [line("Revenue grew.", 700), line("   ", 640, size=24), line("Costs fell.", 580)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [type(block) for block in blocks] == [Paragraph, Paragraph]
+
+
+def test_each_line_of_a_table_of_contents_is_its_own_paragraph_without_the_dots():
+    lines = [
+        line("Introduction ........................ 3", 700),
+        line("Methods ............................. 5", 688),
+        line("Results ............................. 9", 676),
+    ]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert [block.runs[0].text for block in blocks] == [
+        "Introduction 3",
+        "Methods 5",
+        "Results 9",
+    ]
+
+
+def test_a_sentence_with_an_ellipsis_is_not_a_contents_line():
+    lines = [line("Well... that is one way to put it, and it is a fair one at that.", 700)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert blocks[0].runs[0].text.startswith("Well...")
+
+
+def test_an_o_set_in_a_monospace_font_is_a_sub_bullet():
+    # Word's second-level bullet is a letter o in Courier New, which says
+    # nothing as text and everything as a typeface.
+    marker = TextRun(text="o", x=90.0, y=700, size=10.0, font="CourierNewPSMT", end=96.0)
+    body = TextRun(text="nested point", x=110.0, y=700, size=10.0, font="Arial", end=170.0)
+    plain = [line("• top level", 712)]
+
+    blocks = build(document(one_page()), [plain + [Line(runs=[marker, body], page=0)]])
+
+    assert [(block.level, block.runs[0].text) for block in blocks] == [
+        (1, "top level"),
+        (2, "nested point"),
+    ]
+
+
+def test_the_sub_bullet_of_a_right_to_left_line_is_read_from_its_right_edge():
+    # The marker leads the line, which on a Persian page is its right-hand end.
+    marker = TextRun(text="o", x=470.0, y=700, size=10.0, font="CourierNewPSMT", end=476.0)
+    space = TextRun(text=" ", x=466.0, y=700, size=10.0, font="Arial", end=469.0)
+    body = TextRun(text="ﻡﺎﻧ", x=420.0, y=700, size=10.0, font="Nazanin", end=465.0)
+    row = Line(runs=[body, space, marker], page=0, base="R", flow="R")
+
+    blocks = build(document(one_page()), [[line("ﻡﺎﻧ", 712, x=420.0, end=465.0), row]])
+
+    assert isinstance(blocks[1], ListItem)
+    assert blocks[1].runs[0].text == "نام"
+
+
+def test_a_lone_o_in_running_text_is_just_a_word():
+    lines = [line("o what a lovely day it is to be out walking in the park", 700)]
+
+    blocks = build(document(one_page()), [lines])
+
+    assert isinstance(blocks[0], Paragraph)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Tables
+# ─────────────────────────────────────────────────────────────────────
+
+
+def grid(*rows, top=700.0, rtl=False, page=0):
+    """A detected grid whose cells hold one line of the given text each."""
+    from pytoolbox.pdf.tables import Table as Grid
+
+    return Grid(
+        rows=[
+            [[line(text, top - 12 * index, page=page)] if text else [] for text in row]
+            for index, row in enumerate(rows)
+        ],
+        page=page,
+        top=top,
+        bottom=top - 12 * len(rows),
+        rtl=rtl,
+    )
+
+
+def table_text(table):
+    return [
+        [" ".join(run.text for block in cell.blocks for run in getattr(block, "runs", []))
+         for cell in row]
+        for row in table.rows
+    ]
+
+
+def tables_of(*pages_of_grids):
+    """The tables ``build`` makes from one list of grids per page."""
+    pages = [one_page() for _ in pages_of_grids]
+    for number, page in enumerate(pages):
+        page.number = number
+    blocks = build(document(*pages), [[] for _ in pages], grids=[list(g) for g in pages_of_grids])
+    return [block for block in blocks if hasattr(block, "rows")]
+
+
+def test_a_column_empty_in_every_row_is_a_spacer_and_is_dropped():
+    (table,) = tables_of([grid(("a", "", "b"), ("c", "", "d"))])
+
+    assert table_text(table) == [["a", "b"], ["c", "d"]]
+
+
+def test_a_column_with_a_header_is_kept_even_when_its_body_is_empty():
+    (table,) = tables_of([grid(("Name", "Notes"), ("a", ""), ("b", ""))])
+
+    assert table_text(table) == [["Name", "Notes"], ["a", ""], ["b", ""]]
+
+
+def test_blank_rows_at_the_top_are_dropped_so_the_header_is_a_header():
+    (table,) = tables_of([grid(("", ""), ("Name", "Role"), ("a", "b"))])
+
+    assert table_text(table) == [["Name", "Role"], ["a", "b"]]
+
+
+def test_a_table_that_carries_on_across_a_page_is_one_table():
+    first = grid(("Name", "Role"), ("a", "b"))
+    carried = grid(("c", "d"), ("e", "f"), page=1)
+
+    (table,) = tables_of([first], [carried])
+
+    assert table_text(table) == [["Name", "Role"], ["a", "b"], ["c", "d"], ["e", "f"]]
+
+
+def test_a_repeated_header_is_not_repeated_in_the_sewn_table():
+    first = grid(("Name", "Role"), ("a", "b"))
+    carried = grid(("Name", "Role"), ("c", "d"), page=1)
+
+    (table,) = tables_of([first], [carried])
+
+    assert table_text(table) == [["Name", "Role"], ["a", "b"], ["c", "d"]]
+
+
+def test_tables_of_different_widths_stay_apart():
+    (one, two) = tables_of([grid(("a", "b"))], [grid(("c", "d", "e"), page=1)])
+
+    assert (len(one.rows[0]), len(two.rows[0])) == (2, 3)

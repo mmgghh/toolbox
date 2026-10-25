@@ -91,14 +91,44 @@ def _row(row: list[Cell], width: int) -> str:
 
 
 def _cell(cell: Cell) -> str:
-    """One cell's blocks on a single line, with the table syntax neutralised."""
-    parts: list[str] = []
+    """One cell's blocks on a single line, with the table syntax neutralised.
+
+    A pipe table cannot hold a list, but it can hold a list's text: each item
+    keeps its marker and starts a line of its own, which is what the page
+    showed. Other blocks run together -- the lines of a wrapped paragraph in a
+    narrow cell end ragged, and breaking at each would shred the sentence.
+    """
+    pieces: list[tuple[str, bool]] = []
+    counters: dict[int, int] = {}
     for block in cell.blocks:
+        if isinstance(block, ListItem):
+            level = max(1, block.level)
+            for deeper in [key for key in counters if key > level]:
+                del counters[deeper]
+            if block.ordered:
+                counters[level] = _next_number(counters, level, block)
+                marker = f"{counters[level]}."
+            else:
+                marker = "-"
+            text = f"{marker} {_inline(block.runs)}".rstrip()
+            pieces.append((text, True))
+            continue
+        counters.clear()
         if isinstance(block, Heading):
-            parts.append(_inline(block.runs, bold=False))
-        elif isinstance(block, (Paragraph, ListItem)):
-            parts.append(_inline(block.runs))
-    return " ".join(part for part in parts if part).replace("|", r"\|")
+            pieces.append((_inline(block.runs, bold=False), False))
+        elif isinstance(block, Paragraph):
+            pieces.append((_inline(block.runs), False))
+
+    out = ""
+    previous_item = False
+    for text, is_item in pieces:
+        if not text:
+            continue
+        if out:
+            out += "<br>" if (is_item or previous_item) else " "
+        out += text
+        previous_item = is_item
+    return out.replace("|", r"\|")
 
 
 def _assemble(pieces: list[tuple[str, bool]]) -> str:
@@ -123,7 +153,7 @@ def _list_item(block: ListItem, counters: dict[int, int], widths: dict[int, int]
         del widths[deeper]
 
     if block.ordered:
-        counters[level] = counters.get(level, 0) + 1
+        counters[level] = _next_number(counters, level, block)
         marker = f"{counters[level]}."
     else:
         marker = "-"
@@ -131,6 +161,18 @@ def _list_item(block: ListItem, counters: dict[int, int], widths: dict[int, int]
 
     indent = " " * sum(widths.get(parent, BULLET_WIDTH) for parent in range(1, level))
     return f"{indent}{marker} {_inline(block.runs)}"
+
+
+def _next_number(counters: dict[int, int], level: int, block: ListItem) -> int:
+    """The number an ordered item is written with.
+
+    A list that opens at 14 -- because it carries on from the page before, or
+    because each item sits alone in a table row -- keeps saying 14. Once it is
+    running, the count takes over, as the reader of Markdown will count anyway.
+    """
+    if level not in counters and block.number:
+        return block.number
+    return counters.get(level, 0) + 1
 
 
 def _inline(runs: list[Run], *, bold: bool = True) -> str:

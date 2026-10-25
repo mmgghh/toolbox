@@ -158,3 +158,49 @@ def test_a_wrapped_cell_comes_back_as_one_line():
     )
 
     assert render([table]).splitlines()[0] == "| one two |"
+
+
+def test_list_items_in_a_cell_keep_their_markers_and_their_own_lines():
+    # A pipe table cannot hold a list, but it can hold the list's text with its
+    # numbers, one item to a line, which is what the page showed.
+    from pytoolbox.pdf.structure import Cell, Table
+
+    table = Table(
+        rows=[
+            [
+                Cell(
+                    blocks=[
+                        Paragraph(runs=[Run("Points raised:")]),
+                        ListItem(level=1, ordered=True, runs=[Run("first")]),
+                        ListItem(level=1, ordered=True, runs=[Run("second")]),
+                        ListItem(level=1, ordered=False, runs=[Run("aside")]),
+                    ]
+                )
+            ],
+            [Cell()],
+        ]
+    )
+
+    assert render([table]).splitlines()[0] == "| Points raised:<br>1. first<br>2. second<br>- aside |"
+
+
+def test_a_list_that_starts_at_seven_is_numbered_from_seven():
+    blocks = [
+        ListItem(level=1, ordered=True, number=7, runs=[Run("seventh")]),
+        ListItem(level=1, ordered=True, number=8, runs=[Run("eighth")]),
+    ]
+
+    assert render(blocks) == "7. seventh\n8. eighth\n"
+
+
+def test_a_list_item_in_a_cell_keeps_its_own_number():
+    from pytoolbox.pdf.structure import Cell, Table
+
+    table = Table(
+        rows=[
+            [Cell(blocks=[ListItem(level=1, ordered=True, number=14, runs=[Run("late item")])])],
+            [Cell()],
+        ]
+    )
+
+    assert render([table]).splitlines()[0] == "| 14. late item |"
