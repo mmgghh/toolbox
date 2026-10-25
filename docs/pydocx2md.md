@@ -72,6 +72,21 @@ a heading even when the style also carries numbering. Persian and Arabic text pa
 through untouched — Markdown is plain text, so none of the reshaping
 `pymd2pdf` needs applies here.
 
+### Headings a document never styled
+
+Some documents are written without a single heading style: the title is simply
+set bigger. A short line that is **bold throughout**, set at one size, and at
+least 15% larger than the body text becomes a heading, with one level per
+distinct size, largest first. The body size is the one most of the document's
+characters use, and sizes are read the way Word reads them: from the run, else
+the paragraph's style, else the document's defaults.
+
+Only the lines that are plainly titles qualify, and each test fails towards
+plain text. A line over 120 characters, one that is large but not bold, one
+that is bold at the body size, and anything inside a table (where a bold,
+larger line is a column heading the table already marks) stays a paragraph.
+The heading drops the bold markers its text had, since the `#` already says it.
+
 A list is recognised whether the paragraph carries the numbering itself — what
 Word writes for the toolbar buttons — or takes it from its style, as the
 built-in *List Bullet* and *List Number* do. Styles are followed up their
@@ -83,6 +98,25 @@ which is why converters tend to drop it and leave a column of blank cells.
 Wingdings and Symbol are mapped to their Unicode equivalents, so a ticked box
 converts as `☑` and a Symbol beta as `β`; a glyph from any other font falls
 back to the plain character at that code point.
+
+## Pages and links
+
+Markdown has no pages, so what only a page needed is left out:
+
+- A page or column break inside a paragraph is a space, not a line break, so it
+  cannot split a heading in two. A line break still is one.
+- The page numbers of a table of contents -- the results of `PAGEREF`, `PAGE`,
+  `NUMPAGES` and `SECTIONPAGES` fields -- are dropped, so an entry reads
+  `[Scope](#scope)` and not `[Scope 4](#_Toc229559997)`. The result of any other
+  field is kept.
+- A link to a Word bookmark such as `_Toc229559997` points at the heading that
+  carries the bookmark, by the anchor `pymd2html` gives that heading
+  (`#scope`, `#scope-2` for a repeat). A link whose bookmark is not on a
+  heading has nowhere to go and keeps its text only.
+- A picture anchored in a heading is a flourish laid under it, not part of what
+  it says, and is dropped. A picture set in the line of text stays.
+- Bold or italic text with a link in the middle is one stretch and gets one pair
+  of markers: `**see ([my.tax.gov.ir](http://my.tax.gov.ir))**`.
 
 ## Equations
 
@@ -120,6 +154,12 @@ stderr and the rest still convert, with a non-zero exit code at the end.
 - **Merged cells** cannot be expressed in Markdown. A horizontal merge becomes
   empty continuation cells and a vertical merge repeats blank.
 - **Multi-paragraph cells** join with `<br>`, since a pipe table row is one line.
+  A list in a cell keeps its markers, one item to a line: `1. one<br>2. two`.
+- **Floating pictures outside headings are kept.** A picture anchored behind the
+  text of an ordinary paragraph is written where it is anchored, whether or not
+  it decorates anything.
+- **Size is the only sign of an unstyled heading.** A title set bigger but not
+  bold, or bold at the same size as the body, is not guessed at.
 - Colours, fonts, headers and footers, text boxes and charts are dropped.
 - **Unicode in equations** is passed through as-is (`λ`, `×`). KaTeX, MathJax
   and Typst render it; a plain LaTeX toolchain needs `unicode-math`.

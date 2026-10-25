@@ -50,6 +50,9 @@ class ImageRef:
 
     part_name: str
     alt: str = ""
+    #: Anchored to the page rather than set in the line of text. A picture
+    #: placed this way inside a heading is decoration laid under it.
+    floating: bool = False
 
 
 @dataclass
@@ -76,10 +79,50 @@ _KEEP_WRAPPERS = {"w:ins", "w:moveTo", "w:smartTag", "w:sdtContent", "w:bookmark
 _DROP_WRAPPERS = {"w:del", "w:moveFrom"}
 
 
+#: Fields whose result is a number that means something only on a printed
+#: page: where a heading fell, how many pages there are. In Markdown there are
+#: no pages, and the number would be glued to the end of its table of contents
+#: entry.
+_PAGE_FIELDS = ("PAGEREF", "PAGE", "NUMPAGES", "SECTIONPAGES")
+
+
+class _Fields:
+    """Where in a complex field the runs being read are.
+
+    A field is spread over runs: one holds ``begin``, one the instruction, one
+    ``separate`` and then the result runs up to ``end``. Whether a result is
+    text is decided by the instruction, which came earlier in another run, so
+    the state has to outlive a single run.
+    """
+
+    def __init__(self) -> None:
+        # One entry per open field: [instruction so far, in the result, drop it]
+        self._open: list[list] = []
+
+    @property
+    def dropping(self) -> bool:
+        """True while the runs being read are a field's instruction or a result nobody wants."""
+        return any(not in_result or drop for _, in_result, drop in self._open)
+
+    def mark(self, kind: Optional[str]) -> None:
+        if kind == "begin":
+            self._open.append(["", False, False])
+        elif kind == "separate" and self._open:
+            field = self._open[-1]
+            field[1] = True
+            field[2] = field[0].strip().upper().startswith(_PAGE_FIELDS)
+        elif kind == "end" and self._open:
+            self._open.pop()
+
+    def instruction(self, text: str) -> None:
+        if self._open:
+            self._open[-1][0] += text
+
+
 def parse_inline(paragraph: ET.Element, pkg: Package) -> list[Item]:
     """Flatten one ``w:p`` into an ordered list of runs and marks."""
     items: list[Item] = []
-    _walk(paragraph, pkg, items, link=None)
+    _walk(paragraph, pkg, items, link=None, fields=_Fields())
     return _joined(items)
 
 
@@ -114,13 +157,20 @@ def _same_style(one: Run, other: Run) -> bool:
     return all(getattr(one, key) == getattr(other, key) for key in keys)
 
 
-def _walk(parent: ET.Element, pkg: Package, items: list[Item], link: Optional[str]) -> None:
+def _walk(
+    parent: ET.Element, pkg: Package, items: list[Item], link: Optional[str], fields: _Fields
+) -> None:
     for child in parent:
         tag = child.tag
         if tag == qn("w:r"):
-            items.extend(_run_items(child, pkg, link))
+            items.extend(_run_items(child, pkg, link, fields))
         elif tag == qn("w:hyperlink"):
-            _walk(child, pkg, items, link=_hyperlink_target(child, pkg))
+            _walk(child, pkg, items, _hyperlink_target(child, pkg), fields)
+        elif tag == qn("w:fldSimple"):
+            # The one-element form of a field: the instruction is an attribute
+            # and the result is the runs inside.
+            if not (attr(child, "w:instr") or "").strip().upper().startswith(_PAGE_FIELDS):
+                _walk(child, pkg, items, link, fields)
         elif tag == qn("m:oMathPara"):
             # A paragraph of display equations, one m:oMath each.
             for formula in child.findall(qn("m:oMath")):
@@ -134,7 +184,7 @@ def _walk(parent: ET.Element, pkg: Package, items: list[Item], link: Optional[st
         elif tag in {qn(name) for name in _DROP_WRAPPERS}:
             continue
         elif tag in {qn(name) for name in _KEEP_WRAPPERS}:
-            _walk(child, pkg, items, link)
+            _walk(child, pkg, items, link, fields)
 
 
 def _add_math(items: list[Item], formula: ET.Element, display: bool) -> None:
@@ -153,8 +203,11 @@ def _hyperlink_target(element: ET.Element, pkg: Package) -> Optional[str]:
     return f"#{anchor}" if anchor else None
 
 
-def _run_items(element: ET.Element, pkg: Package, link: Optional[str]) -> list[Item]:
+def _run_items(
+    element: ET.Element, pkg: Package, link: Optional[str], fields: Optional[_Fields] = None
+) -> list[Item]:
     """Turn one ``w:r`` into its text, marks and images, in document order."""
+    fields = fields or _Fields()
     props = _run_properties(element)
     items: list[Item] = []
     text_parts: list[str] = []
@@ -166,12 +219,25 @@ def _run_items(element: ET.Element, pkg: Package, link: Optional[str]) -> list[I
 
     for child in element:
         tag = child.tag
+        if tag == qn("w:fldChar"):
+            flush()
+            fields.mark(attr(child, "w:fldCharType"))
+            continue
+        if tag == qn("w:instrText"):
+            fields.instruction(child.text or "")
+            continue
+        if fields.dropping:
+            continue
         if tag == qn("w:t"):
             text_parts.append(child.text or "")
         elif tag == qn("w:tab"):
             text_parts.append(" ")
-        elif tag in (qn("w:br"), qn("w:cr")):
+        elif tag == qn("w:cr"):
             text_parts.append("\n")
+        elif tag == qn("w:br"):
+            # A page or column break is where the page ends, not a line of the
+            # text: as a newline it would split a heading in two.
+            text_parts.append(" " if attr(child, "w:type") in ("page", "column") else "\n")
         elif tag == qn("w:noBreakHyphen"):
             text_parts.append("-")
         elif tag == qn("w:sym"):
@@ -239,7 +305,8 @@ def _image_ref(drawing: ET.Element, pkg: Package) -> Optional[ImageRef]:
         target = pkg.rel_target(rel_id)
         if not target:
             continue
-        return ImageRef(part_name=_part_name(target), alt=alt)
+        floating = drawing.find(qn("wp:anchor")) is not None
+        return ImageRef(part_name=_part_name(target), alt=alt, floating=floating)
     return None
 
 

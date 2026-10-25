@@ -8,14 +8,15 @@ a ``.docx``, and what would let a second writer (HTML, say) reuse all of this.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass, field, replace
 from typing import Optional, Union
 from xml.etree import ElementTree as ET
 
-from pytoolbox.docx.inline import Item, parse_inline
+from pytoolbox.docx.inline import ImageRef, Item, Run, parse_inline
 from pytoolbox.docx.numbering import Numbering
 from pytoolbox.docx.package import Package, attr, qn
-from pytoolbox.docx.styles import Styles
+from pytoolbox.docx.styles import Styles, size_of
 
 #: ``Heading1`` … ``Heading9``. Style *ids* are language-independent in OOXML,
 #: while the display names in styles.xml are localised -- matching on the name
@@ -28,16 +29,30 @@ MAX_HEADING = 6
 #: "body text", which is how a style says it is explicitly not a heading.
 _BODY_TEXT_OUTLINE = 9
 
+#: A document written without heading styles still shows its structure one way:
+#: a title is set bigger than the text. A line counts as one when it is bold
+#: throughout, short, and at least this much larger than the body.
+TITLE_RATIO = 1.15
+TITLE_MAX_CHARS = 120
+
 
 @dataclass
 class Paragraph:
     items: list[Item] = field(default_factory=list)
+    #: Half-points, set only on a short line that is bold throughout and set at
+    #: one size -- the shape of a title. Whether it is one depends on the body
+    #: text around it, which only the whole document knows.
+    title_size: Optional[int] = None
+    bookmarks: list[str] = field(default_factory=list)
 
 
 @dataclass
 class Heading:
     level: int
     items: list[Item] = field(default_factory=list)
+    #: Bookmarks that start in the heading, which is what an internal link
+    #: such as a table of contents entry names to point at it.
+    bookmarks: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -78,7 +93,8 @@ def parse_document(pkg: Package, numbering: Numbering, styles: Styles) -> list[B
     body = pkg.document.find(qn("w:body"))
     if body is None:
         return []
-    return _blocks(body, pkg, numbering, styles)
+    blocks = _blocks(body, pkg, numbering, styles)
+    return _promote_titles(blocks, _body_size(body, styles))
 
 
 def _blocks(parent: ET.Element, pkg: Package, numbering: Numbering, styles: Styles) -> list[Block]:
@@ -106,13 +122,96 @@ def _paragraph(element: ET.Element, pkg: Package, numbering: Numbering, styles: 
     # author is a heading carrying a number, not a one-line bulleted list.
     level = _heading_level(props, styles)
     if level is not None:
-        return Heading(level=level, items=items)
+        return Heading(level=level, items=_undecorated(items), bookmarks=_bookmarks(element))
 
     num_id, ilvl = _list_properties(props, styles)
     if num_id is not None:
         return ListItem(level=ilvl, ordered=numbering.is_ordered(num_id, ilvl), items=items)
 
-    return Paragraph(items=items)
+    size = _title_size(element, items, styles)
+    if size is None:
+        return Paragraph(items=items)
+    return Paragraph(items=items, title_size=size, bookmarks=_bookmarks(element))
+
+
+def _undecorated(items: list[Item]) -> list[Item]:
+    """Drop the pictures anchored in a heading.
+
+    One decorates it -- a flourish laid under the text -- and is no part of what
+    the heading says.
+    """
+    return [i for i in items if not (isinstance(i, ImageRef) and i.floating)]
+
+
+def _bookmarks(element: ET.Element) -> list[str]:
+    names = [attr(mark, "w:name") for mark in element.iter(qn("w:bookmarkStart"))]
+    return [name for name in names if name]
+
+
+def _text_sizes(element: ET.Element, styles: Styles) -> list[tuple[int, int]]:
+    """``(size, characters)`` for each run of a paragraph that holds text.
+
+    The size is the run's own, else the one its paragraph style gives it.
+    Whitespace is not counted: a run of spaces says nothing about the text.
+    """
+    props = element.find(qn("w:pPr"))
+    inherited = styles.size(_style_id(props))
+    sizes = []
+    for run in element.iter(qn("w:r")):
+        text = "".join(t.text or "" for t in run.findall(qn("w:t")))
+        length = len("".join(text.split()))
+        if length:
+            sizes.append((size_of(run.find(qn("w:rPr"))) or inherited, length))
+    return sizes
+
+
+def _title_size(element: ET.Element, items: list[Item], styles: Styles) -> Optional[int]:
+    """The size of a paragraph that has the shape of a title, else ``None``."""
+    text = [i for i in items if not (isinstance(i, Run) and not i.text.strip())]
+    if not text or not all(isinstance(i, Run) and i.bold and "\n" not in i.text for i in text):
+        return None
+    if sum(len(i.text.strip()) for i in text) > TITLE_MAX_CHARS:
+        return None
+    sizes = {size for size, _ in _text_sizes(element, styles)}
+    return sizes.pop() if len(sizes) == 1 else None
+
+
+def _body_size(body: ET.Element, styles: Styles) -> int:
+    """The size most of the document's characters are set at."""
+    counts: Counter[int] = Counter()
+    for paragraph in body.iter(qn("w:p")):
+        for size, length in _text_sizes(paragraph, styles):
+            counts[size] += length
+    return counts.most_common(1)[0][0] if counts else styles.default_size
+
+
+def _promote_titles(blocks: list[Block], body_size: int) -> list[Block]:
+    """Turn the title-shaped paragraphs that stand out from the body into headings.
+
+    One level per distinct size, largest first. Only top-level paragraphs are
+    candidates: a bold, larger line in a table is a column heading, which the
+    table already marks.
+    """
+    sizes = sorted(
+        {
+            b.title_size
+            for b in blocks
+            if isinstance(b, Paragraph) and b.title_size and b.title_size >= body_size * TITLE_RATIO
+        },
+        reverse=True,
+    )
+    levels = {size: min(rank, MAX_HEADING) for rank, size in enumerate(sizes, start=1)}
+    return [
+        _heading_of(b, levels[b.title_size]) if isinstance(b, Paragraph) and b.title_size in levels else b
+        for b in blocks
+    ]
+
+
+def _heading_of(title: Paragraph, level: int) -> Heading:
+    # Bold throughout is what made the line a candidate; kept on the runs it
+    # would come out as "# **Title**", saying twice what the # says.
+    items = [replace(i, bold=False) if isinstance(i, Run) else i for i in _undecorated(title.items)]
+    return Heading(level=level, items=items, bookmarks=title.bookmarks)
 
 
 def _heading_level(props: Optional[ET.Element], styles: Styles) -> Optional[int]:

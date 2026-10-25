@@ -297,3 +297,124 @@ def test_a_numbered_paragraph_without_an_outline_level_is_still_a_list(tmp_path)
     }
     blocks = blocks_of(tmp_path, para("point", style="ListBullet"), parts=parts)
     assert isinstance(blocks[0], ListItem)
+
+
+def _drawing(kind):
+    wp = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"
+    a = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    r = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    shell = f'<wp:{kind} xmlns:wp="{wp}"><wp:docPr id="1" name="Picture 1"/>'
+    blip = f'<a:graphic xmlns:a="{a}"><a:graphicData><a:blip xmlns:r="{r}" r:embed="rId5"/></a:graphicData></a:graphic>'
+    return f"<w:drawing>{shell}{blip}</wp:{kind}></w:drawing>"
+
+
+_RELS = (
+    '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    '<Relationship Id="rId5" Target="media/line.png" '
+    'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"/></Relationships>'
+)
+
+
+def test_a_floating_picture_in_a_heading_is_not_part_of_the_heading(tmp_path):
+    # Word designers lay a flourish under a heading by anchoring a picture in
+    # it. It decorates the heading and says nothing in it, and left in, it
+    # becomes part of the heading's text -- and of its anchor.
+    from pytoolbox.docx.inline import ImageRef
+
+    body = (
+        f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r>{_drawing("anchor")}</w:r>'
+        "<w:r><w:t>Scope</w:t></w:r></w:p>"
+        f'<w:p><w:pPr><w:pStyle w:val="Heading2"/></w:pPr><w:r>{_drawing("inline")}</w:r>'
+        "<w:r><w:t>Icon</w:t></w:r></w:p>"
+        f"<w:p><w:r>{_drawing('anchor')}</w:r></w:p>"
+    )
+    blocks = blocks_of(tmp_path, body, parts={"word/_rels/document.xml.rels": _RELS})
+
+    kinds = [[type(item).__name__ for item in block.items] for block in blocks]
+    assert kinds == [["Run"], ["ImageRef", "Run"], ["ImageRef"]]
+    assert isinstance(blocks[1].items[0], ImageRef)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Headings a document never styled
+# ─────────────────────────────────────────────────────────────────────
+
+
+def sized(text, size, bold=True):
+    props = ("<w:b/>" if bold else "") + (f'<w:sz w:val="{size}"/>' if size else "")
+    return f"<w:p><w:r><w:rPr>{props}</w:rPr><w:t>{text}</w:t></w:r></w:p>"
+
+
+BODY = "".join(sized("An ordinary sentence of the document body that runs on for a good while. " * 3, 24, bold=False) for _ in range(3))
+
+
+def kinds(blocks):
+    return [(type(block).__name__, getattr(block, "level", None)) for block in blocks]
+
+
+def test_a_bold_line_set_larger_than_the_body_is_a_heading_by_its_size(tmp_path):
+    # A document written without heading styles still shows its structure the
+    # one way left: the title is bigger. One level per distinct size, largest
+    # first, as for a PDF.
+    body = sized("The Title", 40) + sized("A Subtitle", 28) + BODY
+    blocks = blocks_of(tmp_path, body)
+
+    assert kinds(blocks) == [("Heading", 1), ("Heading", 2)] + [("Paragraph", None)] * 3
+
+
+def test_larger_text_that_is_not_bold_is_not_a_heading(tmp_path):
+    blocks = blocks_of(tmp_path, sized("Big but plain", 40, bold=False) + BODY)
+
+    assert kinds(blocks)[0] == ("Paragraph", None)
+
+
+def test_bold_text_at_the_body_size_is_not_a_heading(tmp_path):
+    blocks = blocks_of(tmp_path, sized("Chapter four", 24) + BODY)
+
+    assert kinds(blocks)[0] == ("Paragraph", None)
+
+
+def test_a_long_bold_paragraph_is_a_paragraph_however_large(tmp_path):
+    blocks = blocks_of(tmp_path, sized("word " * 40, 40) + BODY)
+
+    assert kinds(blocks)[0] == ("Paragraph", None)
+
+
+def test_larger_bold_text_in_a_table_cell_is_not_a_heading(tmp_path):
+    cell = f"<w:tbl><w:tr><w:tc>{sized('Header', 40)}</w:tc></w:tr></w:tbl>"
+    blocks = blocks_of(tmp_path, cell + BODY)
+
+    assert isinstance(blocks[0], Table)
+    assert isinstance(blocks[0].rows[0][0][0], Paragraph)
+
+
+def test_the_body_size_is_the_documents_default_when_runs_do_not_name_one(tmp_path):
+    # 26 half-points is 18% over Word's 11pt fallback, but only 8% over this
+    # document's own 12pt default -- a bold line at that size is just emphasis.
+    defaults = (
+        f'<?xml version="1.0"?><w:styles {W}><w:docDefaults><w:rPrDefault><w:rPr>'
+        '<w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults></w:styles>'
+    )
+    plain = "".join(sized("An ordinary sentence of the body that runs on a while. " * 3, 0, bold=False) for _ in range(3))
+    blocks = blocks_of(tmp_path, sized("Emphasis", 26) + sized("Real title", 40) + plain, parts={"word/styles.xml": defaults})
+
+    assert kinds(blocks) == [("Paragraph", None), ("Heading", 1)] + [("Paragraph", None)] * 3
+
+
+def test_a_size_set_by_the_paragraph_style_counts_as_the_runs_size(tmp_path):
+    # Word records size in the style far more often than on the run, so a
+    # reader that looks only at the run sees a body of 11pt text everywhere.
+    big = '<w:style w:type="paragraph" w:styleId="Big"><w:rPr><w:sz w:val="44"/></w:rPr></w:style>'
+    titled = f'<w:p><w:pPr><w:pStyle w:val="Big"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t>Annual report</w:t></w:r></w:p>'
+    blocks = blocks_of(tmp_path, titled + BODY, parts={"word/styles.xml": styles_part(big)})
+
+    assert kinds(blocks)[0] == ("Heading", 1)
+
+
+def test_a_title_promoted_by_its_size_does_not_repeat_its_boldness(tmp_path):
+    # Bold throughout is what made the line a candidate. Kept on the runs it
+    # would come out as "# **The Title**", saying twice what the # says.
+    blocks = blocks_of(tmp_path, sized("The Title", 40) + BODY)
+
+    assert isinstance(blocks[0], Heading)
+    assert [item.bold for item in blocks[0].items] == [False]

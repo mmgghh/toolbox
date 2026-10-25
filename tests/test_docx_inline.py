@@ -172,3 +172,61 @@ def test_a_hyperlink_split_across_runs_becomes_one_link(tmp_path):
     body = f'<w:hyperlink w:anchor="_Toc1">{inner}</w:hyperlink>'
     items = inline_of(tmp_path, para(runs=body))
     assert [(i.text, i.link) for i in items] == [("Chapter 1 Aims", "#_Toc1")]
+
+
+def test_a_page_break_inside_a_paragraph_is_not_a_line_break():
+    # A page break is where the page ends, not a line of the text: written as a
+    # newline it splits a heading in two. A real line break still is one.
+    from xml.etree import ElementTree as ET
+
+    from pytoolbox.docx.inline import Run, parse_inline
+
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+
+    def paragraph(kind):
+        br = f'<w:br w:type="{kind}"/>' if kind else "<w:br/>"
+        return ET.fromstring(
+            f"<w:p {ns}><w:r><w:t>one</w:t></w:r><w:r>{br}</w:r><w:r><w:t>two</w:t></w:r></w:p>"
+        )
+
+    texts = lambda kind: [i.text for i in parse_inline(paragraph(kind), None) if isinstance(i, Run)]  # noqa: E731
+
+    assert texts("page") == ["one two"]
+    assert texts("column") == ["one two"]
+    assert texts(None) == ["one\ntwo"]
+
+
+def _fielded(code, result):
+    from xml.etree import ElementTree as ET
+
+    ns = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    return ET.fromstring(
+        f"<w:p {ns}><w:r><w:t>Intro</w:t></w:r><w:r><w:tab/></w:r>"
+        '<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+        f"<w:r><w:instrText> {code} </w:instrText></w:r>"
+        '<w:r><w:fldChar w:fldCharType="separate"/></w:r>'
+        f"<w:r><w:t>{result}</w:t></w:r>"
+        '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
+        "<w:r><w:t> after</w:t></w:r></w:p>"
+    )
+
+
+def test_the_page_number_a_field_last_computed_is_not_text():
+    # A table of contents entry ends in a PAGEREF field whose result is the
+    # page the heading was on. In Markdown there are no pages, and the number
+    # would be glued to the title.
+    from pytoolbox.docx.inline import Run, parse_inline
+
+    def text(code):
+        return "".join(i.text for i in parse_inline(_fielded(code, "4"), None) if isinstance(i, Run))
+
+    assert text("PAGEREF _Toc229559997 \\h").strip() == "Intro  after"
+    assert text("NUMPAGES") .strip() == "Intro  after"
+
+
+def test_the_result_of_any_other_field_is_kept():
+    from pytoolbox.docx.inline import Run, parse_inline
+
+    runs = parse_inline(_fielded('DOCPROPERTY "Title"', "Quarterly report"), None)
+
+    assert "Quarterly report" in "".join(i.text for i in runs if isinstance(i, Run))

@@ -19,6 +19,10 @@ from pytoolbox.docx.package import Package, attr, qn
 #: A style chain deeper than this is a loop Word itself would not survive.
 _MAX_DEPTH = 32
 
+#: Word's own fallback text size, in half-points (11pt), for a document that
+#: names none.
+DEFAULT_SIZE = 22
+
 
 class Styles:
     """Resolves style ids to the paragraph properties they imply."""
@@ -28,10 +32,29 @@ class Styles:
         parents: dict[str, str],
         lists: dict[str, tuple[Optional[str], Optional[int]]],
         outlines: Optional[dict[str, int]] = None,
+        sizes: Optional[dict[str, int]] = None,
+        default_style: Optional[str] = None,
+        default_size: int = DEFAULT_SIZE,
     ) -> None:
         self._parents = parents
         self._lists = lists
         self._outlines = outlines or {}
+        self._sizes = sizes or {}
+        self._default_style = default_style
+        #: The size of text nothing else sizes, from ``w:docDefaults``.
+        self.default_size = default_size
+
+    def size(self, style_id: Optional[str]) -> int:
+        """The text size, in half-points, a paragraph in this style is set at.
+
+        Word layers it: the document defaults, then the default paragraph style
+        (*Normal*), then the style named, each overriding the last. A run that
+        carries a size of its own overrides all of them; that is the caller's.
+        """
+        for current in self.chain(style_id) + self.chain(self._default_style):
+            if current in self._sizes:
+                return self._sizes[current]
+        return self.default_size
 
     def outline_level(self, style_id: Optional[str]) -> Optional[int]:
         """The ``w:outlineLvl`` a style contributes, inherited like the rest.
@@ -82,12 +105,16 @@ def load_styles(pkg: Package) -> Styles:
     parents: dict[str, str] = {}
     lists: dict[str, tuple[Optional[str], Optional[int]]] = {}
     outlines: dict[str, int] = {}
+    sizes: dict[str, int] = {}
+    default_style: Optional[str] = None
 
     for style in part.findall(qn("w:style")):
         style_id = attr(style, "w:styleId")
         # Character and table styles cannot make a paragraph a list item.
         if style_id is None or attr(style, "w:type", "paragraph") != "paragraph":
             continue
+        if attr(style, "w:default") in ("1", "true", "on"):
+            default_style = style_id
 
         based_on = style.find(qn("w:basedOn"))
         parent = attr(based_on, "w:val") if based_on is not None else None
@@ -106,7 +133,21 @@ def load_styles(pkg: Package) -> Styles:
         if raw is not None and raw.isdecimal():
             outlines[style_id] = int(raw)
 
-    return Styles(parents, lists, outlines)
+        size = size_of(style.find(qn("w:rPr")))
+        if size is not None:
+            sizes[style_id] = size
+
+    defaults = part.find(qn("w:docDefaults") + "/" + qn("w:rPrDefault") + "/" + qn("w:rPr"))
+    default_size = size_of(defaults) or DEFAULT_SIZE
+    return Styles(parents, lists, outlines, sizes, default_style, default_size)
+
+
+def size_of(rpr: Optional[ET.Element]) -> Optional[int]:
+    """The ``w:sz`` of a run-properties element, in half-points, if it has one."""
+    element = rpr.find(qn("w:sz")) if rpr is not None else None
+    raw = attr(element, "w:val") if element is not None else None
+    # isdecimal(), not isdigit(): see the outline level above.
+    return int(raw) if raw is not None and raw.isdecimal() and int(raw) > 0 else None
 
 
 def _value(num_pr: ET.Element, tag: str) -> Optional[str]:

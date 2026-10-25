@@ -8,7 +8,8 @@ rule at a time.
 from __future__ import annotations
 
 import posixpath
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from pytoolbox.core.markdown import emphasis
@@ -29,6 +30,9 @@ class RenderOptions:
     comments: bool = True
     #: Directory name that image links point into. None omits images entirely.
     assets_dir: Optional[str] = None
+    #: Heading anchor for each bookmark name, filled in by ``render``. An
+    #: internal link to a bookmark that marks no heading has nowhere to go.
+    anchors: dict[str, str] = field(default_factory=dict)
 
 
 def render(
@@ -41,6 +45,7 @@ def render(
     options = options or RenderOptions()
     notes = notes or {}
     numbers = _number_comments(blocks, comments) if options.comments else {}
+    options = replace(options, anchors=_anchors(blocks, numbers, options))
 
     chunks: list[str] = []
     lists = _ListState()
@@ -108,6 +113,42 @@ def _comment_ids(blocks: list[Block]) -> list[str]:
             if isinstance(item, CommentMark) and item.comment_id not in found:
                 found.append(item.comment_id)
     return found
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Internal links
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _anchors(blocks: list[Block], numbers: dict[str, str], options: RenderOptions) -> dict[str, str]:
+    """The anchor a renderer will give each heading, by the bookmark naming it.
+
+    Word links a table of contents entry to a hidden bookmark such as
+    ``_Toc229560004``. Markdown has nothing of the kind, but every heading has
+    an anchor made from its text, so that is where such a link is pointed.
+    """
+    used: dict[str, int] = {}
+    anchors: dict[str, str] = {}
+    plain = replace(options, anchors={})
+    for block in blocks:
+        if not isinstance(block, Heading):
+            continue
+        text = _inline(block.items, numbers, plain)
+        if not text:
+            continue  # a heading with no text is not written at all
+        anchor = _slug(text, used)
+        for name in block.bookmarks:
+            anchors.setdefault(name, anchor)
+    return anchors
+
+
+def _slug(text: str, used: dict[str, int]) -> str:
+    """A heading anchor the way ``pymd2html`` and GitHub make one."""
+    base = re.sub(r"[`*_~\[\]()]", "", text).strip().lower()
+    base = re.sub(r"[^\w\- ]", "", base, flags=re.UNICODE)
+    base = re.sub(r"[\s-]+", "-", base).strip("-") or "section"
+    used[base] = used.get(base, 0) + 1
+    return base if used[base] == 1 else f"{base}-{used[base]}"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -196,7 +237,23 @@ def _row(cells: list[str]) -> str:
 
 def _cell(cell, numbers: dict[str, str], options: RenderOptions) -> str:
     """Cell content on one line: Markdown tables cannot hold block structure."""
-    parts = [_inline(block.items, numbers, options).strip() for block in cell]
+    parts: list[str] = []
+    counters: dict[int, int] = {}
+    for block in cell:
+        text = _inline(block.items, numbers, options).strip()
+        if isinstance(block, ListItem):
+            # A pipe table cannot hold a list, but it can hold a list's text:
+            # each item keeps its marker and a line of its own.
+            for deeper in [level for level in counters if level > block.level]:
+                del counters[deeper]
+            if block.ordered:
+                counters[block.level] = counters.get(block.level, 0) + 1
+                text = f"{counters[block.level]}. {text}"
+            else:
+                text = f"- {text}"
+        else:
+            counters.clear()
+        parts.append(text)
     joined = "<br>".join(part for part in parts if part).replace("|", "\\|")
     # A line break of any kind would end the row early, so every one of them
     # becomes the break that Markdown allows inside a cell.
@@ -208,11 +265,71 @@ def _cell(cell, numbers: dict[str, str], options: RenderOptions) -> str:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _styled_stretches(items: list[Item]) -> list[Item]:
+    """Gather neighbouring runs that share a style around a link into one.
+
+    ``**see (**`` + ``[**x**](u)`` + ``**)**`` is one bold stretch with a link
+    in it, and written as three it is fragmented asterisks. A stretch is
+    marked with ``Stretch``, which is rendered once, markers outside.
+    """
+    out: list[Item] = []
+    index = 0
+    while index < len(items):
+        item = items[index]
+        if not isinstance(item, Run) or item.code:
+            out.append(item)
+            index += 1
+            continue
+        style = (item.bold, item.italic, item.strike)
+        stop = index
+        while (
+            stop < len(items)
+            and isinstance(items[stop], Run)
+            and not items[stop].code
+            and (items[stop].bold, items[stop].italic, items[stop].strike) == style
+        ):
+            stop += 1
+        group = items[index:stop]
+        if len(group) > 1 and any(run.link for run in group) and any(style):
+            out.append(Stretch(runs=list(group)))
+        else:
+            out.extend(group)
+        index = stop
+    return out
+
+
+@dataclass
+class Stretch:
+    """Runs of one style with a link among them, written under one set of markers."""
+
+    runs: list[Run]
+
+
+def _stretch(stretch: Stretch, options: RenderOptions) -> str:
+    first = stretch.runs[0]
+    pieces = []
+    for run in stretch.runs:
+        pieces.append(_run(replace(run, bold=False, italic=False, strike=False), options))
+    inner = "".join(pieces)
+    lead = inner[: len(inner) - len(inner.lstrip())]
+    trail = inner[len(inner.rstrip()) :]
+    body = inner.strip()
+    if first.strike:
+        body = f"~~{body}~~"
+    if first.bold:
+        body = f"**{body}**"
+    if first.italic:
+        body = f"*{body}*"
+    return f"{lead}{body}{trail}"
+
+
 def _inline(items: list[Item], numbers: dict[str, str], options: RenderOptions) -> str:
     out: list[str] = []
-    for item in items:
-        if isinstance(item, Run):
-            out.append(_run(item))
+    for item in _styled_stretches(items):
+        if isinstance(item, Stretch):
+            out.append(_stretch(item, options))
+        elif isinstance(item, Run):
+            out.append(_run(item, options))
         elif isinstance(item, CommentMark):
             number = numbers.get(item.comment_id)
             # Replies carry a dotted number and are shown nested in the body,
@@ -231,14 +348,17 @@ def _inline(items: list[Item], numbers: dict[str, str], options: RenderOptions) 
     return "".join(out).strip()
 
 
-def _run(run: Run) -> str:
+def _run(run: Run, options: RenderOptions) -> str:
+    link = run.link
+    if link and link.startswith("#"):
+        link = f"#{options.anchors[link[1:]]}" if link[1:] in options.anchors else None
     return emphasis(
         run.text,
         bold=run.bold,
         italic=run.italic,
         strike=run.strike,
         code=run.code,
-        link=run.link,
+        link=link,
     )
 
 

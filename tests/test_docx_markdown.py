@@ -36,6 +36,23 @@ def test_emphasis_wraps_the_run():
     assert render([para(*items)], {}) == "plain **bold** and *it*\n"
 
 
+def test_a_link_inside_bold_text_shares_the_bold_markers():
+    # Three bold runs, the middle one a link, are one bold stretch: asterisks
+    # around each of the three pieces fragment it and trip some renderers.
+    items = [
+        Run("see (", bold=True),
+        Run("my.tax.gov.ir", bold=True, link="http://my.tax.gov.ir"),
+        Run(")", bold=True),
+        Run(" and more"),
+    ]
+    assert render([para(*items)], {}) == "**see ([my.tax.gov.ir](http://my.tax.gov.ir))** and more\n"
+
+
+def test_a_link_with_its_own_style_keeps_it():
+    items = [Run("plain "), Run("link", italic=True, link="http://x.org"), Run(" after")]
+    assert render([para(*items)], {}) == "plain [*link*](http://x.org) after\n"
+
+
 def test_an_inline_equation_is_wrapped_in_single_dollars():
     items = [Run("where "), Math(latex="x_{i}"), Run(" is the input")]
     assert render([para(*items)], {}) == "where $x_{i}$ is the input\n"
@@ -104,6 +121,44 @@ def test_a_pipe_inside_a_cell_is_escaped():
 def test_a_multi_paragraph_cell_joins_with_a_break():
     table = Table(rows=[[[para(Run("one")), para(Run("two"))]], [[para(Run("x"))]]], header_rows=1)
     assert "one<br>two" in render([table], {})
+
+
+def test_list_items_in_a_cell_keep_their_markers():
+    # A pipe table cannot hold a list, but it can hold the list's text with its
+    # numbers and bullets, one to a line -- which is what the page showed.
+    cell = [
+        para(Run("Points raised:")),
+        ListItem(level=0, ordered=True, items=[Run("first")]),
+        ListItem(level=0, ordered=True, items=[Run("second")]),
+        ListItem(level=1, ordered=False, items=[Run("aside")]),
+    ]
+    table = Table(rows=[[cell], [[para(Run("x"))]]], header_rows=1)
+
+    assert "| Points raised:<br>1. first<br>2. second<br>- aside |" in render([table], {})
+
+
+def test_an_internal_link_points_at_the_heading_that_carries_its_bookmark():
+    # Word links a table of contents entry to a bookmark such as _Toc123, which
+    # exists nowhere in Markdown. The heading it marks has an anchor of its own.
+    blocks = [
+        Heading(level=1, items=[Run("Scope of work")], bookmarks=["_Toc1"]),
+        para(Run("see "), Run("Scope", link="#_Toc1")),
+        para(Run("lost", link="#_Missing")),
+    ]
+
+    assert render(blocks, {}) == (
+        "# Scope of work\n\nsee [Scope](#scope-of-work)\n\nlost\n"
+    )
+
+
+def test_a_repeated_heading_gets_the_anchor_a_renderer_would_give_it():
+    blocks = [
+        Heading(level=2, items=[Run("Notes")], bookmarks=["_a"]),
+        Heading(level=2, items=[Run("Notes")], bookmarks=["_b"]),
+        para(Run("two", link="#_b")),
+    ]
+
+    assert render(blocks, {}).endswith("[two](#notes-2)\n")
 
 
 def test_a_comment_marker_follows_the_text_and_the_body_follows_the_block():
